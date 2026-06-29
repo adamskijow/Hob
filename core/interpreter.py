@@ -25,6 +25,11 @@ from core.models import (
 )
 from core.ports import Llm
 
+# Note set on the Unknown returned when the model call itself fails (ollama down,
+# timeout, malformed). The edge recognizes it to log and reply distinctly rather
+# than blaming the user with a generic "did not catch that".
+MODEL_UNREACHABLE = "model call failed"
+
 _STR = {"type": ["string", "null"]}
 _NUM = {"type": ["number", "null"]}
 
@@ -303,5 +308,5 @@ def interpret(llm: Llm, ctx: InterpreterContext) -> list:
     try:
         payload = llm.complete_json(prompt, ACTION_SCHEMA)
     except Exception:
-        return [Unknown(note="model call failed")]
+        return [Unknown(note=MODEL_UNREACHABLE)]
     return parse_actions(payload)

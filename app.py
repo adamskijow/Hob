@@ -17,7 +17,7 @@ from dataclasses import asdict
 
 from config import Config, ConfigError
 from core.digest import render_digest, select_digest_items
-from core.interpreter import interpret
+from core.interpreter import MODEL_UNREACHABLE, interpret
 from core.models import (
     SOURCE_CAPTURE,
     STATUS_DONE,
@@ -28,6 +28,7 @@ from core.models import (
     DigestItem,
     InterpreterContext,
     Item,
+    Unknown,
 )
 from core.planner import Mutation, QueryIntent, reconcile
 from core.ports import Clock, Llm, Store
@@ -37,6 +38,8 @@ from adapters.llm_ollama import OllamaLlm
 from adapters.scheduler import DigestScheduler
 from adapters.store_sqlite import SqliteStore
 from adapters.telegram_bot import InboundMessage, TelegramAdapter
+
+log = logging.getLogger("hob.message")
 
 HELP = (
     "send a task to capture it. /today lists what is open. "
@@ -110,6 +113,16 @@ class MessageService:
     def _interpret_and_apply(self, text: str, message_id: str) -> str:
         ctx = self._context(text)
         actions = interpret(self._llm, ctx)
+        # A model outage degrades to a single Unknown with this note. Don't treat
+        # it as a confusing message: say so, change nothing, and leave any pending
+        # clarification intact so a retry still resolves it.
+        if (
+            len(actions) == 1
+            and isinstance(actions[0], Unknown)
+            and actions[0].note == MODEL_UNREACHABLE
+        ):
+            log.warning("model unreachable; not applying message %s", message_id)
+            return "i can't reach the model right now. give it a few seconds and resend."
         plan = reconcile(actions, ctx)
         applied = self._apply(plan.mutations, message_id)
         answers = [self._answer_query(q) for q in plan.queries]

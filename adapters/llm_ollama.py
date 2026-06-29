@@ -9,8 +9,11 @@ reconciles the result; this adapter only transports it.
 from __future__ import annotations
 
 import json
+import logging
 
 import ollama
+
+log = logging.getLogger("hob.llm")
 
 
 class OllamaLlm:
@@ -21,10 +24,17 @@ class OllamaLlm:
         self._client = ollama.Client(host=host, timeout=timeout)
 
     def complete_json(self, prompt: str, schema: dict) -> dict:
-        response = self._client.chat(
-            model=self._model,
-            messages=[{"role": "user", "content": prompt}],
-            format=schema,  # structured output: response conforms to the schema
-            options={"temperature": 0},  # deterministic
-        )
+        try:
+            response = self._client.chat(
+                model=self._model,
+                messages=[{"role": "user", "content": prompt}],
+                format=schema,  # structured output: response conforms to the schema
+                options={"temperature": 0},  # deterministic
+            )
+        except Exception:
+            # Surface the outage in the log; the core still degrades gracefully.
+            # Without this an ollama outage is invisible and looks like the model
+            # being confused.
+            log.exception("ollama call failed (model=%s)", self._model)
+            raise
         return json.loads(response["message"]["content"])

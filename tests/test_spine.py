@@ -140,6 +140,24 @@ def test_pending_clarification_resume():
     assert not store.get_meta("pending")  # cleared
 
 
+class _BoomLlm:
+    def complete_json(self, prompt, schema):
+        raise RuntimeError("ollama down")
+
+
+def test_model_unreachable_says_so_and_preserves_pending():
+    store = SqliteStore(":memory:")
+    store.set_meta("pending", '[{"kind": "capture", "question": "q", "task": "lunch"}]')
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, _BoomLlm(), "America/New_York")
+
+    out = svc.handle(msg("thursday"))
+
+    assert "can't reach the model" in out
+    assert store.open_items() == []  # nothing applied
+    assert store.get_meta("pending")  # an outage must not clear a pending question
+
+
 def test_bulk_drop_all_clears_the_list():
     llm = FakeLlm({"actions": [{"type": "bulk", "op": "drop", "scope": "all"}]})
     svc, store = service(llm)  # seeded a1, a2, a3, all open

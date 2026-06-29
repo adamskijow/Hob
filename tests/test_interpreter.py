@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 """Interpreter: canned model JSON in, parsed Actions out, graceful on garbage."""
-from core.interpreter import build_prompt, interpret, parse_actions
+from core.interpreter import MODEL_UNREACHABLE, build_prompt, interpret, parse_actions
 from core.models import (
     Bulk,
     Capture,
@@ -52,6 +52,7 @@ def test_model_call_failure_falls_back_to_unknown():
 
     actions = interpret(Boom(), ctx())
     assert len(actions) == 1 and isinstance(actions[0], Unknown)
+    assert actions[0].note == MODEL_UNREACHABLE
 
 
 def test_malformed_missing_actions_array():
