@@ -39,9 +39,7 @@ def test_capture_without_date():
 
 
 def test_capture_resolves_date_from_raw():
-    plan = reconcile(
-        [Capture(task="org prez", raw="org prez Monday", due="2026-07-06")], ctx()
-    )
+    plan = reconcile([Capture(task="org prez", raw="org prez Monday")], ctx())
     assert plan.mutations[0].due_date == "2026-07-06"
     assert not plan.questions
 
@@ -52,23 +50,17 @@ def test_ambiguous_date_asks_and_applies_nothing():
     assert len(plan.questions) == 1
 
 
-def test_model_parser_disagreement_asks():
-    # parser resolves "Monday" to 2026-07-06; model claims 2026-07-07
-    plan = reconcile([Capture(task="x", raw="Monday", due="2026-07-07")], ctx())
-    assert not plan.mutations
-    assert plan.questions
-
-
-def test_parser_finds_nothing_but_model_dated_it_asks():
-    plan = reconcile([Capture(task="x", raw="sometime soon", due="2026-07-10")], ctx())
-    assert not plan.mutations
-    assert plan.questions
-
-
-def test_garbage_model_date_is_ignored_not_a_disagreement():
-    # unparseable model due -> ignored; clean parser date is applied
-    plan = reconcile([Capture(task="x", raw="Monday", due="next monday")], ctx())
+def test_capture_date_owned_by_parser():
+    # The model proposes no date; the parser alone resolves "Monday".
+    plan = reconcile([Capture(task="x", raw="Monday")], ctx())
     assert plan.mutations[0].due_date == "2026-07-06"
+    assert not plan.questions
+
+
+def test_capture_undated_when_parser_finds_nothing():
+    # No date in the phrase -> captured undated, no clarifying question.
+    plan = reconcile([Capture(task="x", raw="sometime soon")], ctx())
+    assert plan.mutations[0].due_date is None
     assert not plan.questions
 
 
@@ -113,21 +105,35 @@ def test_drop_with_reason():
 
 def test_reschedule_resolves_date():
     plan = reconcile(
-        [Reschedule(target="a3", raw="to Friday", due="2026-07-03", confidence=0.9)],
-        ctx(ACTIVE),
+        [Reschedule(target="a3", raw="to Friday", confidence=0.9)],
+        ctx(ACTIVE, message="push the audit to Friday"),
     )
     assert plan.mutations[0].kind == "reschedule"
     assert plan.mutations[0].due_date == "2026-07-03"
 
 
 def test_reschedule_without_date_asks():
-    plan = reconcile([Reschedule(target="a3", raw="later", confidence=0.9)], ctx(ACTIVE))
+    plan = reconcile(
+        [Reschedule(target="a3", raw="later", confidence=0.9)],
+        ctx(ACTIVE, message="move the audit later"),
+    )
     assert not plan.mutations
     assert plan.questions
 
 
 def test_reschedule_bad_target_asks():
     plan = reconcile([Reschedule(target="zz", raw="to Friday", confidence=0.9)], ctx(ACTIVE))
+    assert not plan.mutations
+    assert plan.questions
+
+
+def test_reschedule_phrase_not_in_message_asks():
+    # The model invented a date absent from the message (a query misread as a
+    # reschedule); the guard refuses to mutate and asks.
+    plan = reconcile(
+        [Reschedule(target="a3", raw="next Monday", confidence=0.9)],
+        ctx(ACTIVE, message="what's on for tomorrow?"),
+    )
     assert not plan.mutations
     assert plan.questions
 
@@ -152,7 +158,9 @@ def test_multi_action_batch():
         Drop(target="a2", confidence=0.9),
         Reschedule(target="a3", raw="to Friday", confidence=0.9),
     ]
-    plan = reconcile(actions, ctx(ACTIVE))
+    plan = reconcile(
+        actions, ctx(ACTIVE, message="did org prez, drop pool, push audit to Friday")
+    )
     kinds = [m.kind for m in plan.mutations]
     assert kinds == ["complete", "drop", "reschedule"]
     assert not plan.questions

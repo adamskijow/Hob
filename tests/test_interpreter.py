@@ -27,7 +27,7 @@ def ctx(message="x", active=None):
 def test_interpret_capture():
     llm = FakeLlm(
         {"actions": [{"type": "capture", "task": "org prez", "raw": "org prez Monday",
-                      "due": "2026-07-06", "confidence": 0.9}]}
+                      "confidence": 0.9}]}
     )
     actions = interpret(llm, ctx("org prez Monday"))
     assert len(actions) == 1
@@ -81,7 +81,7 @@ def test_parse_complete_drop_reschedule_query():
             "actions": [
                 {"type": "complete", "target": "a1", "confidence": 0.9},
                 {"type": "drop", "target": "a2", "reason": "not happening"},
-                {"type": "reschedule", "target": "a3", "raw": "to Friday", "due": "2026-07-03"},
+                {"type": "reschedule", "target": "a3", "raw": "to Friday"},
                 {"type": "query", "kind": "date", "date": "2026-06-30"},
             ]
         }

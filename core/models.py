@@ -72,8 +72,7 @@ class ActionLogEntry:
 @dataclass
 class Capture:
     task: str  # clean label
-    raw: str  # echo of the phrasing
-    due: str | None = None  # model's ISO guess; ignored for the value, cross-checked
+    raw: str  # echo of the phrasing; the core resolves the date from this
     time: str | None = None  # HH:MM
     confidence: float = 1.0
 
@@ -94,8 +93,7 @@ class Drop:
 @dataclass
 class Reschedule:
     target: str
-    due: str | None = None  # model's ISO guess; re-resolved from raw
-    raw: str = ""  # phrasing to re-resolve the date from
+    raw: str = ""  # date phrasing the core re-resolves the new date from
     confidence: float = 1.0
 
 

@@ -4,10 +4,14 @@
 Pure, no I/O. This is where correctness lives: the model's output is a proposal,
 not a command.
 
-- Dates: the model's ISO value is ignored and re-resolved from the raw phrasing
-  (core.dates). Ambiguity, a parser/model disagreement, or a parser that finds
-  nothing where a date was intended all produce a clarifying question and apply
-  nothing for that action.
+- Dates: the model never proposes a resolved date; the new date is re-resolved
+  from the raw phrasing (core.dates). The parser owns dates entirely. Ambiguity
+  (more than one date in the phrase) produces a clarifying question and applies
+  nothing; a reschedule whose phrase resolves to nothing also asks.
+- Reschedule guard: the model is told to copy date words verbatim, so a date
+  phrase that does not actually appear in the message is a hallucination (a
+  question or a plain capture misread as a reschedule). The planner asks rather
+  than moving anything.
 - References: every target must match a real id in the active list, and
   confidence must clear the threshold; otherwise ask, never mutate.
 
@@ -16,6 +20,7 @@ allocate ids or read the clock. The edge (MessageService) materializes them.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -25,6 +30,19 @@ from core.models import Capture, Complete, Drop, Query, Reschedule, Unknown
 # Below this, a reference-bearing action (complete/drop/reschedule) is treated as
 # a guess and asked about rather than applied.
 CONFIDENCE_THRESHOLD = 0.5
+
+_WORD = re.compile(r"\w+")
+
+
+def _phrase_in_message(phrase: str, message: str) -> bool:
+    """True if every word of the model's date phrase appears in the message.
+    The prompt tells the model to copy date words verbatim; a phrase absent from
+    the message is a hallucination, so the caller asks instead of mutating."""
+    words = _WORD.findall(phrase.lower())
+    if not words:
+        return False
+    haystack = set(_WORD.findall(message.lower()))
+    return all(w in haystack for w in words)
 
 
 @dataclass
@@ -51,16 +69,6 @@ class Plan:
     queries: list[QueryIntent] = field(default_factory=list)
 
 
-def _norm_iso(value: str | None) -> str | None:
-    """Normalize a model-supplied ISO date, or None if it is not a clean date."""
-    if not value:
-        return None
-    try:
-        return date.fromisoformat(value).isoformat()
-    except ValueError:
-        return None
-
-
 def _check_target(target: str, confidence: float, active: dict, plan: Plan) -> str | None:
     """Validate a reference. Queue a question and return None if it does not
     resolve confidently; otherwise return the id."""
@@ -76,26 +84,11 @@ def _check_target(target: str, confidence: float, active: dict, plan: Plan) -> s
 
 def _reconcile_capture(action: Capture, today: date, plan: Plan) -> None:
     resolution = dates.resolve(action.raw, today)
-    model_due = _norm_iso(action.due)
 
     if resolution.ambiguous:
         plan.questions.append(
             f'when is "{action.task}" due? i read more than one date '
             f'in "{action.raw}".'
-        )
-        return
-    if resolution.date is None and model_due is not None:
-        plan.questions.append(
-            f'i could not pin a date for "{action.task}". when is it due?'
-        )
-        return
-    if (
-        resolution.date is not None
-        and model_due is not None
-        and model_due != resolution.date
-    ):
-        plan.questions.append(
-            f'is "{action.task}" due {resolution.date}? (you wrote "{action.raw}")'
         )
         return
 
@@ -111,23 +104,24 @@ def _reconcile_capture(action: Capture, today: date, plan: Plan) -> None:
 
 
 def _reconcile_reschedule(
-    action: Reschedule, today: date, active: dict, plan: Plan
+    action: Reschedule, today: date, active: dict, message: str, plan: Plan
 ) -> None:
     target = _check_target(action.target, action.confidence, active, plan)
     if target is None:
         return
-    resolution = dates.resolve(action.raw, today)
-    model_due = _norm_iso(action.due)
     label = active[target]
+
+    if not _phrase_in_message(action.raw, message):
+        plan.questions.append(f'did you want to move "{label}"? if so, to when?')
+        return
+
+    resolution = dates.resolve(action.raw, today)
 
     if resolution.ambiguous:
         plan.questions.append(f'when should i move "{label}" to? that read as more than one date.')
         return
     if resolution.date is None:
         plan.questions.append(f'to when should i move "{label}"?')
-        return
-    if model_due is not None and model_due != resolution.date:
-        plan.questions.append(f'move "{label}" to {resolution.date}? (you wrote "{action.raw}")')
         return
 
     plan.mutations.append(
@@ -166,7 +160,7 @@ def reconcile(actions: list, ctx) -> Plan:
                     Mutation(kind="drop", target=target, reason=action.reason)
                 )
         elif isinstance(action, Reschedule):
-            _reconcile_reschedule(action, today, active, plan)
+            _reconcile_reschedule(action, today, active, ctx.message, plan)
         elif isinstance(action, Query):
             _reconcile_query(action, today, ctx, plan)
         elif isinstance(action, Unknown):
