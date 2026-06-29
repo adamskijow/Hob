@@ -56,9 +56,13 @@ class DigestScheduler:
         try:
             result = self._fire()
             if inspect.isawaitable(result):
-                await result
+                result = await result
         except Exception:
             log.exception("digest fire failed; will retry on next tick")
+            return False
+        if result is False:
+            # fire chose not to send (e.g. no chat id yet); leave the day
+            # unmarked so a later tick retries once it can actually send.
             return False
         self._store.set_meta(LAST_DIGEST_KEY, self._clock.today().isoformat())
         return True

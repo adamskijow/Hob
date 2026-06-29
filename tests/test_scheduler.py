@@ -59,6 +59,25 @@ def test_fires_again_next_day():
     assert len(fired) == 2
 
 
+def test_fire_returning_false_does_not_mark_the_day():
+    # e.g. digest owed but no chat id yet: must not consume the day's digest.
+    store = SqliteStore(":memory:")
+    clock = FakeClock(at(7, 0))
+    calls = []
+
+    def fire():
+        calls.append(1)
+        return False if len(calls) == 1 else True
+
+    sched = DigestScheduler(clock, store, fire, "07:00")
+    assert asyncio.run(sched.tick()) is False  # not sent
+    assert store.get_meta(LAST_DIGEST_KEY) is None  # day left unmarked
+    # next tick retries and, now that fire succeeds, marks the day
+    assert asyncio.run(sched.tick()) is True
+    assert store.get_meta(LAST_DIGEST_KEY) == "2026-06-29"
+    assert len(calls) == 2
+
+
 def test_async_fire_callback_awaited():
     store = SqliteStore(":memory:")
     fired = []

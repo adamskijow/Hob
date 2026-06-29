@@ -191,6 +191,11 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
     if not matching:
         plan.questions.append("nothing matched, so i changed nothing.")
         return
+    if action.confidence < CONFIDENCE_THRESHOLD:
+        # A sweeping mutation is the last place to guess; confirm, never apply.
+        verb = "finish" if action.op == "complete" else "drop"
+        plan.questions.append(f"that would {verb} {len(matching)} open item(s). confirm?")
+        return
     for item_id in matching:
         plan.mutations.append(Mutation(kind=action.op, target=item_id))
 

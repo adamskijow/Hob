@@ -264,7 +264,10 @@ class DigestService:
         self._clock = clock
         self._send = send
 
-    async def fire(self) -> None:
+    async def fire(self) -> bool:
+        """Send today's digest. Returns True if it went out, False if it could
+        not (no chat id yet). The scheduler uses this to decide whether to mark
+        the day done, so a digest owed before the first message is not lost."""
         today = self._clock.today().isoformat()
         ordered = select_digest_items(self._store.open_items(), today)
         text = render_digest(ordered, today)
@@ -275,11 +278,12 @@ class DigestService:
         chat = self._store.get_meta(CHAT_ID_KEY)
         if chat is None:
             logging.getLogger("hob.digest").info("no chat id yet; digest not sent")
-            return
+            return False
         # Send first; only record the digest once it is actually delivered, so a
         # send failure retries cleanly without leaving orphan digest rows.
         await self._send(int(chat), text)
         self._store.save_digest(digest)
+        return True
 
 
 async def _run_daemon(cfg: Config, store: SqliteStore) -> None:

@@ -12,9 +12,10 @@ from dataclasses import dataclass
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _WAKE_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
-# ollama keep_alive: "-1" (forever), seconds ("0", "300"), or a duration
-# ("30m", "2h", "90s").
-_KEEP_ALIVE_RE = re.compile(r"^-?\d+(\.\d+)?[smh]?$")
+# ollama keep_alive: "-1" (forever), integer seconds ("0", "300"), or a duration
+# with a unit ("30m", "2h", "1.5h"). A unit-less decimal like "1.5" is rejected
+# (it passes here but ollama would reject it as a bad duration).
+_KEEP_ALIVE_RE = re.compile(r"^(-?\d+|\d+(\.\d+)?[smh])$")
 
 
 class ConfigError(Exception):

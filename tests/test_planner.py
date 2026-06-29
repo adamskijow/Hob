@@ -217,6 +217,13 @@ def test_bulk_no_match_changes_nothing():
     assert plan.questions
 
 
+def test_low_confidence_bulk_confirms_not_applies():
+    # A sweeping mutation must not apply on a low-confidence guess.
+    plan = reconcile([Bulk(op="drop", scope="all", confidence=0.2)], ctx(ACTIVE))
+    assert not plan.mutations
+    assert plan.questions and "confirm" in plan.questions[0]
+
+
 def test_query_today_and_all():
     plan = reconcile([Query(kind="today")], ctx(ACTIVE))
     assert plan.queries[0].kind == "today"

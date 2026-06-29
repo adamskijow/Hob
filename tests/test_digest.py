@@ -113,7 +113,7 @@ def test_digest_service_sends_and_persists_order():
     send = FakeSend()
     svc = DigestService(store, FakeClock(at(7, 0)), send)
 
-    asyncio.run(svc.fire())
+    assert asyncio.run(svc.fire()) is True
 
     assert len(send.calls) == 1
     chat, text = send.calls[0]
@@ -130,7 +130,7 @@ def test_digest_service_no_chat_id_does_not_send_or_persist():
     send = FakeSend()
     svc = DigestService(store, FakeClock(at(7, 0)), send)
 
-    asyncio.run(svc.fire())
+    assert asyncio.run(svc.fire()) is False  # signals "not sent" to the scheduler
 
     assert send.calls == []
     assert store.last_digest() is None

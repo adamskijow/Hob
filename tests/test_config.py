@@ -30,8 +30,10 @@ def test_defaults_applied():
 
 def test_keep_alive_override_and_validation():
     assert Config.from_env({**BASE, "HOB_KEEP_ALIVE": "30m"}).keep_alive == "30m"
-    with pytest.raises(ConfigError):
-        Config.from_env({**BASE, "HOB_KEEP_ALIVE": "forever"})
+    assert Config.from_env({**BASE, "HOB_KEEP_ALIVE": "1.5h"}).keep_alive == "1.5h"
+    for bad in ("forever", "1.5"):  # unit-less decimal would break at ollama
+        with pytest.raises(ConfigError):
+            Config.from_env({**BASE, "HOB_KEEP_ALIVE": bad})
 
 
 def test_missing_token_disables_telegram():
