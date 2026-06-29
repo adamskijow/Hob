@@ -15,12 +15,34 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import re
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 from core.ports import Store
 
 log = logging.getLogger("hob.telegram")
+
+# Presentation: the core keeps its terse lowercase voice; this capitalizes it for
+# display only (stored data and tested strings are untouched).
+_CAP_AFTER = re.compile(r"([.?!:]\s+)([a-z])")  # after . ? ! : and a space
+_CAP_START = re.compile(r"^(\s*)([a-z])")
+_ID_LINE = re.compile(r"^[a-z]+\d+:")  # an item id like "a6:" stays lowercase
+_LONE_I = re.compile(r"\bi\b")  # the pronoun
+
+
+def present(text: str) -> str:
+    """Capitalize Hob's output for display: the start of each line and sentence,
+    text after a colon, and the pronoun 'i'. A leading item id (a6:) is left
+    lowercase. Presentation only."""
+    out = []
+    for line in text.split("\n"):
+        line = _CAP_AFTER.sub(lambda m: m.group(1) + m.group(2).upper(), line)
+        if not _ID_LINE.match(line):
+            line = _CAP_START.sub(lambda m: m.group(1) + m.group(2).upper(), line)
+        line = _LONE_I.sub("I", line)
+        out.append(line)
+    return "\n".join(out)
 
 # meta key holding the next update offset to request.
 OFFSET_KEY = "tg_offset"
@@ -80,7 +102,7 @@ class TelegramAdapter:
         if inspect.isawaitable(reply):
             reply = await reply
         if reply:
-            await self._bot.send_message(chat_id=msg.chat_id, text=reply)
+            await self._bot.send_message(chat_id=msg.chat_id, text=present(reply))
 
     async def _handle_update(self, update: object) -> None:
         message = getattr(update, "message", None)
@@ -122,4 +144,4 @@ class TelegramAdapter:
                 await asyncio.sleep(self._error_backoff)
 
     async def send(self, chat_id: int, text: str) -> None:
-        await self._ensure_bot().send_message(chat_id=chat_id, text=text)
+        await self._ensure_bot().send_message(chat_id=chat_id, text=present(text))

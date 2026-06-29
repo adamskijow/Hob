@@ -9,7 +9,7 @@ import asyncio
 from types import SimpleNamespace
 
 from adapters.store_sqlite import SqliteStore
-from adapters.telegram_bot import OFFSET_KEY, TelegramAdapter
+from adapters.telegram_bot import OFFSET_KEY, TelegramAdapter, present
 
 
 def update(update_id, text, chat_id=42, message_id=None):
@@ -47,7 +47,7 @@ def test_echo_and_offset_advance():
     handled = asyncio.run(adapter.poll_once())
 
     assert handled == 2
-    assert bot.sent == [(42, "got it"), (42, "got it")]
+    assert bot.sent == [(42, "Got it"), (42, "Got it")]  # presented for display
     # offset advanced past the last update
     assert store.get_meta(OFFSET_KEY) == "12"
     # first poll requested offset 0 (nothing confirmed yet)
@@ -92,3 +92,21 @@ def test_handler_returning_none_sends_nothing():
 
     assert bot.sent == []
     assert store.get_meta(OFFSET_KEY) == "2"
+
+
+def test_present_capitalizes_for_display():
+    assert present("got it for 2026-06-30") == "Got it for 2026-06-30"
+    assert present("today: nothing") == "Today: Nothing"
+    # item id stays lowercase; the task after the colon is capitalized
+    assert present("on 2026-06-30:\na6: eat pizza, dance around") == (
+        "On 2026-06-30:\na6: Eat pizza, dance around"
+    )
+    # sentence starts and the pronoun "i"
+    assert present("i did not catch a task there. can you rephrase?") == (
+        "I did not catch a task there. Can you rephrase?"
+    )
+    assert present('to when should i move "x"?') == 'To when should I move "x"?'
+    # slash commands after a sentence end are left alone
+    assert present("send a task. /today lists what is open.") == (
+        "Send a task. /today lists what is open."
+    )
