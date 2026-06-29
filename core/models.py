@@ -64,3 +64,59 @@ class ActionLogEntry:
     after_json: str | None = None  # item snapshot after, null for hard delete
     inbound_message_id: str | None = None
     id: int | None = None
+
+
+# Actions: the model's proposal, parsed from forced JSON. The core validates and
+# reconciles these before anything touches the store. Capture and Unknown are
+# used from Phase 5; the rest come online in Phase 7.
+@dataclass
+class Capture:
+    task: str  # clean label
+    raw: str  # echo of the phrasing
+    due: str | None = None  # model's ISO guess; ignored for the value, cross-checked
+    time: str | None = None  # HH:MM
+    confidence: float = 1.0
+
+
+@dataclass
+class Complete:
+    target: str  # item id from the active list
+    confidence: float = 1.0
+
+
+@dataclass
+class Drop:
+    target: str
+    reason: str | None = None
+    confidence: float = 1.0
+
+
+@dataclass
+class Reschedule:
+    target: str
+    due: str | None = None  # model's ISO guess; re-resolved from raw
+    raw: str = ""  # phrasing to re-resolve the date from
+    confidence: float = 1.0
+
+
+@dataclass
+class Query:
+    kind: str  # today | date | all
+    date: str | None = None  # ISO, for kind=date
+
+
+@dataclass
+class Unknown:
+    note: str | None = None
+
+
+@dataclass
+class InterpreterContext:
+    """Everything the interpreter is given for one inbound message."""
+
+    message: str
+    today: str  # ISO date
+    now: str  # ISO datetime
+    timezone: str
+    active_items: list[dict]  # [{id, label, due_date}], the open items on deck
+    last_digest: list[dict]  # [{id, label}], exactly as last presented
