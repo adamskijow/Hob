@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: MIT
 """Composition root: wire adapters into the core and run the daemon.
 
-Phase 5: free text is routed through the interpreter, reconciled (dates resolved
-deterministically, ambiguity asked about), and applied as captures.
-MessageService is the edge orchestrator, unit-testable with an in-memory store,
-a fake clock, and a fake LLM.
+Phase 6: the morning digest is built (today's items plus undone rollovers),
+delivered by the scheduler, and persisted in presented order so later references
+resolve. MessageService records the chat id from every inbound message.
 """
 from __future__ import annotations
 
@@ -14,14 +13,17 @@ import signal
 import sys
 
 from config import Config, ConfigError
+from core.digest import render_digest, select_digest_items
 from core.interpreter import interpret
 from core.models import (
     SOURCE_CAPTURE,
     STATUS_OPEN,
+    Digest,
+    DigestItem,
     InterpreterContext,
     Item,
 )
-from core.planner import Mutation, Plan, reconcile
+from core.planner import Mutation, reconcile
 from core.ports import Clock, Llm, Store
 from adapters.clock import SystemClock
 from adapters.llm_ollama import OllamaLlm
@@ -30,6 +32,9 @@ from adapters.store_sqlite import SqliteStore
 from adapters.telegram_bot import InboundMessage, TelegramAdapter
 
 HELP = "send a task to capture it. /today lists what is open."
+
+# meta key for the single user's chat id, learned from inbound messages.
+CHAT_ID_KEY = "chat_id"
 
 
 class MessageService:
@@ -45,6 +50,8 @@ class MessageService:
         self._timezone = timezone
 
     def handle(self, msg: InboundMessage) -> str:
+        # Learn where to send the unsolicited morning digest.
+        self._store.set_meta(CHAT_ID_KEY, str(msg.chat_id))
         text = msg.text.strip()
         low = text.lower()
         if low in ("/start", "/help"):
@@ -118,17 +125,41 @@ class MessageService:
         return "\n".join(f"{i.id}: {i.task}" for i in items)
 
 
+class DigestService:
+    """Builds the morning digest, sends it, and records what was presented so
+    later references resolve. send is an async callable(chat_id, text).
+    """
+
+    def __init__(self, store: Store, clock: Clock, send) -> None:
+        self._store = store
+        self._clock = clock
+        self._send = send
+
+    async def fire(self) -> None:
+        today = self._clock.today().isoformat()
+        ordered = select_digest_items(self._store.open_items(), today)
+        text = render_digest(ordered, today)
+        digest = Digest(
+            sent_at=self._clock.now().isoformat(),
+            items=[DigestItem(id=i.id, label=i.task) for i in ordered],
+        )
+        chat = self._store.get_meta(CHAT_ID_KEY)
+        if chat is None:
+            logging.getLogger("hob.digest").info("no chat id yet; digest not sent")
+            return
+        # Send first; only record the digest once it is actually delivered, so a
+        # send failure retries cleanly without leaving orphan digest rows.
+        await self._send(int(chat), text)
+        self._store.save_digest(digest)
+
+
 async def _run_daemon(cfg: Config, store: SqliteStore) -> None:
     clock = SystemClock(cfg.timezone)
     llm = OllamaLlm(cfg.model, cfg.ollama_host)
     service = MessageService(store, clock, llm, cfg.timezone)
     telegram = TelegramAdapter(store, service.handle, token=cfg.telegram_token)
-
-    async def fire() -> None:
-        # Phase 3 placeholder; Phase 6 builds and sends the real digest.
-        logging.getLogger("hob.scheduler").info("would fire digest")
-
-    scheduler = DigestScheduler(clock, store, fire, cfg.wake_time)
+    digest = DigestService(store, clock, telegram.send)
+    scheduler = DigestScheduler(clock, store, digest.fire, cfg.wake_time)
 
     def stop_all() -> None:
         telegram.stop()

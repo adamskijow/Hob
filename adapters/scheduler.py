@@ -45,13 +45,21 @@ class DigestScheduler:
         self._stop.set()
 
     async def tick(self) -> bool:
-        """Check once; fire and mark today if the digest is owed."""
+        """Check once; fire and mark today if the digest is owed.
+
+        A failed fire (e.g. a transient send error) is logged and left unmarked,
+        so the next tick retries rather than skipping the day or crashing.
+        """
         last = self._store.get_meta(LAST_DIGEST_KEY)
         if not digest_owed(self._clock.now(), self._wake_time, last):
             return False
-        result = self._fire()
-        if inspect.isawaitable(result):
-            await result
+        try:
+            result = self._fire()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            log.exception("digest fire failed; will retry on next tick")
+            return False
         self._store.set_meta(LAST_DIGEST_KEY, self._clock.today().isoformat())
         return True
 
