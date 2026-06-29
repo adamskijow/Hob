@@ -16,8 +16,8 @@ from tests.fakes import FakeClock, FakeLlm
 TZ = ZoneInfo("America/New_York")
 
 
-def msg(text):
-    return InboundMessage(text=text, chat_id=1, message_id=1, update_id=1)
+def msg(text, message_id=1):
+    return InboundMessage(text=text, chat_id=1, message_id=message_id, update_id=message_id)
 
 
 def seed(store):
@@ -110,6 +110,44 @@ def test_eod_report_completes_multiple():
 
     assert store.get_item("a1").status == "done"
     assert store.get_item("a3").status == "done"
+
+
+def test_pending_clarification_resume():
+    # Turn 1 asks about an ambiguous date and persists the pending capture; turn 2
+    # answers it, and the prompt for turn 2 carries the pending context.
+    llm = FakeLlm(
+        [
+            {"actions": [{"type": "capture", "task": "lunch with sam",
+                          "raw": "lunch with sam thursday or friday"}]},
+            {"actions": [{"type": "capture", "task": "lunch with sam",
+                          "raw": "thursday"}]},
+        ]
+    )
+    store = SqliteStore(":memory:")  # unseeded, so the capture gets a clean id
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))  # Monday
+    svc = MessageService(store, clock, llm, "America/New_York")
+
+    out1 = svc.handle(msg("lunch with sam thursday or friday"))
+    assert "more than one date" in out1
+    assert store.get_meta("pending")  # persisted
+    assert not store.open_items()  # nothing captured yet
+
+    out2 = svc.handle(msg("oh yeah thursday", message_id=2))
+    assert "Pending question" in llm.calls[1][0]  # follow-up prompt carried it
+    lunch = store.open_items()
+    assert len(lunch) == 1 and lunch[0].task == "lunch with sam"
+    assert lunch[0].due_date == "2026-07-02"  # Thursday after Mon 2026-06-29
+    assert not store.get_meta("pending")  # cleared
+
+
+def test_bulk_drop_all_clears_the_list():
+    llm = FakeLlm({"actions": [{"type": "bulk", "op": "drop", "scope": "all"}]})
+    svc, store = service(llm)  # seeded a1, a2, a3, all open
+
+    out = svc.handle(msg("delete everything"))
+
+    assert store.open_items() == []
+    assert "dropped" in out
 
 
 def test_query_today_lists_items():

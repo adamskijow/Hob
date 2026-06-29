@@ -13,6 +13,7 @@ import json
 import logging
 import signal
 import sys
+from dataclasses import asdict
 
 from config import Config, ConfigError
 from core.digest import render_digest, select_digest_items
@@ -44,6 +45,10 @@ HELP = (
 
 # meta key for the single user's chat id, learned from inbound messages.
 CHAT_ID_KEY = "chat_id"
+# meta key holding the JSON of clarifications awaiting an answer (see core.planner
+# Pending). One inbound message replaces it: resolved -> cleared, still unclear ->
+# re-set.
+PENDING_KEY = "pending"
 
 
 def _dump(item: Item) -> str:
@@ -91,6 +96,7 @@ class MessageService:
         last_items = (
             [{"id": d.id, "label": d.label} for d in last.items] if last else []
         )
+        raw_pending = self._store.get_meta(PENDING_KEY)
         return InterpreterContext(
             message=text,
             today=self._clock.today().isoformat(),
@@ -98,6 +104,7 @@ class MessageService:
             timezone=self._timezone,
             active_items=active,
             last_digest=last_items,
+            pending=json.loads(raw_pending) if raw_pending else [],
         )
 
     def _interpret_and_apply(self, text: str, message_id: str) -> str:
@@ -106,6 +113,12 @@ class MessageService:
         plan = reconcile(actions, ctx)
         applied = self._apply(plan.mutations, message_id)
         answers = [self._answer_query(q) for q in plan.queries]
+        # Persist this turn's clarifications for the next message; "" clears any
+        # that were just resolved or superseded.
+        self._store.set_meta(
+            PENDING_KEY,
+            json.dumps([asdict(p) for p in plan.pending]) if plan.pending else "",
+        )
         return self._reply(applied, plan.questions, answers)
 
     def _apply(

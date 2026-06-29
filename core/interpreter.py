@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import date
 
 from core.models import (
+    Bulk,
     Capture,
     Complete,
     Drop,
@@ -76,6 +77,11 @@ ACTION_SCHEMA = {
                         {"kind": _STR, "date": _STR},
                         ["type", "kind"],
                     ),
+                    _variant(
+                        "bulk",
+                        {"op": _STR, "scope": _STR, "date": _STR, "confidence": _NUM},
+                        ["type", "op", "scope"],
+                    ),
                     _variant("unknown", {"note": _STR}, ["type"]),
                 ]
             },
@@ -97,7 +103,7 @@ Context:
 {active}
 - This morning's digest, in order (for position references):
 {digest}
-
+{pending}
 The user's message:
 {message}
 
@@ -115,14 +121,26 @@ target (item id), raw (the new date words copied verbatim, e.g. "Friday", \
 - query: the user is asking a question, not instructing. Fields: type "query", \
 kind ("today", "date", or "all"), date (ISO if one specific day is named, else \
 null).
+- bulk: finish or cancel MANY items at once with ONE action; never list them \
+individually. Fields: type "bulk", op ("complete" or "drop"), scope, date \
+(leave null; a separate program reads the day from the message), confidence. \
+Pick scope by what the user means:
+  - "all": every open item, including future-dated ones. Use for "everything", \
+"my whole list", "all my tasks", "delete it all".
+  - "today": only the items on deck today. Use for "everything today", "clear \
+today", "today's stuff".
+  - "date": one specific named day. Use for "all of friday", "monday's tasks".
 - unknown: you cannot tell what they want. Fields: type "unknown", note (short).
 
 Choosing the action:
 - A question (phrased as what/when/anything/how, or ending with "?") is a query, \
 never an edit. "what's on for tomorrow?" -> query.
 - Use complete, drop, or reschedule only when the user clearly states they \
-finished, cancelled, or moved an existing item: "did the prez", "drop the pool \
+finished, cancelled, or moved one existing item: "did the prez", "drop the pool \
 call", "push the audit to Friday". The instruction word is what licenses the edit.
+- When the user refers to many items, use one bulk action, never one per item. \
+"delete everything"/"clear my whole list" -> bulk drop, scope all. "did \
+everything today" -> bulk complete, scope today.
 - A message that just names a task, with no such instruction, is a NEW task: use \
 capture. "dentist next Friday" -> capture. "call the pool guy" -> capture, even \
 if a similar item already exists.
@@ -159,6 +177,36 @@ def _format_digest(items: list[dict]) -> str:
     )
 
 
+def _format_pending(pending: list[dict]) -> str:
+    """Render the clarifications Hob is waiting on, or "" if none. The model is
+    told to answer with the user's date words verbatim (the core resolves them),
+    or to ignore the pending question if the message is a new instruction."""
+    if not pending:
+        return ""
+    lines = []
+    for p in pending:
+        if p.get("kind") == "capture":
+            lines.append(
+                f'- you asked "{p["question"]}" for a new task "{p["task"]}". to '
+                f'answer, emit a capture with task "{p["task"]}" and raw set to the '
+                "user's date words copied exactly (e.g. \"thursday\"), even if still "
+                "ambiguous; never a date number."
+            )
+        else:
+            lines.append(
+                f'- you asked "{p["question"]}" about "{p["label"]}". to answer, '
+                f"emit a reschedule with target {p['target']} and raw set to the "
+                "user's date words copied exactly (e.g. \"friday\"), even if still "
+                "ambiguous; never a date number."
+            )
+    return (
+        "\nPending question (you asked this last turn and are waiting for the "
+        "answer):\n" + "\n".join(lines) + "\nIf the user's message answers a "
+        "pending question, emit that action now. If it is instead a new, "
+        "unrelated instruction, handle that and ignore the pending question.\n"
+    )
+
+
 def build_prompt(ctx: InterpreterContext) -> str:
     return _PROMPT.format(
         today=ctx.today,
@@ -167,6 +215,7 @@ def build_prompt(ctx: InterpreterContext) -> str:
         timezone=ctx.timezone,
         active=_format_active(ctx.active_items),
         digest=_format_digest(ctx.last_digest),
+        pending=_format_pending(ctx.pending),
         message=ctx.message,
     )
 
@@ -224,6 +273,16 @@ def _parse_one(action: object):
         )
     if kind == "query":
         return Query(kind=_str(action.get("kind")) or "today", date=_str(action.get("date")))
+    if kind == "bulk":
+        op = _str(action.get("op"))
+        if op not in ("complete", "drop"):
+            return Unknown(note="bulk without a valid op")
+        return Bulk(
+            op=op,
+            scope=_str(action.get("scope")) or "today",
+            date=_str(action.get("date")),
+            confidence=conf,
+        )
     if kind == "unknown":
         return Unknown(note=_str(action.get("note")))
     return Unknown(note=f"unhandled type {kind!r}")

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Planner reconciliation: model proposes, deterministic core decides."""
 from core.models import (
+    Bulk,
     Capture,
     Complete,
     Drop,
@@ -133,6 +134,84 @@ def test_reschedule_phrase_not_in_message_asks():
     plan = reconcile(
         [Reschedule(target="a3", raw="next Monday", confidence=0.9)],
         ctx(ACTIVE, message="what's on for tomorrow?"),
+    )
+    assert not plan.mutations
+    assert plan.questions
+
+
+# Pending clarifications -------------------------------------------------------
+
+
+def test_ambiguous_capture_sets_pending():
+    plan = reconcile([Capture(task="lunch with sam", raw="thursday or friday")], ctx())
+    assert not plan.mutations
+    assert len(plan.pending) == 1
+    assert plan.pending[0].kind == "capture"
+    assert plan.pending[0].task == "lunch with sam"
+
+
+def test_reschedule_unresolved_sets_pending():
+    plan = reconcile(
+        [Reschedule(target="a3", raw="later", confidence=0.9)],
+        ctx(ACTIVE, message="move the audit later"),
+    )
+    assert not plan.mutations
+    assert len(plan.pending) == 1
+    assert plan.pending[0].kind == "reschedule"
+    assert plan.pending[0].target == "a3"
+
+
+def test_reschedule_guard_fail_sets_no_pending():
+    # A hallucinated reschedule must not become resumable: a stray date next turn
+    # must not move this item.
+    plan = reconcile(
+        [Reschedule(target="a3", raw="next Monday", confidence=0.9)],
+        ctx(ACTIVE, message="what's on for tomorrow?"),
+    )
+    assert plan.questions
+    assert not plan.pending
+
+
+# Bulk actions ----------------------------------------------------------------
+
+
+def test_bulk_drop_all():
+    plan = reconcile([Bulk(op="drop", scope="all")], ctx(ACTIVE))
+    assert [m.kind for m in plan.mutations] == ["drop", "drop", "drop"]
+    assert {m.target for m in plan.mutations} == {"a1", "a2", "a3"}
+    assert not plan.questions
+
+
+def test_bulk_complete_today_excludes_future():
+    active = ACTIVE + [{"id": "a4", "label": "future thing", "due_date": "2026-07-15"}]
+    plan = reconcile([Bulk(op="complete", scope="today")], ctx(active))
+    # a1/a2 undated + a3 overdue are on deck today; a4 is future, excluded.
+    assert {m.target for m in plan.mutations} == {"a1", "a2", "a3"}
+    assert all(m.kind == "complete" for m in plan.mutations)
+
+
+def test_bulk_date_resolves_day_from_message():
+    active = [
+        {"id": "a3", "label": "review SR audit", "due_date": "2026-06-28"},
+        {"id": "a5", "label": "thing friday", "due_date": "2026-07-03"},
+    ]
+    plan = reconcile(
+        [Bulk(op="drop", scope="date")], ctx(active, message="drop all of friday")
+    )
+    assert {m.target for m in plan.mutations} == {"a5"}  # friday = 2026-07-03
+
+
+def test_bulk_date_ambiguous_asks():
+    plan = reconcile(
+        [Bulk(op="drop", scope="date")], ctx(ACTIVE, message="clear thursday or friday")
+    )
+    assert not plan.mutations
+    assert plan.questions
+
+
+def test_bulk_no_match_changes_nothing():
+    plan = reconcile(
+        [Bulk(op="drop", scope="date")], ctx(ACTIVE, message="clear out july 20")
     )
     assert not plan.mutations
     assert plan.questions

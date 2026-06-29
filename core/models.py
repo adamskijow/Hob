@@ -104,6 +104,17 @@ class Query:
 
 
 @dataclass
+class Bulk:
+    """Act on many items at once. The model picks op and scope; the planner
+    expands it deterministically over the matching open items."""
+
+    op: str  # complete | drop
+    scope: str  # today | all | date
+    date: str | None = None  # ISO, for scope=date; re-resolved by the core
+    confidence: float = 1.0
+
+
+@dataclass
 class Unknown:
     note: str | None = None
 
@@ -118,3 +129,6 @@ class InterpreterContext:
     timezone: str
     active_items: list[dict]  # [{id, label, due_date}], the open items on deck
     last_digest: list[dict]  # [{id, label}], exactly as last presented
+    # Clarifications from the previous turn, persisted so a short reply resolves
+    # against the question it answers. [{kind, question, task?/target?/label?}].
+    pending: list[dict] = field(default_factory=list)

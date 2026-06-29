@@ -27,6 +27,15 @@ being killed and restarted at any moment.
 Feature 4 is the reason Hob exists rather than a standard to-do app. The
 interpreter is the load-bearing component; everything else is plumbing.
 
+When a message is ambiguous (two possible dates, an unclear reference) Hob asks
+instead of guessing, and it remembers the question: your next message is read as
+the answer. So "lunch with sam thursday or friday" followed by "thursday"
+captures it for Thursday, rather than the reply being misread on its own. The
+context Hob keeps is deliberately small (the one open question), not a running
+chat transcript; the task list itself carries the rest. You can also act on many
+items at once in plain language ("did everything today", "clear my whole list",
+"drop all of friday").
+
 ## Commands
 
 - `/today` lists what is open.
@@ -112,13 +121,15 @@ config.py     env config + validation
 
 Two correctness rules the core never breaks:
 
-- **The model never does date math.** It proposes; a deterministic parser
-  (`dates.py`, over `dateparser`) decides. On ambiguity, a parser/model
-  disagreement, or a parser that finds nothing where a date was intended, Hob
-  asks rather than guesses.
+- **The model never does date math.** It proposes a date phrase, copied verbatim
+  from your words; a deterministic parser (`dates.py`, over `dateparser`)
+  resolves it. On ambiguity (more than one date in the phrase) or a phrase that
+  resolves to nothing where a date was meant, Hob asks rather than guesses.
 - **Fuzzy language never silently mutates state.** An unresolved reference or a
-  low-confidence guess produces a clarifying question, not an edit. The action
-  log plus `/undo` backs everything that does get applied.
+  low-confidence guess produces a clarifying question, not an edit, and Hob
+  remembers that question so your next message can answer it. A reschedule whose
+  date words are not actually in your message is treated as a misread and asked
+  about. The action log plus `/undo` backs everything that does get applied.
 
 ## Hearth integration
 

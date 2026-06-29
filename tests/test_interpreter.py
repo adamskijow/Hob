@@ -2,6 +2,7 @@
 """Interpreter: canned model JSON in, parsed Actions out, graceful on garbage."""
 from core.interpreter import build_prompt, interpret, parse_actions
 from core.models import (
+    Bulk,
     Capture,
     Complete,
     Drop,
@@ -96,6 +97,16 @@ def test_reference_action_without_target_is_unknown():
     assert isinstance(parse_actions({"actions": [{"type": "complete"}]})[0], Unknown)
 
 
+def test_parse_bulk():
+    res = parse_actions({"actions": [{"type": "bulk", "op": "drop", "scope": "all"}]})
+    assert isinstance(res[0], Bulk) and res[0].op == "drop" and res[0].scope == "all"
+
+
+def test_bulk_invalid_op_is_unknown():
+    res = parse_actions({"actions": [{"type": "bulk", "op": "frobnicate", "scope": "all"}]})
+    assert isinstance(res[0], Unknown)
+
+
 def test_prompt_includes_digest_positions():
     c = ctx()
     c.last_digest = [{"id": "a3", "label": "review audit"}, {"id": "a5", "label": "call pool"}]
@@ -112,3 +123,18 @@ def test_prompt_includes_weekday_and_active_list():
     prompt = build_prompt(ctx(active=[{"id": "a1", "label": "call pool", "due_date": "2026-07-01"}]))
     assert "Monday" in prompt  # 2026-06-29 is a Monday
     assert "a1: call pool" in prompt
+
+
+def test_prompt_includes_pending_clarification():
+    c = ctx()
+    c.pending = [
+        {"kind": "capture", "question": "when is lunch with sam due?",
+         "task": "lunch with sam"}
+    ]
+    prompt = build_prompt(c)
+    assert "Pending question" in prompt
+    assert "lunch with sam" in prompt
+
+
+def test_prompt_has_no_pending_section_when_empty():
+    assert "Pending question" not in build_prompt(ctx())
