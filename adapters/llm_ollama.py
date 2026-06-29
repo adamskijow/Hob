@@ -14,9 +14,11 @@ import ollama
 
 
 class OllamaLlm:
-    def __init__(self, model: str, host: str) -> None:
+    def __init__(self, model: str, host: str, timeout: float = 120.0) -> None:
         self._model = model
-        self._client = ollama.Client(host=host)
+        # A bounded timeout means a hung model raises rather than blocking
+        # forever; the core then degrades to Unknown and asks.
+        self._client = ollama.Client(host=host, timeout=timeout)
 
     def complete_json(self, prompt: str, schema: dict) -> dict:
         response = self._client.chat(

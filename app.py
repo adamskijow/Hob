@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
 """Composition root: wire adapters into the core and run the daemon.
 
-Phase 8: every applied batch is logged before/after to the action log, and /undo
-reverts the most recent batch by replaying those snapshots in reverse. One
-inbound message is one undoable batch.
+Every inbound message takes one path: interpret -> reconcile -> apply. Captures,
+EOD reports, corrections, and queries all flow through it. MessageService and
+DigestService are edge orchestrators, unit-testable with an in-memory store, a
+fake clock, and a fake LLM; the daemon wiring lives in _run_daemon.
 """
 from __future__ import annotations
 
@@ -72,7 +73,14 @@ class MessageService:
             return self._today()
         if low == "/undo":
             return self._undo()
-        return self._interpret_and_apply(text, str(msg.message_id))
+        message_id = str(msg.message_id)
+        # Idempotency backstop: if a crash redelivered this message after its
+        # mutations were already applied, do not apply or reply again. Normal
+        # restarts are covered by the persisted poll offset; this guards the
+        # narrow window between applying and advancing it.
+        if self._store.has_actions_for_message(message_id):
+            return ""
+        return self._interpret_and_apply(text, message_id)
 
     def _context(self, text: str) -> InterpreterContext:
         active = [

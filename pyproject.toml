@@ -13,6 +13,9 @@ authors = [{ name = "Joseph Adamski" }]
 # has a timezone database on Windows; on the macOS target the OS provides it,
 # so the marker keeps it off that environment entirely.
 dependencies = [
+    "dateparser>=1.4.1",
+    "ollama>=0.6.2",
+    "python-telegram-bot>=22.8",
     "tzdata; sys_platform == 'win32'",
 ]
 

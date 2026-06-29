@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 """MessageService integration: commands plus interpreter-routed capture."""
+import itertools
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -9,10 +10,13 @@ from adapters.telegram_bot import InboundMessage
 from tests.fakes import FakeClock, FakeLlm
 
 TZ = ZoneInfo("America/New_York")
+_ids = itertools.count(1)
 
 
 def msg(text):
-    return InboundMessage(text=text, chat_id=1, message_id=1, update_id=1)
+    # each call gets a fresh message id, as real Telegram messages do
+    mid = next(_ids)
+    return InboundMessage(text=text, chat_id=1, message_id=mid, update_id=mid)
 
 
 def capture_json(task, raw=None, due=None):
