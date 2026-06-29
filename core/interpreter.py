@@ -143,6 +143,10 @@ never an edit. "what's on for tomorrow?" -> query.
 - Use complete, drop, or reschedule only when the user clearly states they \
 finished, cancelled, or moved one existing item: "did the prez", "drop the pool \
 call", "push the audit to Friday". The instruction word is what licenses the edit.
+- Resembling an item already on deck is not enough to edit it. With no finish, \
+cancel, or move word, a message that states a task and a time is a new capture: \
+"review the SR audit before standup tomorrow" -> capture (even though an "SR \
+audit" item exists); only "push/move the SR audit to friday" is a reschedule.
 - When the user refers to many items, use one bulk action, never one per item. \
 "delete everything"/"clear my whole list" -> bulk drop, scope all. "did \
 everything today" -> bulk complete, scope today.
