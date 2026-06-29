@@ -312,6 +312,10 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
     )
+    # python-telegram-bot's httpx logs every getUpdates at INFO with the bot
+    # token in the URL. Quiet it so the token never lands in the log file.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     try:
         cfg = Config.from_env()
     except ConfigError as exc:
