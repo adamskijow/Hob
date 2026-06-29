@@ -1,7 +1,15 @@
 # SPDX-License-Identifier: MIT
 """Interpreter: canned model JSON in, parsed Actions out, graceful on garbage."""
 from core.interpreter import build_prompt, interpret, parse_actions
-from core.models import Capture, InterpreterContext, Unknown
+from core.models import (
+    Capture,
+    Complete,
+    Drop,
+    InterpreterContext,
+    Query,
+    Reschedule,
+    Unknown,
+)
 from tests.fakes import FakeLlm
 
 
@@ -62,9 +70,38 @@ def test_capture_uses_raw_when_task_missing():
     assert isinstance(res[0], Capture) and res[0].task == "call mom"
 
 
-def test_unhandled_type_is_unknown_in_phase5():
-    res = parse_actions({"actions": [{"type": "reschedule", "target": "a1"}]})
+def test_unhandled_type_is_unknown():
+    res = parse_actions({"actions": [{"type": "frobnicate", "target": "a1"}]})
     assert isinstance(res[0], Unknown)
+
+
+def test_parse_complete_drop_reschedule_query():
+    res = parse_actions(
+        {
+            "actions": [
+                {"type": "complete", "target": "a1", "confidence": 0.9},
+                {"type": "drop", "target": "a2", "reason": "not happening"},
+                {"type": "reschedule", "target": "a3", "raw": "to Friday", "due": "2026-07-03"},
+                {"type": "query", "kind": "date", "date": "2026-06-30"},
+            ]
+        }
+    )
+    assert isinstance(res[0], Complete) and res[0].target == "a1"
+    assert isinstance(res[1], Drop) and res[1].reason == "not happening"
+    assert isinstance(res[2], Reschedule) and res[2].raw == "to Friday"
+    assert isinstance(res[3], Query) and res[3].kind == "date"
+
+
+def test_reference_action_without_target_is_unknown():
+    assert isinstance(parse_actions({"actions": [{"type": "complete"}]})[0], Unknown)
+
+
+def test_prompt_includes_digest_positions():
+    c = ctx()
+    c.last_digest = [{"id": "a3", "label": "review audit"}, {"id": "a5", "label": "call pool"}]
+    prompt = build_prompt(c)
+    assert "1. a3: review audit" in prompt
+    assert "2. a5: call pool" in prompt
 
 
 def test_empty_actions_list_is_unknown():

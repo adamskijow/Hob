@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
 """Composition root: wire adapters into the core and run the daemon.
 
-Phase 6: the morning digest is built (today's items plus undone rollovers),
-delivered by the scheduler, and persisted in presented order so later references
-resolve. MessageService records the chat id from every inbound message.
+Phase 7: every inbound message (captures, EOD reports, corrections, queries)
+takes one path through the interpreter and planner. References resolve against
+the active list and the last digest; the planner asks rather than mutating on an
+unresolved reference or low confidence.
 """
 from __future__ import annotations
 
@@ -17,13 +18,15 @@ from core.digest import render_digest, select_digest_items
 from core.interpreter import interpret
 from core.models import (
     SOURCE_CAPTURE,
+    STATUS_DONE,
+    STATUS_DROPPED,
     STATUS_OPEN,
     Digest,
     DigestItem,
     InterpreterContext,
     Item,
 )
-from core.planner import Mutation, reconcile
+from core.planner import Mutation, QueryIntent, reconcile
 from core.ports import Clock, Llm, Store
 from adapters.clock import SystemClock
 from adapters.llm_ollama import OllamaLlm
@@ -83,13 +86,14 @@ class MessageService:
         actions = interpret(self._llm, ctx)
         plan = reconcile(actions, ctx)
         applied = self._apply(plan.mutations)
-        return self._reply(applied, plan.questions)
+        answers = [self._answer_query(q) for q in plan.queries]
+        return self._reply(applied, plan.questions, answers)
 
-    def _apply(self, mutations: list[Mutation]) -> list[Item]:
-        applied: list[Item] = []
+    def _apply(self, mutations: list[Mutation]) -> list[tuple[str, Item]]:
+        applied: list[tuple[str, Item]] = []
         for m in mutations:
+            now = self._clock.now().isoformat()
             if m.kind == "capture":
-                now = self._clock.now().isoformat()
                 item = Item(
                     id=self._store.next_item_id(),
                     raw_text=m.raw,
@@ -102,20 +106,57 @@ class MessageService:
                     updated_at=now,
                 )
                 self._store.add_item(item)
-                applied.append(item)
+                applied.append(("capture", item))
+                continue
+            item = self._store.get_item(m.target)
+            if item is None:
+                continue  # vanished between reconcile and apply; skip defensively
+            if m.kind == "complete":
+                item.status = STATUS_DONE
+            elif m.kind == "drop":
+                item.status = STATUS_DROPPED
+            elif m.kind == "reschedule":
+                item.due_date = m.due_date
+            item.updated_at = now
+            self._store.update_item(item)
+            applied.append((m.kind, item))
         return applied
 
-    def _reply(self, applied: list[Item], questions: list[str]) -> str:
+    def _answer_query(self, q: QueryIntent) -> str:
+        today = self._clock.today().isoformat()
+        if q.kind == "all":
+            items, title = self._store.open_items(), "all open:"
+        elif q.kind == "date":
+            items = [i for i in self._store.open_items() if i.due_date == q.date]
+            title = f"on {q.date}:"
+        else:
+            items = select_digest_items(self._store.open_items(), today)
+            title = "today:"
+        if not items:
+            return f"{title} nothing"
+        return title + "\n" + "\n".join(f"{i.id}: {i.task}" for i in items)
+
+    def _reply(
+        self, applied: list[tuple[str, Item]], questions: list[str], answers: list[str]
+    ) -> str:
         parts: list[str] = []
-        if len(applied) == 1:
-            item = applied[0]
+        captures = [it for kind, it in applied if kind == "capture"]
+        if len(captures) == 1:
             line = "got it"
-            if item.due_date:
-                line += f" for {item.due_date}"
+            if captures[0].due_date:
+                line += f" for {captures[0].due_date}"
             parts.append(line)
-        elif len(applied) > 1:
-            parts.append(f"got it ({len(applied)} items)")
+        elif len(captures) > 1:
+            parts.append(f"got it ({len(captures)} items)")
+        for kind, item in applied:
+            if kind == "complete":
+                parts.append(f"done: {item.task}")
+            elif kind == "drop":
+                parts.append(f"dropped: {item.task}")
+            elif kind == "reschedule":
+                parts.append(f"moved {item.task} to {item.due_date}")
         parts.extend(questions)
+        parts.extend(answers)
         return "\n".join(parts) if parts else "ok"
 
     def _today(self) -> str:
