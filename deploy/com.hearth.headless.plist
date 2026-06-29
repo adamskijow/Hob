@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Keep Ollama alive for Hob by running Hearth headless as a user LaunchAgent.
+     Requires Hearth installed (https://github.com/adamskijow/Hearth) and a Hearth
+     config. This supervises the model runner; it does not run Hob. Copy to
+     ~/Library/LaunchAgents/, edit the /Users/you paths, then:
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hearth.headless.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>            <string>com.hearth.headless</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Applications/Hearth.app/Contents/MacOS/Hearth</string>
+    <string>--headless</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HEARTH_CONFIG</key>
+    <string>/Users/you/Library/Application Support/Hearth/config.json</string>
+  </dict>
+  <key>RunAtLoad</key>        <true/>
+  <key>KeepAlive</key>        <true/>
+  <key>ProcessType</key>      <string>Background</string>
+  <key>StandardOutPath</key>  <string>/Users/you/Library/Logs/Hearth/headless.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/you/Library/Logs/Hearth/headless.err.log</string>
+</dict>
+</plist>

@@ -3,11 +3,12 @@
 
 Hob is a personal, single-user morning-digest agent that runs as a long-lived
 daemon on macOS. It is named for the ledge at the side of a hearth where a kettle
-is kept warm and ready. Hob is meant to be supervised by Hearth, a separate macOS
-supervisor daemon: Hearth keeps Hob alive, Hob keeps the day's small tasks warm
-until they are picked up. Hob does not supervise itself; Hearth (or `launchd`)
-starts it, restarts it on crash, and owns its lifecycle. Hob is built to survive
-being killed and restarted at any moment.
+is kept warm and ready. Hob does not supervise itself, and it is built to survive
+being killed and restarted at any moment. Two supervisors keep the setup alive:
+`launchd` keeps Hob running (restart on crash, resume on login), and
+[Hearth](https://github.com/adamskijow/Hearth), a separate macOS supervisor,
+keeps the local model runner (Ollama) that Hob depends on alive and serving. See
+[Deployment](#deployment-launchd-and-hearth).
 
 ## The loop
 
@@ -132,16 +133,26 @@ Two correctness rules the core never breaks:
   date words are not actually in your message is treated as a misread and asked
   about. The action log plus `/undo` backs everything that does get applied.
 
-## Hearth integration
+## Deployment (launchd and Hearth)
 
-Hob is one process started by a supervisor. The run command is:
+Hob has two supervisors: `launchd` keeps Hob alive, and
+[Hearth](https://github.com/adamskijow/Hearth) keeps the Ollama model runner Hob
+depends on alive (readiness checks, restart on crash or wedge, sleep prevention).
+Ready-to-edit `LaunchAgent` templates for both are in [`deploy/`](deploy/).
+
+Hob is one process started by `launchd`. The run command is:
 
 ```
 uv run --directory /path/to/hob python app.py
 ```
 
-Hearth (or `launchd`) should set the environment, run that command, and restart
-it on exit. A minimal `launchd` plist:
+`launchd` sets the environment, runs that command, and restarts it on exit. Copy
+[`deploy/com.local.hob.plist`](deploy/com.local.hob.plist) to
+`~/Library/LaunchAgents/`, edit the paths and fill `HOB_TELEGRAM_TOKEN`, then
+`chmod 600` it (it holds the token) and load it with
+`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.local.hob.plist`.
+That template expands the minimal plist below with `WorkingDirectory`, `PATH`,
+and `HOB_KEEP_ALIVE`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -176,19 +187,30 @@ it on exit. A minimal `launchd` plist:
 
 Keep the plist readable only by your user; it holds the bot token.
 
+Ollama is kept alive separately by Hearth. Install Hearth, then run it headless
+under `launchd` with
+[`deploy/com.hearth.headless.plist`](deploy/com.hearth.headless.plist) (it points
+at the Hearth app binary and your Hearth config). The menubar app also works, but
+the `LaunchAgent` survives logout and restarts on crash. Hob degrades gracefully
+when the model is briefly unreachable; Hearth keeps those windows short.
+
 **Logging.** Hob logs to stderr (and stdout). Under `launchd`, point
-`StandardErrorPath` at a file as above. Hob does not manage its own log files.
+`StandardErrorPath` at a file as above. The bot token is kept out of the log.
+Hob does not manage its own log files.
 
 **Restart behavior and recovery.** Hob is safe to kill at any moment.
 
 - Telegram polling resumes from the update offset saved in the database, so the
-  backlog is not reprocessed on restart.
+  backlog is not reprocessed on restart. A hard kill mid long-poll causes a brief
+  `Conflict` while Telegram releases the old connection; Hob backs off and
+  resumes, and queued messages are delivered, not lost.
 - If a crash redelivers a message whose changes were already applied, Hob
   recognizes it by its message id and does not apply or reply twice.
 - The morning digest fires once per day. macOS sleep does not eat it: an
   in-process timer cannot fire while asleep, so on startup and on every tick Hob
   checks the last sent date and fires the digest if today's is still owed and the
-  time is past wake time, then marks the day.
+  time is past wake time. The day is marked done only once the digest is actually
+  sent, so a digest owed before the chat is known is not lost.
 - Model timeouts or malformed output degrade to a clarifying question rather than
   a crash.
 
