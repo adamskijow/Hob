@@ -24,7 +24,14 @@ def test_defaults_applied():
     assert c.model == "qwen2.5:7b-instruct"
     assert c.wake_time == "07:00"
     assert c.db_path == "hob.db"
+    assert c.keep_alive == "-1"  # resident by default
     assert not c.telegram_enabled
+
+
+def test_keep_alive_override_and_validation():
+    assert Config.from_env({**BASE, "HOB_KEEP_ALIVE": "30m"}).keep_alive == "30m"
+    with pytest.raises(ConfigError):
+        Config.from_env({**BASE, "HOB_KEEP_ALIVE": "forever"})
 
 
 def test_missing_token_disables_telegram():

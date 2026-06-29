@@ -12,6 +12,9 @@ from dataclasses import dataclass
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _WAKE_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+# ollama keep_alive: "-1" (forever), seconds ("0", "300"), or a duration
+# ("30m", "2h", "90s").
+_KEEP_ALIVE_RE = re.compile(r"^-?\d+(\.\d+)?[smh]?$")
 
 
 class ConfigError(Exception):
@@ -26,6 +29,7 @@ class Config:
     timezone: str  # IANA tz key
     db_path: str
     ollama_host: str
+    keep_alive: str  # how long ollama keeps the model loaded; "-1" = resident
 
     @property
     def telegram_enabled(self) -> bool:
@@ -41,6 +45,7 @@ class Config:
             timezone=src.get("HOB_TIMEZONE", "UTC").strip(),
             db_path=src.get("HOB_DB_PATH", "hob.db").strip(),
             ollama_host=src.get("HOB_OLLAMA_HOST", "http://localhost:11434").strip(),
+            keep_alive=src.get("HOB_KEEP_ALIVE", "-1").strip(),
         )
         cfg.validate()
         return cfg
@@ -58,3 +63,8 @@ class Config:
             raise ConfigError("HOB_MODEL must not be empty")
         if not self.db_path:
             raise ConfigError("HOB_DB_PATH must not be empty")
+        if not _KEEP_ALIVE_RE.match(self.keep_alive):
+            raise ConfigError(
+                f"HOB_KEEP_ALIVE must be -1, seconds, or a duration like 30m, "
+                f"got {self.keep_alive!r}"
+            )

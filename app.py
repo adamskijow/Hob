@@ -284,7 +284,7 @@ class DigestService:
 
 async def _run_daemon(cfg: Config, store: SqliteStore) -> None:
     clock = SystemClock(cfg.timezone)
-    llm = OllamaLlm(cfg.model, cfg.ollama_host)
+    llm = OllamaLlm(cfg.model, cfg.ollama_host, keep_alive=cfg.keep_alive)
     service = MessageService(store, clock, llm, cfg.timezone)
     telegram = TelegramAdapter(store, service.handle, token=cfg.telegram_token)
     digest = DigestService(store, clock, telegram.send)

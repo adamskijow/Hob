@@ -16,9 +16,24 @@ import ollama
 log = logging.getLogger("hob.llm")
 
 
+def _parse_keep_alive(value: str):
+    """ollama wants a number (seconds; -1 = forever) or a duration string
+    ("30m"). A bare int string must go as an int, not "-1", which ollama would
+    try to read as a duration."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return value
+
+
 class OllamaLlm:
-    def __init__(self, model: str, host: str, timeout: float = 120.0) -> None:
+    def __init__(
+        self, model: str, host: str, timeout: float = 120.0, keep_alive: str = "-1"
+    ) -> None:
         self._model = model
+        # Keep the model resident by default so a quiet stretch does not cost a
+        # cold reload on the next message (free on a roomy machine).
+        self._keep_alive = _parse_keep_alive(keep_alive)
         # A bounded timeout means a hung model raises rather than blocking
         # forever; the core then degrades to Unknown and asks.
         self._client = ollama.Client(host=host, timeout=timeout)
@@ -30,6 +45,7 @@ class OllamaLlm:
                 messages=[{"role": "user", "content": prompt}],
                 format=schema,  # structured output: response conforms to the schema
                 options={"temperature": 0},  # deterministic
+                keep_alive=self._keep_alive,
             )
         except Exception:
             # Surface the outage in the log; the core still degrades gracefully.

@@ -87,6 +87,7 @@ All configuration is environment variables:
 | `HOB_TIMEZONE` | IANA timezone, e.g. `America/New_York` | `UTC` |
 | `HOB_DB_PATH` | SQLite file path | `hob.db` |
 | `HOB_OLLAMA_HOST` | Ollama endpoint | `http://localhost:11434` |
+| `HOB_KEEP_ALIVE` | How long Ollama keeps the model loaded: `-1` resident, seconds, or a duration like `30m` | `-1` |
 
 Wake time and timezone are validated at startup; a bad value exits with a clear
 message and a non-zero code.
