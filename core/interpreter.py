@@ -79,7 +79,8 @@ ACTION_SCHEMA = {
                     ),
                     _variant(
                         "query",
-                        {"kind": _STR, "date": _STR},
+                        {"kind": {"type": "string", "enum": ["today", "date", "all"]},
+                         "date": _STR},
                         ["type", "kind"],
                     ),
                     _variant(

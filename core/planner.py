@@ -97,8 +97,16 @@ def _check_target(target: str, confidence: float, active: dict, plan: Plan) -> s
     return target
 
 
-def _reconcile_capture(action: Capture, today: date, plan: Plan) -> None:
+def _reconcile_capture(
+    action: Capture, today: date, message_fallback: str | None, plan: Plan
+) -> None:
     resolution = dates.resolve(action.raw, today)
+    if resolution.date is None and not resolution.ambiguous and message_fallback:
+        # The model sometimes drops a leading date word ("Tomorrow ...") from
+        # raw. For a lone capture, recover the date from the whole message.
+        fallback = dates.resolve(message_fallback, today)
+        if fallback.ambiguous or fallback.date is not None:
+            resolution = fallback
 
     if resolution.ambiguous:
         question = (
@@ -201,25 +209,39 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
 
 
 def _reconcile_query(action: Query, today: date, ctx, plan: Plan) -> None:
-    kind = action.kind if action.kind in ("today", "date", "all") else "today"
-    if kind != "date":
-        plan.queries.append(QueryIntent(kind=kind))
-        return
-    # Never trust a model date; re-resolve the day from the message itself.
+    model_kind = action.kind if action.kind in ("today", "date", "all") else "today"
+    # The model is unreliable at classifying the kind ("tomorrow" came back as a
+    # bogus kind). Decide from the message: a specific non-today day named in the
+    # query is a date query for that day, whatever the model said.
     resolution = dates.resolve(ctx.message, today)
-    if resolution.ambiguous or resolution.date is None:
+    if resolution.ambiguous:
         plan.questions.append("which day did you mean?")
         return
-    plan.queries.append(QueryIntent(kind="date", date=resolution.date))
+    if resolution.date is not None:
+        # A specific day is named: today -> today query, otherwise a date query.
+        if resolution.date == today.isoformat():
+            plan.queries.append(QueryIntent(kind="today"))
+        else:
+            plan.queries.append(QueryIntent(kind="date", date=resolution.date))
+        return
+    if model_kind == "date":
+        # model wanted a specific day but the message names none
+        plan.questions.append("which day did you mean?")
+        return
+    plan.queries.append(QueryIntent(kind=model_kind))
 
 
 def reconcile(actions: list, ctx) -> Plan:
     today = date.fromisoformat(ctx.today)
     active = {i["id"]: i.get("label", "") for i in ctx.active_items}
     plan = Plan()
+    # A lone capture may recover a dropped date from the whole message; with
+    # several captures we keep each action's own raw so they stay distinct.
+    n_captures = sum(isinstance(a, Capture) for a in actions)
     for action in actions:
         if isinstance(action, Capture):
-            _reconcile_capture(action, today, plan)
+            fallback = ctx.message if n_captures == 1 else None
+            _reconcile_capture(action, today, fallback, plan)
         elif isinstance(action, Complete):
             target = _check_target(action.target, action.confidence, active, plan)
             if target is not None:

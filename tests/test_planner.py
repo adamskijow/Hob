@@ -238,6 +238,36 @@ def test_query_date_resolved_from_message_not_model():
     assert plan.queries[0].date == "2026-06-30"
 
 
+def test_query_named_day_overrides_model_kind():
+    # The model mislabeled a "tomorrow" query as today; the message decides.
+    plan = reconcile(
+        [Query(kind="today")], ctx(ACTIVE, message="what is my schedule for tomorrow again")
+    )
+    assert plan.queries[0].kind == "date"
+    assert plan.queries[0].date == "2026-06-30"
+
+
+def test_capture_recovers_dropped_date_from_message():
+    # The model dropped the leading "Tomorrow" from raw; a lone capture recovers
+    # the date from the whole message.
+    plan = reconcile(
+        [Capture(task="harass Jerry", raw="harass Jerry")],
+        ctx(message="Tomorrow I need to harass Jerry"),
+    )
+    assert plan.mutations[0].due_date == "2026-06-30"
+
+
+def test_multi_capture_does_not_borrow_message_date():
+    # With several captures the message fallback is off, so a date in the message
+    # is not misattributed to all of them.
+    plan = reconcile(
+        [Capture(task="call John", raw="call John"),
+         Capture(task="email Sue", raw="email Sue")],
+        ctx(message="call John and email Sue tomorrow"),
+    )
+    assert [m.due_date for m in plan.mutations] == [None, None]
+
+
 def test_multi_action_batch():
     actions = [
         Complete(target="a1", confidence=0.9),
