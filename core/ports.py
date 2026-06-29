@@ -49,10 +49,16 @@ class Store(Protocol):
     def update_item(self, item: Item) -> None:
         ...
 
+    def delete_item(self, item_id: str) -> None:
+        ...
+
     def open_items(self) -> list[Item]:
         ...
 
     # action log (append-only, powers /undo)
+    def next_batch_id(self) -> str:
+        ...
+
     def append_actions(self, entries: list[ActionLogEntry]) -> None:
         ...
 
@@ -60,6 +66,9 @@ class Store(Protocol):
         ...
 
     def mark_batch_undone(self, batch_id: str) -> None:
+        ...
+
+    def has_actions_for_message(self, inbound_message_id: str) -> bool:
         ...
 
     # digests (so references resolve against what was actually shown)

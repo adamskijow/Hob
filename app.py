@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: MIT
 """Composition root: wire adapters into the core and run the daemon.
 
-Phase 7: every inbound message (captures, EOD reports, corrections, queries)
-takes one path through the interpreter and planner. References resolve against
-the active list and the last digest; the planner asks rather than mutating on an
-unresolved reference or low confidence.
+Phase 8: every applied batch is logged before/after to the action log, and /undo
+reverts the most recent batch by replaying those snapshots in reverse. One
+inbound message is one undoable batch.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import signal
 import sys
@@ -21,6 +21,7 @@ from core.models import (
     STATUS_DONE,
     STATUS_DROPPED,
     STATUS_OPEN,
+    ActionLogEntry,
     Digest,
     DigestItem,
     InterpreterContext,
@@ -28,16 +29,24 @@ from core.models import (
 )
 from core.planner import Mutation, QueryIntent, reconcile
 from core.ports import Clock, Llm, Store
+from core.undo import plan_undo
 from adapters.clock import SystemClock
 from adapters.llm_ollama import OllamaLlm
 from adapters.scheduler import DigestScheduler
 from adapters.store_sqlite import SqliteStore
 from adapters.telegram_bot import InboundMessage, TelegramAdapter
 
-HELP = "send a task to capture it. /today lists what is open."
+HELP = (
+    "send a task to capture it. /today lists what is open. "
+    "/undo reverts your last change."
+)
 
 # meta key for the single user's chat id, learned from inbound messages.
 CHAT_ID_KEY = "chat_id"
+
+
+def _dump(item: Item) -> str:
+    return json.dumps(item.to_dict())
 
 
 class MessageService:
@@ -61,7 +70,9 @@ class MessageService:
             return HELP
         if low == "/today":
             return self._today()
-        return self._interpret_and_apply(text)
+        if low == "/undo":
+            return self._undo()
+        return self._interpret_and_apply(text, str(msg.message_id))
 
     def _context(self, text: str) -> InterpreterContext:
         active = [
@@ -81,18 +92,25 @@ class MessageService:
             last_digest=last_items,
         )
 
-    def _interpret_and_apply(self, text: str) -> str:
+    def _interpret_and_apply(self, text: str, message_id: str) -> str:
         ctx = self._context(text)
         actions = interpret(self._llm, ctx)
         plan = reconcile(actions, ctx)
-        applied = self._apply(plan.mutations)
+        applied = self._apply(plan.mutations, message_id)
         answers = [self._answer_query(q) for q in plan.queries]
         return self._reply(applied, plan.questions, answers)
 
-    def _apply(self, mutations: list[Mutation]) -> list[tuple[str, Item]]:
+    def _apply(
+        self, mutations: list[Mutation], message_id: str
+    ) -> list[tuple[str, Item]]:
+        if not mutations:
+            return []
+        # One inbound message is one batch; the actions undo together.
+        batch_id = self._store.next_batch_id()
+        ts = self._clock.now().isoformat()
         applied: list[tuple[str, Item]] = []
+        entries: list[ActionLogEntry] = []
         for m in mutations:
-            now = self._clock.now().isoformat()
             if m.kind == "capture":
                 item = Item(
                     id=self._store.next_item_id(),
@@ -102,25 +120,61 @@ class MessageService:
                     due_time=m.due_time,
                     status=STATUS_OPEN,
                     source=SOURCE_CAPTURE,
-                    created_at=now,
-                    updated_at=now,
+                    created_at=ts,
+                    updated_at=ts,
                 )
                 self._store.add_item(item)
+                entries.append(
+                    ActionLogEntry(
+                        batch_id=batch_id,
+                        ts=ts,
+                        action_type="capture",
+                        item_id=item.id,
+                        before_json=None,
+                        after_json=_dump(item),
+                        inbound_message_id=message_id,
+                    )
+                )
                 applied.append(("capture", item))
                 continue
             item = self._store.get_item(m.target)
             if item is None:
                 continue  # vanished between reconcile and apply; skip defensively
+            before = _dump(item)
             if m.kind == "complete":
                 item.status = STATUS_DONE
             elif m.kind == "drop":
                 item.status = STATUS_DROPPED
             elif m.kind == "reschedule":
                 item.due_date = m.due_date
-            item.updated_at = now
+            item.updated_at = ts
             self._store.update_item(item)
+            entries.append(
+                ActionLogEntry(
+                    batch_id=batch_id,
+                    ts=ts,
+                    action_type=m.kind,
+                    item_id=item.id,
+                    before_json=before,
+                    after_json=_dump(item),
+                    inbound_message_id=message_id,
+                )
+            )
             applied.append((m.kind, item))
+        self._store.append_actions(entries)
         return applied
+
+    def _undo(self) -> str:
+        batch = self._store.last_batch()
+        if not batch:
+            return "nothing to undo"
+        for op in plan_undo(batch):
+            if op.kind == "delete":
+                self._store.delete_item(op.item_id)
+            else:
+                self._store.update_item(op.item)
+        self._store.mark_batch_undone(batch[0].batch_id)
+        return f"undid {len(batch)} change(s)"
 
     def _answer_query(self, q: QueryIntent) -> str:
         today = self._clock.today().isoformat()

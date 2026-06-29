@@ -92,16 +92,20 @@ class SqliteStore:
             self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self._conn.commit()
 
-    # items -----------------------------------------------------------------
-    def next_item_id(self) -> str:
+    # counters --------------------------------------------------------------
+    def _next_seq(self, key: str) -> int:
         with self._lock:
             row = self._conn.execute(
-                "SELECT value FROM meta WHERE key = 'item_seq'"
+                "SELECT value FROM meta WHERE key = ?", (key,)
             ).fetchone()
             n = (int(row["value"]) if row else 0) + 1
-            self._set_meta_locked("item_seq", str(n))
+            self._set_meta_locked(key, str(n))
             self._conn.commit()
-            return f"a{n}"
+            return n
+
+    # items -----------------------------------------------------------------
+    def next_item_id(self) -> str:
+        return f"a{self._next_seq('item_seq')}"
 
     def add_item(self, item: Item) -> None:
         with self._lock:
@@ -146,6 +150,11 @@ class SqliteStore:
             )
             self._conn.commit()
 
+    def delete_item(self, item_id: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM items WHERE id = ?", (item_id,))
+            self._conn.commit()
+
     def open_items(self) -> list[Item]:
         rows = self._conn.execute(
             f"SELECT {_ITEM_COLS} FROM items WHERE status = ? "
@@ -155,6 +164,9 @@ class SqliteStore:
         return [self._row_to_item(r) for r in rows]
 
     # action log ------------------------------------------------------------
+    def next_batch_id(self) -> str:
+        return f"b{self._next_seq('batch_seq')}"
+
     def append_actions(self, entries: list[ActionLogEntry]) -> None:
         if not entries:
             return
@@ -195,6 +207,13 @@ class SqliteStore:
             undone.add(batch_id)
             self._set_meta_locked("undone_batches", json.dumps(sorted(undone)))
             self._conn.commit()
+
+    def has_actions_for_message(self, inbound_message_id: str) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM action_log WHERE inbound_message_id = ? LIMIT 1",
+            (inbound_message_id,),
+        ).fetchone()
+        return row is not None
 
     def _batch(self, batch_id: str) -> list[ActionLogEntry]:
         rows = self._conn.execute(
