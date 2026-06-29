@@ -238,11 +238,11 @@ class MessageService:
             parts.append(f"got it ({len(captures)} items)")
         for kind, item in applied:
             if kind == "complete":
-                parts.append(f"done: {item.task}")
+                parts.append(f'done: "{item.task}"')
             elif kind == "drop":
-                parts.append(f"dropped: {item.task}")
+                parts.append(f'dropped: "{item.task}"')
             elif kind == "reschedule":
-                parts.append(f"moved {item.task} to {item.due_date}")
+                parts.append(f'moved "{item.task}" to {item.due_date}')
         parts.extend(questions)
         parts.extend(answers)
         return "\n".join(parts) if parts else "ok"

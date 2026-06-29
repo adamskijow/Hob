@@ -86,6 +86,13 @@ def test_complete_valid_target():
     assert not plan.questions
 
 
+def test_target_matched_case_insensitively():
+    # The display shows ids uppercased (A1); typing that must still resolve.
+    plan = reconcile([Complete(target="A1", confidence=0.9)], ctx(ACTIVE))
+    assert plan.mutations[0].kind == "complete"
+    assert plan.mutations[0].target == "a1"  # stored id stays lowercase
+
+
 def test_unresolved_reference_asks_not_mutates():
     plan = reconcile([Complete(target="zz", confidence=0.9)], ctx(ACTIVE))
     assert not plan.mutations

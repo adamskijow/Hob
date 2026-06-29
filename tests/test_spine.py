@@ -67,9 +67,9 @@ def test_multi_action_correction_applies_all():
     assert store.get_item("a1").status == "done"
     assert store.get_item("a2").status == "dropped"
     assert store.get_item("a3").due_date == "2026-07-03"
-    assert "done: org prez" in out
-    assert "dropped: call the pool guy" in out
-    assert "moved review SR audit to 2026-07-03" in out
+    assert 'done: "org prez"' in out
+    assert 'dropped: "call the pool guy"' in out
+    assert 'moved "review SR audit" to 2026-07-03' in out
     # only the rescheduled item remains open
     assert [i.id for i in store.open_items()] == ["a3"]
 
@@ -91,7 +91,7 @@ def test_low_confidence_reference_asks():
 
     out = svc.handle(msg("maybe the prez"))
 
-    assert "did you mean: org prez" in out
+    assert 'did you mean: "org prez"' in out
     assert store.get_item("a1").status == "open"
 
 

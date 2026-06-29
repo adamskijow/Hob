@@ -86,15 +86,17 @@ class Plan:
 
 def _check_target(target: str, confidence: float, active: dict, plan: Plan) -> str | None:
     """Validate a reference. Queue a question and return None if it does not
-    resolve confidently; otherwise return the id."""
-    if target not in active:
+    resolve confidently; otherwise return the id. Matching is case-insensitive
+    because the display shows ids uppercased (A6) though they are stored lower."""
+    key = target.lower()
+    if key not in active:
         open_ids = ", ".join(active) if active else "none"
         plan.questions.append(f"i could not find that item. open: {open_ids}.")
         return None
     if confidence < CONFIDENCE_THRESHOLD:
-        plan.questions.append(f"did you mean: {active[target]}?")
+        plan.questions.append(f'did you mean: "{active[key]}"?')
         return None
-    return target
+    return key
 
 
 def _reconcile_capture(

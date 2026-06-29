@@ -97,15 +97,21 @@ def test_handler_returning_none_sends_nothing():
 def test_present_capitalizes_for_display():
     assert present("got it for 2026-06-30") == "Got it for 2026-06-30"
     assert present("today: nothing") == "Today: Nothing"
-    # item id stays lowercase; the task after the colon is capitalized
+    # item id uppercased (display only); task after the colon capitalized
     assert present("on 2026-06-30:\na6: eat pizza, dance around") == (
-        "On 2026-06-30:\na6: Eat pizza, dance around"
+        "On 2026-06-30:\nA6: Eat pizza, dance around"
+    )
+    assert present("open: a1, a2") == "Open: A1, A2"
+    # quoted task labels get their first letter capitalized
+    assert present('done: "review audit"') == 'Done: "Review audit"'
+    assert present('moved "review sr audit" to 2026-07-03') == (
+        'Moved "Review sr audit" to 2026-07-03'
     )
     # sentence starts and the pronoun "i"
     assert present("i did not catch a task there. can you rephrase?") == (
         "I did not catch a task there. Can you rephrase?"
     )
-    assert present('to when should i move "x"?') == 'To when should I move "x"?'
+    assert present('to when should i move "x"?') == 'To when should I move "X"?'
     # slash commands after a sentence end are left alone
     assert present("send a task. /today lists what is open.") == (
         "Send a task. /today lists what is open."

@@ -23,23 +23,27 @@ from core.ports import Store
 
 log = logging.getLogger("hob.telegram")
 
-# Presentation: the core keeps its terse lowercase voice; this capitalizes it for
-# display only (stored data and tested strings are untouched).
+# Presentation: the core keeps its terse lowercase voice; this dresses it up for
+# display only (stored data, including item ids, and the tested strings are
+# untouched).
+_ID = re.compile(r"\ba\d+\b")  # item id like "a6"; uppercased for legibility
 _CAP_AFTER = re.compile(r"([.?!:]\s+)([a-z])")  # after . ? ! : and a space
+_CAP_QUOTE = re.compile(r'(")([a-z])')  # first letter inside a quoted task label
 _CAP_START = re.compile(r"^(\s*)([a-z])")
-_ID_LINE = re.compile(r"^[a-z]+\d+:")  # an item id like "a6:" stays lowercase
 _LONE_I = re.compile(r"\bi\b")  # the pronoun
 
 
 def present(text: str) -> str:
-    """Capitalize Hob's output for display: the start of each line and sentence,
-    text after a colon, and the pronoun 'i'. A leading item id (a6:) is left
-    lowercase. Presentation only."""
+    """Dress Hob's output for display: uppercase item ids (A6), capitalize the
+    start of each line and sentence, text after a colon, the first letter inside
+    a quoted task label, and the pronoun 'i'. Presentation only; the stored ids
+    and data stay lowercase."""
     out = []
     for line in text.split("\n"):
+        line = _ID.sub(lambda m: m.group(0).upper(), line)
         line = _CAP_AFTER.sub(lambda m: m.group(1) + m.group(2).upper(), line)
-        if not _ID_LINE.match(line):
-            line = _CAP_START.sub(lambda m: m.group(1) + m.group(2).upper(), line)
+        line = _CAP_QUOTE.sub(lambda m: m.group(1) + m.group(2).upper(), line)
+        line = _CAP_START.sub(lambda m: m.group(1) + m.group(2).upper(), line)
         line = _LONE_I.sub("I", line)
         out.append(line)
     return "\n".join(out)
