@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MIT
+[project]
+name = "hob"
+version = "0.0.0"
+description = "Personal morning-digest agent that keeps the day's small tasks warm."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Joseph Adamski" }]
+
+# Runtime deps grow per phase. The named set: python-telegram-bot, dateparser,
+# ollama (or httpx), pytest. tzdata is a platform shim so the stdlib zoneinfo
+# has a timezone database on Windows; on the macOS target the OS provides it,
+# so the marker keeps it off that environment entirely.
+dependencies = [
+    "tzdata; sys_platform == 'win32'",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"
