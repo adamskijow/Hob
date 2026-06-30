@@ -136,9 +136,9 @@ target, reason (optional), confidence.
 - reschedule: move an EXISTING item to a new date. Fields: type "reschedule", \
 target (item id), raw (the new date words copied verbatim, e.g. "Friday", \
 "next Monday", "July 10"), confidence.
-- query: the user is asking a question, not instructing. Fields: type "query", \
-kind ("today", "date", or "all"), date (ISO if one specific day is named, else \
-null).
+- query: the user is asking about their own tasks or schedule (what is on, what \
+is open, what is on a given day). Fields: type "query", kind ("today", "date", \
+or "all"), date (ISO if one specific day is named, else null).
 - bulk: finish or cancel MANY items at once with ONE action; never list them \
 individually. Fields: type "bulk", op ("complete" or "drop"), scope, date \
 (leave null; a separate program reads the day from the message), confidence. \
@@ -158,8 +158,10 @@ Choosing the action:
 - If the user adds a detail to an existing item itself, use amend. If it is a \
 distinct new task that belongs with an existing event, use capture with relate. \
 Either is acceptable when unsure; both keep it tied to that item.
-- A question (phrased as what/when/anything/how, or ending with "?") is a query, \
-never an edit. "what's on for tomorrow?" -> query.
+- A question about the user's tasks or schedule is a query, never an edit \
+("what's on for tomorrow?"). A question that is not about their tasks (small \
+talk, general knowledge, "what's your favorite color?") is not actionable: \
+return a single unknown action.
 - Use complete, drop, or reschedule only when the user clearly states they \
 finished, cancelled, or moved one existing item: "did the prez", "drop the pool \
 call", "push the audit to Friday". The instruction word is what licenses the edit.
