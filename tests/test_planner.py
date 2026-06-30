@@ -187,8 +187,9 @@ def test_bulk_drop_across_days_confirms():
     # ACTIVE spans undated items + a dated one, so a delete-all is held for yes/no.
     plan = reconcile([Bulk(op="drop", scope="all")], ctx(ACTIVE))
     assert not plan.mutations
-    assert plan.confirm is not None and plan.confirm.op == "drop"
-    assert set(plan.confirm.ids) == {"a1", "a2", "a3"}
+    assert plan.confirm is not None
+    assert all(m.kind == "drop" for m in plan.confirm.mutations)
+    assert {m.target for m in plan.confirm.mutations} == {"a1", "a2", "a3"}
 
 
 def test_bulk_drop_single_day_applies_without_confirm():
@@ -281,6 +282,30 @@ def test_capture_recovers_dropped_date_from_message():
         ctx(message="Tomorrow I need to harass Jerry"),
     )
     assert plan.mutations[0].due_date == "2026-06-30"
+
+
+def test_capture_far_future_confirms():
+    # "in 200 years" is probably a typo or a joke: hold it for a yes/no.
+    plan = reconcile([Capture(task="take out the trash", raw="in 200 years")], ctx())
+    assert not plan.mutations
+    assert plan.confirm is not None
+    assert plan.confirm.mutations[0].kind == "capture"
+    assert "years out" in plan.confirm.question
+
+
+def test_capture_near_future_applies():
+    # A couple of years out is plausible; apply without confirming.
+    plan = reconcile([Capture(task="renew passport", raw="in 2 years")], ctx())
+    assert plan.mutations and plan.confirm is None
+
+
+def test_reschedule_far_future_confirms():
+    plan = reconcile(
+        [Reschedule(target="a3", raw="in 100 years", confidence=0.9)],
+        ctx(ACTIVE, message="push the audit in 100 years"),
+    )
+    assert not plan.mutations
+    assert plan.confirm is not None and plan.confirm.mutations[0].kind == "reschedule"
 
 
 def test_capture_relate_inherits_date():

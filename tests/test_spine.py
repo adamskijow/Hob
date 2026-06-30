@@ -185,6 +185,23 @@ def test_capture_relate_inherits_date_end_to_end():
     assert 'got it: "bring soda" for 2026-06-28' in out
 
 
+def test_far_future_capture_confirms_then_applies():
+    llm = FakeLlm(
+        {"actions": [{"type": "capture", "task": "take out the trash",
+                      "raw": "take out the trash in 200 years"}]}
+    )
+    svc, store = service(llm)
+
+    out = svc.handle(msg("in 200 years I need to take out the trash"))
+    assert "years out" in out and "yes" in out.lower()
+    assert not any(i.task == "take out the trash" for i in store.open_items())
+
+    out2 = svc.handle(msg("yes", message_id=2))
+    kept = [i for i in store.open_items() if i.task == "take out the trash"][0]
+    assert kept.due_date == "2226-06-29"  # confirmed, kept the far date
+    assert "got it" in out2.lower()
+
+
 def test_bulk_drop_across_days_confirms_then_applies():
     llm = FakeLlm({"actions": [{"type": "bulk", "op": "drop", "scope": "all"}]})
     svc, store = service(llm)  # seed spans undated items + a3 on 2026-06-28

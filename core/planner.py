@@ -40,6 +40,10 @@ from core.models import (
 # a guess and asked about rather than applied.
 CONFIDENCE_THRESHOLD = 0.5
 
+# A resolved date further out than this is probably a typo or a joke ("in 200
+# years"); confirm before applying rather than scheduling it silently.
+FAR_FUTURE_DAYS = 365 * 5
+
 _WORD = re.compile(r"\w+")
 
 
@@ -87,11 +91,11 @@ class Pending:
 
 @dataclass
 class ConfirmIntent:
-    """A destructive bulk held back for a yes/no. The edge persists it and applies
-    it only if the next message confirms."""
+    """Mutations held back for a yes/no. The edge persists them and applies them
+    only if the next message confirms. Used for a sweeping delete and for an
+    implausibly far-out date that is probably a typo."""
 
-    op: str  # complete | drop
-    ids: list[str] = field(default_factory=list)
+    mutations: list[Mutation] = field(default_factory=list)
     question: str = ""
 
 
@@ -102,6 +106,24 @@ class Plan:
     queries: list[QueryIntent] = field(default_factory=list)
     pending: list[Pending] = field(default_factory=list)
     confirm: ConfirmIntent | None = None
+
+
+def _too_far(due_iso: str, today: date) -> int | None:
+    """If a resolved date is implausibly far out, the rough number of years out;
+    otherwise None."""
+    try:
+        days = (date.fromisoformat(due_iso) - today).days
+    except (TypeError, ValueError):
+        return None
+    return round(days / 365) if days > FAR_FUTURE_DAYS else None
+
+
+def _hold(plan: Plan, mutation: Mutation, question: str) -> None:
+    """Stash a mutation for yes/no confirmation instead of applying it."""
+    if plan.confirm is None:
+        plan.confirm = ConfirmIntent()
+    plan.confirm.mutations.append(mutation)
+    plan.confirm.question = question
 
 
 def _check_target(target: str, confidence: float, active: dict, plan: Plan) -> str | None:
@@ -151,15 +173,18 @@ def _reconcile_capture(
         # date of its own inherits that item's date so it surfaces with it.
         due_date = active_due.get(action.relate.lower())
 
-    plan.mutations.append(
-        Mutation(
-            kind="capture",
-            task=action.task,
-            raw=action.raw,
-            due_date=due_date,
-            due_time=resolution.time,
-        )
+    mutation = Mutation(
+        kind="capture",
+        task=action.task,
+        raw=action.raw,
+        due_date=due_date,
+        due_time=resolution.time,
     )
+    years = _too_far(due_date, today) if due_date else None
+    if years is not None:
+        _hold(plan, mutation, f"that is {due_date}, about {years} years out. reply yes to keep it.")
+        return
+    plan.mutations.append(mutation)
 
 
 def _reconcile_amend(action: Amend, active: dict, plan: Plan) -> None:
@@ -204,9 +229,12 @@ def _reconcile_reschedule(
         )
         return
 
-    plan.mutations.append(
-        Mutation(kind="reschedule", target=target, due_date=resolution.date)
-    )
+    mutation = Mutation(kind="reschedule", target=target, due_date=resolution.date)
+    years = _too_far(resolution.date, today)
+    if years is not None:
+        _hold(plan, mutation, f'move "{label}" to {resolution.date}, about {years} years out. reply yes to keep it.')
+        return
+    plan.mutations.append(mutation)
 
 
 def _in_scope(item: dict, scope: str, today: str, target_date: str | None) -> bool:
@@ -250,8 +278,7 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
         days = {(i.get("due_date") or "undated") for i in matching}
         if len(days) > 1:
             plan.confirm = ConfirmIntent(
-                op="drop",
-                ids=ids,
+                mutations=[Mutation(kind="drop", target=i) for i in ids],
                 question=(
                     f"that deletes {len(ids)} items across {len(days)} days. "
                     "reply yes to confirm."

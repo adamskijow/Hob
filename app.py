@@ -154,14 +154,14 @@ class MessageService:
         if plan.confirm is not None:
             self._store.set_meta(
                 CONFIRM_KEY,
-                json.dumps({"op": plan.confirm.op, "ids": plan.confirm.ids}),
+                json.dumps([asdict(m) for m in plan.confirm.mutations]),
             )
             questions.append(plan.confirm.question)
         return self._reply(applied, questions, answers)
 
-    def _apply_confirmed(self, data: dict, message_id: str) -> str:
-        """Apply a bulk that was held back, now that the user has confirmed."""
-        mutations = [Mutation(kind=data["op"], target=tid) for tid in data.get("ids", [])]
+    def _apply_confirmed(self, data: list, message_id: str) -> str:
+        """Apply the mutations that were held back, now that the user confirmed."""
+        mutations = [Mutation(**d) for d in data]
         applied = self._apply(mutations, message_id)
         return self._reply(applied, [], [])
 
