@@ -241,6 +241,7 @@ class MessageService:
                 item.status = STATUS_DROPPED
             elif m.kind == "reschedule":
                 item.due_date = m.due_date
+                item.reminded = False  # re-arm the reminder for the new time
             elif m.kind == "amend":
                 item.task = m.task  # the model supplied the full new label
             item.updated_at = ts
@@ -368,13 +369,35 @@ class DigestService:
         return True
 
 
+class ReminderService:
+    """Pings the user when a timed item's due moment arrives, so "call at 3pm"
+    is not only surfaced in the morning digest. send is async(chat_id, text)."""
+
+    def __init__(self, store: Store, clock: Clock, send) -> None:
+        self._store = store
+        self._clock = clock
+        self._send = send
+
+    async def check(self) -> None:
+        chat = self._store.get_meta(CHAT_ID_KEY)
+        if chat is None:
+            return
+        now_iso = self._clock.now().strftime("%Y-%m-%dT%H:%M")
+        for item in self._store.due_reminders(now_iso):
+            await self._send(int(chat), f'reminder: "{item.task}"')
+            self._store.mark_reminded(item.id)
+
+
 async def _run_daemon(cfg: Config, store: SqliteStore) -> None:
     clock = SystemClock(cfg.timezone)
     llm = OllamaLlm(cfg.model, cfg.ollama_host, keep_alive=cfg.keep_alive)
     service = MessageService(store, clock, llm, cfg.timezone)
     telegram = TelegramAdapter(store, service.handle, token=cfg.telegram_token)
     digest = DigestService(store, clock, telegram.send)
-    scheduler = DigestScheduler(clock, store, digest.fire, cfg.wake_time)
+    reminder = ReminderService(store, clock, telegram.send)
+    scheduler = DigestScheduler(
+        clock, store, digest.fire, cfg.wake_time, remind=reminder.check
+    )
 
     def stop_all() -> None:
         telegram.stop()

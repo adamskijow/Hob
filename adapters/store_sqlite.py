@@ -20,7 +20,7 @@ from core.models import (
     Item,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS items (
@@ -60,7 +60,8 @@ CREATE TABLE IF NOT EXISTS meta (
 """
 
 _ITEM_COLS = (
-    "id, raw_text, task, due_date, due_time, status, source, created_at, updated_at"
+    "id, raw_text, task, due_date, due_time, status, source, created_at, "
+    "updated_at, reminded"
 )
 
 
@@ -87,10 +88,16 @@ class SqliteStore:
 
     def _migrate(self) -> None:
         version = self._conn.execute("PRAGMA user_version").fetchone()[0]
-        if version < SCHEMA_VERSION:
+        if version < 1:
             self._conn.executescript(_DDL)
-            self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-            self._conn.commit()
+            version = 1
+        if version < 2:
+            # intraday reminders: track whether a due-time ping has been sent.
+            self._conn.execute(
+                "ALTER TABLE items ADD COLUMN reminded INTEGER NOT NULL DEFAULT 0"
+            )
+        self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        self._conn.commit()
 
     # counters --------------------------------------------------------------
     def _next_seq(self, key: str) -> int:
@@ -110,7 +117,7 @@ class SqliteStore:
     def add_item(self, item: Item) -> None:
         with self._lock:
             self._conn.execute(
-                f"INSERT INTO items ({_ITEM_COLS}) VALUES (?,?,?,?,?,?,?,?,?)",
+                f"INSERT INTO items ({_ITEM_COLS}) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
                     item.id,
                     item.raw_text,
@@ -121,6 +128,7 @@ class SqliteStore:
                     item.source,
                     item.created_at,
                     item.updated_at,
+                    int(item.reminded),
                 ),
             )
             self._conn.commit()
@@ -135,7 +143,7 @@ class SqliteStore:
         with self._lock:
             self._conn.execute(
                 "UPDATE items SET raw_text=?, task=?, due_date=?, due_time=?, "
-                "status=?, source=?, created_at=?, updated_at=? WHERE id=?",
+                "status=?, source=?, created_at=?, updated_at=?, reminded=? WHERE id=?",
                 (
                     item.raw_text,
                     item.task,
@@ -145,6 +153,7 @@ class SqliteStore:
                     item.source,
                     item.created_at,
                     item.updated_at,
+                    int(item.reminded),
                     item.id,
                 ),
             )
@@ -162,6 +171,25 @@ class SqliteStore:
             (STATUS_OPEN,),
         ).fetchall()
         return [self._row_to_item(r) for r in rows]
+
+    def due_reminders(self, now_iso: str) -> list[Item]:
+        """Open, timed items whose due moment has arrived and not yet reminded.
+        now_iso is 'YYYY-MM-DDTHH:MM'; due is compared as the same ISO string."""
+        rows = self._conn.execute(
+            f"SELECT {_ITEM_COLS} FROM items WHERE status = ? "
+            "AND due_date IS NOT NULL AND due_time IS NOT NULL "
+            "AND (due_date || 'T' || due_time) <= ? AND reminded = 0 "
+            "ORDER BY due_date, due_time",
+            (STATUS_OPEN, now_iso),
+        ).fetchall()
+        return [self._row_to_item(r) for r in rows]
+
+    def mark_reminded(self, item_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE items SET reminded = 1 WHERE id = ?", (item_id,)
+            )
+            self._conn.commit()
 
     # action log ------------------------------------------------------------
     def next_batch_id(self) -> str:
@@ -279,6 +307,7 @@ class SqliteStore:
             source=row["source"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            reminded=bool(row["reminded"]),
         )
 
     @staticmethod

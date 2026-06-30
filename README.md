@@ -37,6 +37,10 @@ chat transcript; the task list itself carries the rest. You can also act on many
 items at once in plain language ("did everything today", "clear my whole list",
 "drop all of friday").
 
+A task with a time ("call the vet at 3pm") also gets a one-off reminder ping at
+that moment, not just a line in the morning digest. Rescheduling it re-arms the
+reminder for the new time.
+
 ## Commands
 
 - `/today` lists what is open.

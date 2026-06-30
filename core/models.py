@@ -29,6 +29,7 @@ class Item:
     source: str  # SOURCE_*
     created_at: str  # ISO datetime
     updated_at: str  # ISO datetime
+    reminded: bool = False  # an intraday reminder for its due time was sent
 
     def to_dict(self) -> dict:
         return asdict(self)

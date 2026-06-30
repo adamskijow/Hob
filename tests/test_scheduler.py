@@ -78,6 +78,22 @@ def test_fire_returning_false_does_not_mark_the_day():
     assert len(calls) == 2
 
 
+def test_remind_callback_invoked_and_isolated():
+    store = SqliteStore(":memory:")
+    fired = []
+    sched = DigestScheduler(
+        FakeClock(at(7, 0)), store, lambda: None, "07:00", remind=lambda: fired.append(1)
+    )
+    asyncio.run(sched._check_reminders())
+    assert fired == [1]
+
+    # a failing reminder must not raise (it would otherwise break the loop)
+    boom = DigestScheduler(
+        FakeClock(at(7, 0)), store, lambda: None, "07:00", remind=lambda: 1 / 0
+    )
+    asyncio.run(boom._check_reminders())  # no exception
+
+
 def test_async_fire_callback_awaited():
     store = SqliteStore(":memory:")
     fired = []

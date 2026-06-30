@@ -33,16 +33,30 @@ class DigestScheduler:
         fire,
         wake_time: str,
         poll_interval: float = 60.0,
+        remind=None,
     ) -> None:
         self._clock = clock
         self._store = store
         self._fire = fire  # callable, sync or async, no args
         self._wake_time = wake_time
         self._poll_interval = poll_interval
+        self._remind = remind  # optional callable, checked every tick
         self._stop = asyncio.Event()
 
     def stop(self) -> None:
         self._stop.set()
+
+    async def _check_reminders(self) -> None:
+        """Fire due intraday reminders. Isolated so a failure does not affect the
+        digest tick."""
+        if self._remind is None:
+            return
+        try:
+            result = self._remind()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            log.exception("reminder check failed; will retry next tick")
 
     async def tick(self) -> bool:
         """Check once; fire and mark today if the digest is owed.
@@ -70,6 +84,7 @@ class DigestScheduler:
     async def run(self) -> None:
         log.info("scheduler: wake_time=%s poll=%ss", self._wake_time, self._poll_interval)
         while not self._stop.is_set():
+            await self._check_reminders()
             await self.tick()
             try:
                 # Sleep, but wake immediately on stop. Re-checking every poll
