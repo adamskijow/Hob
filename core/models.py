@@ -30,6 +30,7 @@ class Item:
     created_at: str  # ISO datetime
     updated_at: str  # ISO datetime
     reminded: bool = False  # an intraday reminder for its due time was sent
+    repeat: str | None = None  # recurrence rule (core.recurrence); None = one-off
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -76,6 +77,7 @@ class Capture:
     raw: str  # echo of the phrasing; the core resolves the date from this
     time: str | None = None  # HH:MM
     relate: str | None = None  # id of an existing item to inherit a date from
+    repeat: str | None = None  # recurrence rule, e.g. "daily" or "weekly:mon"
     confidence: float = 1.0
 
 

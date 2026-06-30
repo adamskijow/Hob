@@ -161,6 +161,27 @@ def test_model_unreachable_says_so_and_preserves_pending():
     assert store.get_meta("pending")  # an outage must not clear a pending question
 
 
+def test_recurring_complete_advances_instead_of_closing():
+    store = SqliteStore(":memory:")
+    store.add_item(
+        Item(id="a1", raw_text="water plants", task="water plants",
+             due_date="2026-06-29", due_time=None, status="open", source="capture",
+             created_at="2026-06-29T08:00:00", updated_at="2026-06-29T08:00:00",
+             repeat="daily")
+    )
+    store.set_meta("item_seq", "1")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))  # Monday
+    llm = FakeLlm({"actions": [{"type": "complete", "target": "1"}]})
+    svc = MessageService(store, clock, llm, "America/New_York")
+
+    out = svc.handle(msg("did the first one"))
+
+    item = store.get_item("a1")
+    assert item.status == "open"  # recurring: not closed
+    assert item.due_date == "2026-06-30"  # advanced to the next day
+    assert "next 2026-06-30" in out
+
+
 def test_amend_edits_item_text():
     llm = FakeLlm({"actions": [{"type": "amend", "target": "a1", "task": "prep the Q3 deck"}]})
     svc, store = service(llm)

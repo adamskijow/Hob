@@ -310,6 +310,30 @@ def test_capture_recovers_dropped_date_from_message():
     assert plan.mutations[0].due_date == "2026-06-30"
 
 
+def test_capture_recurring_daily():
+    plan = reconcile(
+        [Capture(task="water plants", raw="water plants daily", repeat="daily")], ctx()
+    )
+    assert plan.mutations[0].repeat == "daily"
+    assert plan.mutations[0].due_date == "2026-06-29"  # today
+
+
+def test_capture_recurring_weekly_next_occurrence():
+    plan = reconcile(
+        [Capture(task="trash", raw="trash every wednesday", repeat="weekly:wednesday")],
+        ctx(),
+    )
+    assert plan.mutations[0].repeat == "weekly:wed"
+    assert plan.mutations[0].due_date == "2026-07-01"  # next Wed after Mon 06-29
+
+
+def test_capture_unsupported_repeat_is_one_off():
+    plan = reconcile(
+        [Capture(task="rent", raw="rent monthly", repeat="monthly")], ctx()
+    )
+    assert plan.mutations[0].repeat is None
+
+
 def test_capture_far_future_confirms():
     # "in 200 years" is probably a typo or a joke: hold it for a yes/no.
     plan = reconcile([Capture(task="take out the trash", raw="in 200 years")], ctx())

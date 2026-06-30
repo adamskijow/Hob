@@ -61,7 +61,7 @@ ACTION_SCHEMA = {
                     _variant(
                         "capture",
                         {"task": _STR, "raw": _STR, "time": _STR, "relate": _STR,
-                         "confidence": _NUM},
+                         "repeat": _STR, "confidence": _NUM},
                         ["type", "raw"],
                     ),
                     _variant(
@@ -122,9 +122,9 @@ The user's message:
 
 Return a JSON object {{"actions": [ ... ]}}. Each action is one of:
 - capture: a NEW task to remember. Fields: type "capture", task (clean \
-imperative label with no date words), raw (echo the user's words for this task, \
-keeping any date and time words), time (HH:MM or null), relate (see below, else \
-null), confidence (0 to 1).
+imperative label with no date or repeat words), raw (echo the user's words for \
+this task, keeping any date and time words), time (HH:MM or null), relate (see \
+below, else null), repeat (see below, else null), confidence (0 to 1).
 - amend: change the TEXT of an EXISTING item (add a detail to it, or reword it). \
 Fields: type "amend", target (item id), task (the item's full new label, keeping \
 what is still true), confidence. Use when the user changes what an existing item \
@@ -153,6 +153,11 @@ today", "today's stuff".
 relate: if a NEW captured task is FOR or PART OF an existing open item (e.g. \
 "bring soda" for an existing birthday), set relate to that item's id so the new \
 task inherits that item's date. Otherwise leave relate null.
+
+repeat: if the task recurs, set repeat to "daily", "weekdays", or "weekly:<day>" \
+(e.g. "weekly:monday"). "take out the trash every monday" -> weekly:monday; \
+"water the plants daily" -> daily. A one-off date like "next friday" is NOT a \
+repeat; leave repeat null.
 
 Choosing the action:
 - If the user adds a detail to an existing item itself, use amend. If it is a \
@@ -280,6 +285,7 @@ def _parse_one(action: object):
             raw=raw or task,
             time=_str(action.get("time")),
             relate=_str(action.get("relate")),
+            repeat=_str(action.get("repeat")),
             confidence=conf,
         )
     if kind == "amend":

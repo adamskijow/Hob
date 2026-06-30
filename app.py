@@ -17,6 +17,7 @@ from dataclasses import asdict
 from datetime import date
 
 from config import Config, ConfigError
+from core import recurrence
 from core.digest import ordered_open, render_digest, select_digest_items
 from core.interpreter import MODEL_UNREACHABLE, interpret
 from core.models import (
@@ -216,6 +217,7 @@ class MessageService:
                     source=SOURCE_CAPTURE,
                     created_at=ts,
                     updated_at=ts,
+                    repeat=m.repeat,
                 )
                 self._store.add_item(item)
                 entries.append(
@@ -236,7 +238,20 @@ class MessageService:
                 continue  # vanished between reconcile and apply; skip defensively
             before = _dump(item)
             if m.kind == "complete":
-                item.status = STATUS_DONE
+                if item.repeat:
+                    # A recurring task advances to its next occurrence rather
+                    # than closing, so it reappears on the following matching day.
+                    base = self._clock.today()
+                    if item.due_date:
+                        base = max(base, date.fromisoformat(item.due_date))
+                    nxt = recurrence.next_due(item.repeat, base, inclusive=False)
+                    if nxt is not None:
+                        item.due_date = nxt.isoformat()
+                        item.reminded = False
+                    else:
+                        item.status = STATUS_DONE
+                else:
+                    item.status = STATUS_DONE
             elif m.kind == "drop":
                 item.status = STATUS_DROPPED
             elif m.kind == "reschedule":
@@ -303,7 +318,9 @@ class MessageService:
 
         def _cap_line(it: Item) -> str:
             line = f'"{it.task}"'
-            if it.due_date:
+            if it.repeat:
+                line += f" ({recurrence.describe(it.repeat)})"
+            elif it.due_date:
                 line += _when(it.due_date)
             if it.due_time:
                 line += f" at {it.due_time}"
@@ -317,7 +334,12 @@ class MessageService:
             parts.extend(_cap_line(c) for c in captures)
         for kind, item in applied:
             if kind == "complete":
-                parts.append(f'done: "{item.task}"')
+                if item.repeat:  # advanced, not closed: show its next occurrence
+                    rel = _relative(item.due_date, today)
+                    nxt = item.due_date + (f", {rel}" if rel else "")
+                    parts.append(f'done: "{item.task}" (next {nxt})')
+                else:
+                    parts.append(f'done: "{item.task}"')
             elif kind == "drop":
                 parts.append(f'dropped: "{item.task}"')
             elif kind == "reschedule":

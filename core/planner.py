@@ -24,7 +24,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date
 
-from core import dates
+from core import dates, recurrence
 from core.models import (
     Amend,
     Bulk,
@@ -67,6 +67,7 @@ class Mutation:
     due_time: str | None = None
     target: str | None = None
     reason: str | None = None
+    repeat: str | None = None  # recurrence rule for a capture
 
 
 @dataclass
@@ -196,12 +197,20 @@ def _reconcile_capture(
         rid = _resolve_ref(action.relate, active_due, by_pos)
         due_date = active_due.get(rid) if rid else None
 
+    repeat = recurrence.normalize(action.repeat)
+    if repeat is not None:
+        # A recurring task's date is its next occurrence, decided by the rule.
+        first = recurrence.next_due(repeat, today, inclusive=True)
+        if first is not None:
+            due_date = first.isoformat()
+
     mutation = Mutation(
         kind="capture",
         task=action.task,
         raw=action.raw,
         due_date=due_date,
         due_time=resolution.time,
+        repeat=repeat,
     )
     years = _too_far(due_date, today) if due_date else None
     if years is not None:

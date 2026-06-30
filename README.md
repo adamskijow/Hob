@@ -41,6 +41,10 @@ A task with a time ("call the vet at 3pm") also gets a one-off reminder ping at
 that moment, not just a line in the morning digest. Rescheduling it re-arms the
 reminder for the new time.
 
+A recurring task ("take out the trash every monday", "water the plants daily",
+"standup every weekday") reappears each occurrence: completing it advances to the
+next one and stays on the list rather than closing. Dropping it ends the series.
+
 ## Commands
 
 - `/today` lists what is open.

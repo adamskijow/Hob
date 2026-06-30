@@ -20,7 +20,7 @@ from core.models import (
     Item,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS items (
@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS meta (
 
 _ITEM_COLS = (
     "id, raw_text, task, due_date, due_time, status, source, created_at, "
-    "updated_at, reminded"
+    "updated_at, reminded, repeat"
 )
 
 
@@ -96,6 +96,9 @@ class SqliteStore:
             self._conn.execute(
                 "ALTER TABLE items ADD COLUMN reminded INTEGER NOT NULL DEFAULT 0"
             )
+        if version < 3:
+            # recurring tasks: the repeat rule (NULL = one-off).
+            self._conn.execute("ALTER TABLE items ADD COLUMN repeat TEXT")
         self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self._conn.commit()
 
@@ -117,7 +120,7 @@ class SqliteStore:
     def add_item(self, item: Item) -> None:
         with self._lock:
             self._conn.execute(
-                f"INSERT INTO items ({_ITEM_COLS}) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                f"INSERT INTO items ({_ITEM_COLS}) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     item.id,
                     item.raw_text,
@@ -129,6 +132,7 @@ class SqliteStore:
                     item.created_at,
                     item.updated_at,
                     int(item.reminded),
+                    item.repeat,
                 ),
             )
             self._conn.commit()
@@ -143,7 +147,8 @@ class SqliteStore:
         with self._lock:
             self._conn.execute(
                 "UPDATE items SET raw_text=?, task=?, due_date=?, due_time=?, "
-                "status=?, source=?, created_at=?, updated_at=?, reminded=? WHERE id=?",
+                "status=?, source=?, created_at=?, updated_at=?, reminded=?, "
+                "repeat=? WHERE id=?",
                 (
                     item.raw_text,
                     item.task,
@@ -154,6 +159,7 @@ class SqliteStore:
                     item.created_at,
                     item.updated_at,
                     int(item.reminded),
+                    item.repeat,
                     item.id,
                 ),
             )
@@ -308,6 +314,7 @@ class SqliteStore:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             reminded=bool(row["reminded"]),
+            repeat=row["repeat"],
         )
 
     @staticmethod
