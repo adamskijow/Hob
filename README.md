@@ -112,7 +112,9 @@ ollama pull qwen2.5:7b-instruct
 
 Any JSON-capable 7-8B instruct model works (a current Llama or Qwen instruct
 build). Set the name with `HOB_MODEL`. Hob uses Ollama's structured-output mode,
-so the model is forced to return valid JSON.
+so the model is forced to return valid JSON. A larger model (e.g.
+`qwen2.5:14b-instruct`) handles dense, multi-task messages more reliably if you
+have the headroom; the eval runs against it by default.
 
 ### Configuration
 
@@ -129,7 +131,9 @@ All configuration is environment variables:
 | `HOB_KEEP_ALIVE` | How long Ollama keeps the model loaded: `-1` resident, seconds, or a duration like `30m` | `-1` |
 
 Wake time and timezone are validated at startup; a bad value exits with a clear
-message and a non-zero code.
+message and a non-zero code. The wake time can also be set in chat ("send the
+morning digest at 8"); that is stored and overrides `HOB_WAKE_TIME` from then on,
+no restart needed.
 
 ## Architecture
 
@@ -148,6 +152,7 @@ core/         pure, zero I/O, fully tested, time injected
   dates.py        deterministic date resolution + ambiguity detection
   planner.py      Actions + context -> concrete mutations (no I/O)
   digest.py       owed-decision, digest selection + rollover, rendering
+  recurrence.py   recurring-rule parsing + next-occurrence math
   undo.py         action-log replay / revert (operates on snapshots)
 adapters/     all I/O lives here
   store_sqlite.py SQLite Store
