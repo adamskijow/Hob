@@ -9,6 +9,7 @@ from core.models import (
     InterpreterContext,
     Query,
     Reschedule,
+    Undo,
     Unknown,
 )
 from core.planner import reconcile
@@ -275,6 +276,44 @@ def test_low_confidence_bulk_confirms_not_applies():
     plan = reconcile([Bulk(op="drop", scope="all", confidence=0.2)], ctx(ACTIVE))
     assert not plan.mutations
     assert plan.questions and "confirm" in plan.questions[0]
+
+
+def test_bulk_reschedule_moves_matching():
+    plan = reconcile(
+        [Bulk(op="reschedule", scope="all", raw="wednesday")],
+        ctx(ACTIVE, message="push everything to wednesday"),
+    )
+    assert {m.target for m in plan.mutations} == {"a1", "a2", "a3"}
+    assert all(m.kind == "reschedule" and m.due_date == "2026-07-01" for m in plan.mutations)
+
+
+def test_bulk_reschedule_unresolved_asks():
+    plan = reconcile(
+        [Bulk(op="reschedule", scope="all", raw="later")],
+        ctx(ACTIVE, message="push everything later"),
+    )
+    assert not plan.mutations and plan.questions
+
+
+def test_query_overdue_and_week():
+    assert reconcile([Query(kind="overdue")], ctx(ACTIVE)).queries[0].kind == "overdue"
+    assert reconcile([Query(kind="week")], ctx(ACTIVE)).queries[0].kind == "week"
+
+
+def test_query_search_from_term():
+    plan = reconcile([Query(kind="all", term="pool")], ctx(ACTIVE, message="anything about pool"))
+    assert plan.queries[0].kind == "search" and plan.queries[0].term == "pool"
+
+
+def test_query_done_period():
+    today = reconcile([Query(kind="done")], ctx(ACTIVE, message="what did i finish today"))
+    assert today.queries[0].kind == "done" and today.queries[0].date == "2026-06-29"
+    week = reconcile([Query(kind="done")], ctx(ACTIVE, message="what did i do this week"))
+    assert week.queries[0].date == "2026-06-23"  # today - 6 days
+
+
+def test_undo_action_sets_flag():
+    assert reconcile([Undo()], ctx()).undo is True
 
 
 def test_query_today_and_all():

@@ -102,6 +102,23 @@ CASES = [
     Case("what's your favorite color?",
          lambda p: not p.mutations and not p.queries,
          "chit-chat is not a query"),
+    Case("push everything to tomorrow",
+         lambda p: len(p.mutations) >= 1
+         and all(m.kind == "reschedule" and m.due_date == "2026-06-30" for m in p.mutations),
+         "bulk reschedule to tomorrow"),
+    Case("what's overdue",
+         lambda p: [q.kind for q in p.queries] == ["overdue"],
+         "overdue query"),
+    Case("anything about the audit",
+         lambda p: p.queries and p.queries[0].kind == "search"
+         and "audit" in (p.queries[0].term or "").lower(),
+         "free-text search query"),
+    Case("what did I finish today",
+         lambda p: p.queries and p.queries[0].kind == "done",
+         "done-history query"),
+    Case("scratch that",
+         lambda p: p.undo is True,
+         "conversational undo"),
 ]
 
 

@@ -22,6 +22,7 @@ from core.models import (
     InterpreterContext,
     Query,
     Reschedule,
+    Undo,
     Unknown,
 )
 from core.ports import Llm
@@ -86,15 +87,19 @@ ACTION_SCHEMA = {
                     ),
                     _variant(
                         "query",
-                        {"kind": {"type": "string", "enum": ["today", "date", "all"]},
-                         "date": _STR},
+                        {"kind": {"type": "string", "enum": [
+                            "today", "date", "all", "overdue", "week", "search",
+                            "done"]},
+                         "date": _STR, "term": _STR},
                         ["type", "kind"],
                     ),
                     _variant(
                         "bulk",
-                        {"op": _STR, "scope": _STR, "date": _STR, "confidence": _NUM},
+                        {"op": _STR, "scope": _STR, "date": _STR, "raw": _STR,
+                         "confidence": _NUM},
                         ["type", "op", "scope"],
                     ),
+                    _variant("undo", {}, ["type"]),
                     _variant("unknown", {"note": _STR}, ["type"]),
                 ]
             },
@@ -136,18 +141,27 @@ target, reason (optional), confidence.
 - reschedule: move an EXISTING item to a new date. Fields: type "reschedule", \
 target (item id), raw (the new date words copied verbatim, e.g. "Friday", \
 "next Monday", "July 10"), confidence.
-- query: the user is asking about their own tasks or schedule (what is on, what \
-is open, what is on a given day). Fields: type "query", kind ("today", "date", \
-or "all"), date (ISO if one specific day is named, else null).
-- bulk: finish or cancel MANY items at once with ONE action; never list them \
-individually. Fields: type "bulk", op ("complete" or "drop"), scope, date \
-(leave null; a separate program reads the day from the message), confidence. \
-Pick scope by what the user means:
+- query: the user is asking about their tasks. Fields: type "query", kind, date \
+(ISO for a named upcoming day), term (search keywords). kind is one of: "today", \
+"date" (a named upcoming day), "all", "overdue" (past due), "week" (next 7 days), \
+"search" (free text about a topic; set term to the keywords, e.g. "anything \
+about the pool guy" -> term "pool guy"), "done" (things ALREADY finished / \
+completed / got done / knocked out; "what did I finish today" -> done; set date \
+if a day is named).
+- bulk: act on MANY items at once with ONE action; never list them individually. \
+Fields: type "bulk", op ("complete", "drop", or "reschedule"), scope, date \
+(leave null; a separate program reads the day from the message), raw (op \
+reschedule only: the destination date words copied EXACTLY from the message, \
+e.g. "to monday" -> "monday"; never a computed date), confidence. Use bulk when \
+the user means many items ("everything", "all", "today's stuff", "push \
+everything to tomorrow"). Pick scope:
   - "all": every open item, including future-dated ones. Use for "everything", \
 "my whole list", "all my tasks", "delete it all".
   - "today": only the items on deck today. Use for "everything today", "clear \
 today", "today's stuff".
   - "date": one specific named day. Use for "all of friday", "monday's tasks".
+- undo: the user wants to reverse their last change ("scratch that", "undo \
+that", "nevermind, put it back"). Fields: type "undo".
 - unknown: you cannot tell what they want. Fields: type "unknown", note (short).
 
 relate: if a NEW captured task is FOR or PART OF an existing open item (e.g. \
@@ -318,17 +332,24 @@ def _parse_one(action: object):
             else Unknown(note="reschedule without target")
         )
     if kind == "query":
-        return Query(kind=_str(action.get("kind")) or "today", date=_str(action.get("date")))
+        return Query(
+            kind=_str(action.get("kind")) or "today",
+            date=_str(action.get("date")),
+            term=_str(action.get("term")),
+        )
     if kind == "bulk":
         op = _str(action.get("op"))
-        if op not in ("complete", "drop"):
+        if op not in ("complete", "drop", "reschedule"):
             return Unknown(note="bulk without a valid op")
         return Bulk(
             op=op,
             scope=_str(action.get("scope")) or "today",
             date=_str(action.get("date")),
+            raw=_str(action.get("raw")),
             confidence=conf,
         )
+    if kind == "undo":
+        return Undo()
     if kind == "unknown":
         return Unknown(note=_str(action.get("note")))
     return Unknown(note=f"unhandled type {kind!r}")

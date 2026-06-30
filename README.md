@@ -52,7 +52,10 @@ next one and stays on the list rather than closing. Dropping it ends the series.
   repeat to walk further back).
 - `/help` shows a one-liner.
 
-Everything else is just plain language.
+Everything else is just plain language. You can ask ("what's on today", "what's
+overdue", "what do I have this week", "anything about the audit", "what did I
+finish today"), move many at once ("push everything to tomorrow"), and undo
+conversationally ("scratch that") as well as with `/undo`.
 
 ## Setup
 

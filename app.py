@@ -14,7 +14,7 @@ import logging
 import signal
 import sys
 from dataclasses import asdict
-from datetime import date
+from datetime import date, timedelta
 
 from config import Config, ConfigError
 from core import recurrence
@@ -44,8 +44,11 @@ from adapters.telegram_bot import InboundMessage, TelegramAdapter
 log = logging.getLogger("hob.message")
 
 HELP = (
-    "send a task to capture it. /today lists what is open. "
-    "/undo reverts your last change."
+    'send tasks in plain language: "call the vet at 3pm", "take out the trash '
+    'every monday". correct the same way: "did the prez one", "push it to friday", '
+    '"drop 2". ask: "what\'s on today", "what\'s overdue", "what did i finish this '
+    'week". /today lists what is open; /undo (or "scratch that") reverts your last '
+    "change."
 )
 
 # meta key for the single user's chat id, learned from inbound messages.
@@ -172,6 +175,8 @@ class MessageService:
             log.warning("model unreachable; not applying message %s", message_id)
             return "i can't reach the model right now. give it a few seconds and resend."
         plan = reconcile(actions, ctx)
+        if plan.undo:  # "scratch that" / "undo that"
+            return self._undo()
         applied = self._apply(plan.mutations, message_id)
         answers = [self._answer_query(q) for q in plan.queries]
         # Persist this turn's clarifications for the next message; "" clears any
@@ -290,11 +295,27 @@ class MessageService:
 
     def _answer_query(self, q: QueryIntent) -> str:
         today = self._clock.today().isoformat()
+        if q.kind == "done":  # already-finished items (closed, so no positions)
+            items = self._store.done_since(q.date or today)
+            if not items:
+                return "done: nothing yet"
+            return "done:\n" + "\n".join(f'"{i.task}"' for i in items)
         open_items = self._store.open_items()
         ordered = ordered_open(open_items, today)
         pos = {i.id: n for n, i in enumerate(ordered, start=1)}
         if q.kind == "all":
             items, title = ordered, "all open:"
+        elif q.kind == "overdue":
+            items = [i for i in ordered if i.due_date and i.due_date < today]
+            title = "overdue:"
+        elif q.kind == "week":
+            end = (self._clock.today() + timedelta(days=6)).isoformat()
+            items = [i for i in ordered if i.due_date and today <= i.due_date <= end]
+            title = "this week:"
+        elif q.kind == "search":
+            term = (q.term or "").lower()
+            items = [i for i in ordered if term and term in i.task.lower()]
+            title = f'matching "{q.term}":'
         elif q.kind == "date":
             items = [i for i in ordered if i.due_date == q.date]
             title = f"on {q.date}:"

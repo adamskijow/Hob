@@ -13,6 +13,7 @@ import sqlite3
 import threading
 
 from core.models import (
+    STATUS_DONE,
     STATUS_OPEN,
     ActionLogEntry,
     Digest,
@@ -187,6 +188,16 @@ class SqliteStore:
             "AND (due_date || 'T' || due_time) <= ? AND reminded = 0 "
             "ORDER BY due_date, due_time",
             (STATUS_OPEN, now_iso),
+        ).fetchall()
+        return [self._row_to_item(r) for r in rows]
+
+    def done_since(self, start_iso: str) -> list[Item]:
+        """Completed items finished on or after start_iso (a date or datetime),
+        newest first. updated_at holds the completion time."""
+        rows = self._conn.execute(
+            f"SELECT {_ITEM_COLS} FROM items WHERE status = ? AND updated_at >= ? "
+            "ORDER BY updated_at DESC",
+            (STATUS_DONE, start_iso),
         ).fetchall()
         return [self._row_to_item(r) for r in rows]
 

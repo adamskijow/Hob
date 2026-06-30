@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 
 from core import dates, recurrence
 from core.models import (
@@ -33,6 +33,7 @@ from core.models import (
     Drop,
     Query,
     Reschedule,
+    Undo,
     Unknown,
 )
 
@@ -72,8 +73,9 @@ class Mutation:
 
 @dataclass
 class QueryIntent:
-    kind: str  # today | date | all
-    date: str | None = None
+    kind: str  # today | date | all | overdue | week | search | done
+    date: str | None = None  # ISO; for date, or the period start for done
+    term: str | None = None  # search keywords, for kind=search
 
 
 @dataclass
@@ -107,6 +109,7 @@ class Plan:
     queries: list[QueryIntent] = field(default_factory=list)
     pending: list[Pending] = field(default_factory=list)
     confirm: ConfirmIntent | None = None
+    undo: bool = False  # the user asked to undo the last change
 
 
 def _too_far(due_iso: str, today: date) -> int | None:
@@ -281,7 +284,7 @@ def _in_scope(item: dict, scope: str, today: str, target_date: str | None) -> bo
 
 
 def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
-    if action.op not in ("complete", "drop"):
+    if action.op not in ("complete", "drop", "reschedule"):
         plan.questions.append("i did not catch a task there. can you rephrase?")
         return
     scope = action.scope if action.scope in ("today", "all", "date") else "today"
@@ -300,6 +303,21 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
         plan.questions.append("nothing matched, so i changed nothing.")
         return
     ids = [i["id"] for i in matching]
+    if action.op == "reschedule":
+        # Move them all to one destination date (non-destructive, so no confirm).
+        raw = action.raw or ""
+        if not _phrase_in_message(raw, ctx.message):
+            plan.questions.append("to when should i move them?")
+            return
+        resolution = dates.resolve(raw, today)
+        if resolution.ambiguous or resolution.date is None:
+            plan.questions.append("to when should i move them?")
+            return
+        for item_id in ids:
+            plan.mutations.append(
+                Mutation(kind="reschedule", target=item_id, due_date=resolution.date)
+            )
+        return
     if action.confidence < CONFIDENCE_THRESHOLD:
         # A sweeping mutation is the last place to guess; confirm, never apply.
         verb = "finish" if action.op == "complete" else "drop"
@@ -322,7 +340,22 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
 
 
 def _reconcile_query(action: Query, today: date, ctx, plan: Plan) -> None:
-    model_kind = action.kind if action.kind in ("today", "date", "all") else "today"
+    kind, term = action.kind, action.term
+    if kind == "done":
+        # "what did I finish": this week -> last 7 days, otherwise today.
+        start = today - timedelta(days=6) if "week" in ctx.message.lower() else today
+        plan.queries.append(QueryIntent(kind="done", date=start.isoformat()))
+        return
+    if term:
+        plan.queries.append(QueryIntent(kind="search", term=term))
+        return
+    if kind == "search":  # asked to search but gave no term
+        plan.queries.append(QueryIntent(kind="all"))
+        return
+    if kind in ("overdue", "week"):
+        plan.queries.append(QueryIntent(kind=kind))
+        return
+    model_kind = kind if kind in ("today", "date", "all") else "today"
     # The model is unreliable at classifying the kind ("tomorrow" came back as a
     # bogus kind). Decide from the message: a specific non-today day named in the
     # query is a date query for that day, whatever the model said.
@@ -376,6 +409,8 @@ def reconcile(actions: list, ctx) -> Plan:
             _reconcile_query(action, today, ctx, plan)
         elif isinstance(action, Bulk):
             _reconcile_bulk(action, today, ctx, plan)
+        elif isinstance(action, Undo):
+            plan.undo = True
         elif isinstance(action, Unknown):
             plan.questions.append("i did not catch a task there. can you rephrase?")
     return plan

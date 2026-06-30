@@ -71,6 +71,15 @@ def test_reminder_does_nothing_without_chat():
     assert send.calls == []
 
 
+def test_done_since():
+    s = store_with([
+        item("a1", "finished", "2026-06-30", None, status="done"),
+        item("a2", "still open", "2026-06-30", None, status="open"),
+    ])
+    assert [i.id for i in s.done_since("2026-06-30")] == ["a1"]  # done only
+    assert s.done_since("2026-07-01") == []  # before the window
+
+
 def test_reminded_flag_survives_round_trip():
     s = store_with([item("a1", "x", "2026-06-30", "15:00")])
     it = s.get_item("a1")

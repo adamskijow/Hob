@@ -110,8 +110,9 @@ class Amend:
 
 @dataclass
 class Query:
-    kind: str  # today | date | all
+    kind: str  # today | date | all | overdue | week | search | done
     date: str | None = None  # ISO, for kind=date
+    term: str | None = None  # free-text search keywords, for kind=search
 
 
 @dataclass
@@ -119,10 +120,16 @@ class Bulk:
     """Act on many items at once. The model picks op and scope; the planner
     expands it deterministically over the matching open items."""
 
-    op: str  # complete | drop
+    op: str  # complete | drop | reschedule
     scope: str  # today | all | date
     date: str | None = None  # ISO, for scope=date; re-resolved by the core
+    raw: str | None = None  # destination date words, for op=reschedule
     confidence: float = 1.0
+
+
+@dataclass
+class Undo:
+    """The user asked to undo the last change ("scratch that", "undo that")."""
 
 
 @dataclass

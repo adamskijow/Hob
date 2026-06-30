@@ -182,6 +182,39 @@ def test_recurring_complete_advances_instead_of_closing():
     assert "next 2026-06-30" in out
 
 
+def test_undo_via_natural_language():
+    llm = FakeLlm([
+        {"actions": [{"type": "capture", "task": "x", "raw": "x"}]},
+        {"actions": [{"type": "undo"}]},
+    ])
+    store = SqliteStore(":memory:")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York")
+    svc.handle(msg("x"))
+    assert len(store.open_items()) == 1
+
+    out = svc.handle(msg("scratch that", message_id=2))
+    assert "undid" in out and store.open_items() == []
+
+
+def test_done_query_lists_finished():
+    llm = FakeLlm([
+        {"actions": [{"type": "complete", "target": "1"}]},
+        {"actions": [{"type": "query", "kind": "done"}]},
+    ])
+    store = SqliteStore(":memory:")
+    store.add_item(Item(id="a1", raw_text="prez", task="prez", due_date=None,
+                        due_time=None, status="open", source="capture",
+                        created_at="2026-06-29T08:00:00", updated_at="2026-06-29T08:00:00"))
+    store.set_meta("item_seq", "1")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York")
+    svc.handle(msg("did the first one"))
+
+    out = svc.handle(msg("what did i finish today", message_id=2))
+    assert "done:" in out and "prez" in out
+
+
 def test_amend_edits_item_text():
     llm = FakeLlm({"actions": [{"type": "amend", "target": "a1", "task": "prep the Q3 deck"}]})
     svc, store = service(llm)
