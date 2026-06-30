@@ -185,14 +185,34 @@ def test_capture_relate_inherits_date_end_to_end():
     assert 'got it: "bring soda" for 2026-06-28' in out
 
 
-def test_bulk_drop_all_clears_the_list():
+def test_bulk_drop_across_days_confirms_then_applies():
     llm = FakeLlm({"actions": [{"type": "bulk", "op": "drop", "scope": "all"}]})
-    svc, store = service(llm)  # seeded a1, a2, a3, all open
+    svc, store = service(llm)  # seed spans undated items + a3 on 2026-06-28
 
     out = svc.handle(msg("delete everything"))
+    assert "confirm" in out.lower()
+    assert len(store.open_items()) == 3  # nothing dropped yet
 
-    assert store.open_items() == []
-    assert "dropped" in out
+    out2 = svc.handle(msg("yes", message_id=2))
+    assert store.open_items() == []  # confirmed -> all cleared
+    assert "dropped" in out2
+
+
+def test_bulk_confirm_cancelled_by_non_yes():
+    # A non-affirmation cancels the pending delete and is handled as a new message.
+    llm = FakeLlm(
+        [
+            {"actions": [{"type": "bulk", "op": "drop", "scope": "all"}]},
+            {"actions": [{"type": "capture", "task": "buy milk", "raw": "buy milk"}]},
+        ]
+    )
+    svc, store = service(llm)
+
+    svc.handle(msg("delete everything"))
+    out = svc.handle(msg("actually buy milk", message_id=2))
+
+    assert len(store.open_items()) == 4  # nothing dropped; milk captured
+    assert "got it" in out.lower()
 
 
 def test_query_today_lists_items():

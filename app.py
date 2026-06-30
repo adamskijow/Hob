@@ -52,6 +52,17 @@ CHAT_ID_KEY = "chat_id"
 # Pending). One inbound message replaces it: resolved -> cleared, still unclear ->
 # re-set.
 PENDING_KEY = "pending"
+# meta key holding a destructive bulk (JSON {op, ids}) held back for a yes/no.
+CONFIRM_KEY = "pending_confirm"
+
+_AFFIRMATIONS = {
+    "yes", "y", "yeah", "yep", "yup", "sure", "ok", "okay", "confirm",
+    "do it", "go ahead", "yes please", "please do", "absolutely", "definitely",
+}
+
+
+def _is_affirmation(text: str) -> bool:
+    return text in _AFFIRMATIONS or text.startswith("yes")
 
 
 def _dump(item: Item) -> str:
@@ -82,6 +93,13 @@ class MessageService:
         if low == "/undo":
             return self._undo()
         message_id = str(msg.message_id)
+        # A destructive bulk held back for confirmation: apply it on yes, drop it
+        # on anything else (and let that message be handled normally).
+        pending_confirm = self._store.get_meta(CONFIRM_KEY)
+        if pending_confirm:
+            self._store.set_meta(CONFIRM_KEY, "")
+            if _is_affirmation(low):
+                return self._apply_confirmed(json.loads(pending_confirm), message_id)
         # Idempotency backstop: if a crash redelivered this message after its
         # mutations were already applied, do not apply or reply again. Normal
         # restarts are covered by the persisted poll offset; this guards the
@@ -132,7 +150,20 @@ class MessageService:
             PENDING_KEY,
             json.dumps([asdict(p) for p in plan.pending]) if plan.pending else "",
         )
-        return self._reply(applied, plan.questions, answers)
+        questions = list(plan.questions)
+        if plan.confirm is not None:
+            self._store.set_meta(
+                CONFIRM_KEY,
+                json.dumps({"op": plan.confirm.op, "ids": plan.confirm.ids}),
+            )
+            questions.append(plan.confirm.question)
+        return self._reply(applied, questions, answers)
+
+    def _apply_confirmed(self, data: dict, message_id: str) -> str:
+        """Apply a bulk that was held back, now that the user has confirmed."""
+        mutations = [Mutation(kind=data["op"], target=tid) for tid in data.get("ids", [])]
+        applied = self._apply(mutations, message_id)
+        return self._reply(applied, [], [])
 
     def _apply(
         self, mutations: list[Mutation], message_id: str

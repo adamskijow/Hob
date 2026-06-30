@@ -183,11 +183,29 @@ def test_reschedule_guard_fail_sets_no_pending():
 # Bulk actions ----------------------------------------------------------------
 
 
-def test_bulk_drop_all():
+def test_bulk_drop_across_days_confirms():
+    # ACTIVE spans undated items + a dated one, so a delete-all is held for yes/no.
     plan = reconcile([Bulk(op="drop", scope="all")], ctx(ACTIVE))
-    assert [m.kind for m in plan.mutations] == ["drop", "drop", "drop"]
-    assert {m.target for m in plan.mutations} == {"a1", "a2", "a3"}
-    assert not plan.questions
+    assert not plan.mutations
+    assert plan.confirm is not None and plan.confirm.op == "drop"
+    assert set(plan.confirm.ids) == {"a1", "a2", "a3"}
+
+
+def test_bulk_drop_single_day_applies_without_confirm():
+    active = [
+        {"id": "x1", "label": "a", "due_date": "2026-07-03"},
+        {"id": "x2", "label": "b", "due_date": "2026-07-03"},
+    ]
+    plan = reconcile([Bulk(op="drop", scope="all")], ctx(active))
+    assert plan.confirm is None
+    assert {m.target for m in plan.mutations} == {"x1", "x2"}
+
+
+def test_bulk_complete_across_days_does_not_confirm():
+    # Completing is undoable and not a deletion, so it does not need a yes/no.
+    plan = reconcile([Bulk(op="complete", scope="all")], ctx(ACTIVE))
+    assert plan.confirm is None
+    assert len(plan.mutations) == 3
 
 
 def test_bulk_complete_today_excludes_future():

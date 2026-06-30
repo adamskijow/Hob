@@ -86,11 +86,22 @@ class Pending:
 
 
 @dataclass
+class ConfirmIntent:
+    """A destructive bulk held back for a yes/no. The edge persists it and applies
+    it only if the next message confirms."""
+
+    op: str  # complete | drop
+    ids: list[str] = field(default_factory=list)
+    question: str = ""
+
+
+@dataclass
 class Plan:
     mutations: list[Mutation] = field(default_factory=list)
     questions: list[str] = field(default_factory=list)
     queries: list[QueryIntent] = field(default_factory=list)
     pending: list[Pending] = field(default_factory=list)
+    confirm: ConfirmIntent | None = None
 
 
 def _check_target(target: str, confidence: float, active: dict, plan: Plan) -> str | None:
@@ -223,19 +234,31 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
             return
         target_date = resolution.date
     matching = [
-        i["id"]
-        for i in ctx.active_items
-        if _in_scope(i, scope, ctx.today, target_date)
+        i for i in ctx.active_items if _in_scope(i, scope, ctx.today, target_date)
     ]
     if not matching:
         plan.questions.append("nothing matched, so i changed nothing.")
         return
+    ids = [i["id"] for i in matching]
     if action.confidence < CONFIDENCE_THRESHOLD:
         # A sweeping mutation is the last place to guess; confirm, never apply.
         verb = "finish" if action.op == "complete" else "drop"
-        plan.questions.append(f"that would {verb} {len(matching)} open item(s). confirm?")
+        plan.questions.append(f"that would {verb} {len(ids)} open item(s). confirm?")
         return
-    for item_id in matching:
+    # Deleting across more than one day is a big swing: hold it for a yes/no.
+    if action.op == "drop":
+        days = {(i.get("due_date") or "undated") for i in matching}
+        if len(days) > 1:
+            plan.confirm = ConfirmIntent(
+                op="drop",
+                ids=ids,
+                question=(
+                    f"that deletes {len(ids)} items across {len(days)} days. "
+                    "reply yes to confirm."
+                ),
+            )
+            return
+    for item_id in ids:
         plan.mutations.append(Mutation(kind=action.op, target=item_id))
 
 
