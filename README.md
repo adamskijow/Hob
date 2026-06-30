@@ -1,5 +1,16 @@
 <!-- SPDX-License-Identifier: MIT -->
+<p align="center">
+  <img src="assets/hob-banner.svg" alt="Hob: text tasks all day, wake to one organized digest" width="100%">
+</p>
+
 # Hob
+
+<p align="center">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT">
+  <img src="https://img.shields.io/badge/macOS-black?logo=apple&logoColor=white" alt="macOS">
+  <img src="https://img.shields.io/badge/python-3.12-blue?logo=python&logoColor=white" alt="Python 3.12">
+  <img src="https://img.shields.io/badge/LLM-local%20(Ollama)-ff9a3c" alt="Local LLM via Ollama">
+</p>
 
 Hob is a personal, single-user morning-digest agent that runs as a long-lived
 daemon on macOS. It is named for the ledge at the side of a hearth where a kettle
