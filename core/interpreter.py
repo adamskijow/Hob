@@ -209,7 +209,7 @@ DATES: set "when" to a typed date intent - classify the phrase, never compute a 
 - no date mentioned -> {{"kind":"none"}}
 - "today"/"tonight" -> {{"kind":"today"}}; "tomorrow" -> {{"kind":"tomorrow"}}; "yesterday" -> {{"kind":"yesterday"}}
 - a weekday BY NAME, even with "next" ("friday", "next friday", "this monday") -> {{"kind":"weekday","which":"this" or "next","day":"mon".."sun"}}
-- "in N days/weeks/months/years" ("a couple"=2, "a few"=3) -> {{"kind":"offset","n":N,"unit":"day"/"week"/"month"/"year"}}. "in 2 weeks" is offset, NOT week.
+- "in N days/weeks/months/years" ("a couple"=2, "a few"=3) -> {{"kind":"offset","n":N,"unit":"day"/"week"/"month"/"year"}}. "in 2 weeks" is offset, NOT week. If a number is followed by an unclear or non-time word (a typo like "two works"), do NOT guess a unit - use {{"kind":"ambiguous"}}.
 - "this/next weekend" -> {{"kind":"weekend","which":"this" or "next"}}
 - "next week"/"this week", with NO weekday name and NO number (maybe early/mid/late) -> {{"kind":"week","which":"next","part":"early"/"mid"/"late"}}
 - start or end of this/next month -> {{"kind":"month","which":"this" or "next","anchor":"start" or "end"}}
@@ -239,7 +239,9 @@ finished, cancelled, or moved one existing item. The instruction word licenses \
 the edit. Resembling an item on deck is not enough: "review the SR audit \
 tomorrow" -> capture (even though an "SR audit" item exists); only "push the SR \
 audit to friday" is a reschedule.
-- When the user refers to many items, use one bulk action, never one per item.
+- When the user refers to many items, use one bulk action, never one per item. \
+"delete everything"/"clear my list" -> bulk drop (scope all); "did everything \
+today" -> bulk complete (scope today). "did" is a completion, not a question.
 - A message that just names a task, with no instruction word, is a NEW task: \
 capture. "dentist next Friday" -> capture. "call the pool guy" -> capture.
 

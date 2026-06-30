@@ -98,6 +98,8 @@ def test_resolve_ref_tolerates_model_forms():
     assert _resolve_ref("id:2", active, by_pos) == "a3"
     assert _resolve_ref("first", active, by_pos) == "a1"  # spelled ordinal
     assert _resolve_ref("#2", active, by_pos) == "a3"
+    assert _resolve_ref("a3: review the audit (due 2026-06-28)", active, by_pos) == "a3"  # whole line
+    assert _resolve_ref("url_not_provided_2", active, by_pos) == "a3"  # noisy + trailing position
     assert _resolve_ref("zzz", active, by_pos) is None
 
 

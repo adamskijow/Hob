@@ -133,7 +133,7 @@ def test_pending_clarification_resume():
     svc = MessageService(store, clock, llm, "America/New_York")
 
     out1 = svc.handle(msg("lunch with sam thursday or friday"))
-    assert "more than one date" in out1
+    assert "not clear" in out1
     assert store.get_meta("pending")  # persisted
     assert not store.open_items()  # nothing captured yet
 

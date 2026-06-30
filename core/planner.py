@@ -153,8 +153,17 @@ def _resolve_ref(ref: str, active: dict, by_pos: dict) -> str | None:
         first = _NUM_WORDS.get(head[0], head[0])
         if first in active:
             return first
-        return by_pos.get(first)
-    return None
+        if first in by_pos:
+            return by_pos[first]
+    # Last resort: a noisy target carrying a trailing position ("url_not_provided_2",
+    # "item 2"). The trailing number still points at the displayed item.
+    tail = ""
+    for ch in reversed(r):
+        if ch.isdigit():
+            tail = ch + tail
+        else:
+            break
+    return by_pos.get(tail) if tail else None
 
 
 def _check_target(
@@ -186,7 +195,7 @@ def _reconcile_capture(
         resolution = dates.DateResolution(date=shared_date)
 
     if resolution.ambiguous:
-        question = f'when is "{action.task}" due? that read as more than one date.'
+        question = f'when is "{action.task}" due? the date was not clear.'
         plan.questions.append(question)
         plan.pending.append(
             Pending(kind="capture", question=question, task=action.task)
@@ -269,7 +278,7 @@ def _reconcile_reschedule(
     resolution = dates.resolve_intent(action.when, today)
 
     if resolution.ambiguous:
-        question = f'when should i move "{label}" to? that read as more than one date.'
+        question = f'when should i move "{label}" to? the date was not clear.'
         plan.questions.append(question)
         plan.pending.append(
             Pending(kind="reschedule", question=question, target=target, label=label)
