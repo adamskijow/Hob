@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-labelledby="t d">
+  <title id="t">Hob</title>
+  <desc id="d">A personal morning-digest task agent for macOS: text tasks all day, wake to one organized digest.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b0e08"/><stop offset="1" stop-color="#0c0604"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.55" r="0.6">
+      <stop offset="0" stop-color="#ff7a18" stop-opacity="0.5"/>
+      <stop offset="0.5" stop-color="#c43c0a" stop-opacity="0.15"/>
+      <stop offset="1" stop-color="#c43c0a" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="emberGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ff8a1e" stop-opacity="0.75"/><stop offset="1" stop-color="#ff8a1e" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="kettle" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe2a6"/><stop offset="0.42" stop-color="#e7a644"/><stop offset="1" stop-color="#894d1b"/>
+    </linearGradient>
+    <linearGradient id="brassDark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#d99a3e"/><stop offset="1" stop-color="#7a4014"/>
+    </linearGradient>
+    <filter id="soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="3"/></filter>
+  </defs>
+
+  <rect x="0" y="0" width="1280" height="640" fill="url(#bg)"/>
+  <ellipse cx="372" cy="360" rx="320" ry="290" fill="url(#glow)"/>
+
+  <!-- the hob: a ledge the kettle is kept warm on -->
+  <rect x="262" y="510" width="220" height="20" rx="10" fill="#3a241a"/>
+  <rect x="262" y="510" width="220" height="8" rx="4" fill="#4d3022"/>
+  <ellipse cx="382" cy="510" rx="120" ry="14" fill="url(#emberGlow)"/>
+
+  <!-- embers, kept low -->
+  <g fill="#ffb24a" filter="url(#soft)">
+    <circle cx="304" cy="476" r="4"/>
+    <circle cx="452" cy="462" r="3"/>
+    <circle cx="360" cy="436" r="3.4"/>
+    <circle cx="300" cy="502" r="2.6"/>
+  </g>
+
+  <!-- kettle -->
+  <g>
+    <path d="M307,347 C323,267 421,267 437,347" fill="none" stroke="url(#brassDark)" stroke-width="13" stroke-linecap="round"/>
+    <path d="M304,381 C256,375 224,352 197,314 L218,303 C247,337 281,360 321,364 Z" fill="url(#kettle)" stroke="#5e3614" stroke-width="1.6"/>
+    <path d="M285,510 C264,459 266,396 306,356 C321,341 423,341 439,356 C478,396 480,459 459,510 Z" fill="url(#kettle)" stroke="#5e3614" stroke-width="1.6"/>
+    <ellipse cx="330" cy="419" rx="23" ry="76" fill="#fff6e2" opacity="0.22" transform="rotate(-10 330 419)"/>
+    <ellipse cx="372" cy="350" rx="80" ry="17" fill="url(#brassDark)"/>
+    <ellipse cx="372" cy="345" rx="68" ry="11" fill="#f2c777" opacity="0.8"/>
+    <rect x="359" y="318" width="27" height="23" rx="9" fill="url(#brassDark)"/>
+    <circle cx="372" cy="318" r="11" fill="#f2c777"/>
+  </g>
+
+  <!-- steam, kept warm and ready -->
+  <g fill="none" stroke="#f3e6d2" stroke-linecap="round" filter="url(#soft)">
+    <path d="M205,300 q-22,-30 -4,-62 q18,-32 -4,-64" stroke-width="9" opacity="0.40"/>
+    <path d="M230,294 q22,-28 2,-58 q-20,-30 2,-60" stroke-width="7" opacity="0.34"/>
+    <path d="M216,288 q-15,-26 0,-52 q15,-26 0,-52" stroke-width="6" opacity="0.30"/>
+  </g>
+
+  <!-- text -->
+  <g transform="translate(572 0)">
+    <text x="0" y="298" font-family="Georgia, 'Iowan Old Style', 'Times New Roman', serif" font-size="124" font-weight="700" fill="#f7ead8" letter-spacing="1">Hob</text>
+    <text x="4" y="352" font-family="-apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="27" fill="#d8b79b">Text tasks all day. Wake to one organized digest.</text>
+    <text x="4" y="398" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="19" fill="#ff9a3c" letter-spacing="0.5">Natural language &#183; Local LLM &#183; launchd &#183; macOS &#183; MIT</text>
+  </g>
+</svg>
