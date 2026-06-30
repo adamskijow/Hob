@@ -50,7 +50,23 @@ def select_digest_items(open_items: list[Item], today: str) -> list[Item]:
     overdue.sort(key=lambda i: (i.due_date, i.created_at))
     due_today.sort(key=lambda i: (i.due_time or "99:99", i.created_at))
     undated.sort(key=lambda i: i.created_at)
-    return overdue + due_today + undated
+    on_deck = overdue + due_today + undated
+    # Priority floats up (high) or sinks (low). A stable sort keeps the date
+    # order above within each tier, so "urgent" rises without scrambling the day.
+    on_deck.sort(key=lambda i: _PRIORITY_RANK.get(i.priority, 1))
+    return on_deck
+
+
+_PRIORITY_RANK = {"high": 0, "normal": 1, "low": 2}
+
+
+def priority_mark(item: Item) -> str:
+    """A terse marker so urgency is visible in any list view. Normal is unmarked."""
+    if item.priority == "high":
+        return " (!)"
+    if item.priority == "low":
+        return " (low)"
+    return ""
 
 
 def ordered_open(items: list[Item], today: str) -> list[Item]:
@@ -78,5 +94,5 @@ def render_digest(ordered: list[Item], today: str) -> str:
             suffix = f" ({item.due_time})"
         else:
             suffix = ""
-        lines.append(f"{n}: {item.task}{suffix}")
+        lines.append(f"{n}: {item.task}{suffix}{priority_mark(item)}")
     return "\n".join(lines)

@@ -4,7 +4,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app import DigestService
-from core.digest import digest_owed, render_digest, select_digest_items
+from core.digest import digest_owed, priority_mark, render_digest, select_digest_items
 from core.models import Item
 from adapters.store_sqlite import SqliteStore
 from tests.fakes import FakeClock
@@ -16,7 +16,7 @@ def at(h, m=0, day=29):
     return datetime(2026, 6, day, h, m, tzinfo=TZ)
 
 
-def item(id, task, due=None, time=None, created="2026-06-29T08:00:00"):
+def item(id, task, due=None, time=None, created="2026-06-29T08:00:00", priority="normal"):
     return Item(
         id=id,
         raw_text=task,
@@ -27,7 +27,28 @@ def item(id, task, due=None, time=None, created="2026-06-29T08:00:00"):
         source="capture",
         created_at=created,
         updated_at=created,
+        priority=priority,
     )
+
+
+def test_priority_floats_up_and_sinks():
+    # date order is a1, a2, a3; priority re-ranks: high first, low last.
+    items = [
+        item("a1", "normal one"),
+        item("a2", "urgent one", priority="high"),
+        item("a3", "someday one", priority="low"),
+    ]
+    ordered = select_digest_items(items, "2026-06-29")
+    assert [i.id for i in ordered] == ["a2", "a1", "a3"]
+
+
+def test_priority_marks_render():
+    out = render_digest(
+        [item("a1", "urgent one", priority="high"), item("a2", "someday one", priority="low")],
+        "2026-06-29",
+    )
+    assert "urgent one (!)" in out and "someday one (low)" in out
+    assert priority_mark(item("a3", "plain")) == ""
 
 
 class FakeSend:

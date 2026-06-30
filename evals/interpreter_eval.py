@@ -119,6 +119,17 @@ CASES = [
     Case("scratch that",
          lambda p: p.undo is True,
          "conversational undo"),
+    Case("pick up the dry cleaning, it's urgent",
+         lambda p: kinds(p) == ["capture"] and p.mutations[0].priority == "high",
+         "new task captured with high priority"),
+    Case("the audit is urgent",
+         lambda p: kinds(p) == ["prioritize"] and p.mutations[0].target == "a3"
+         and p.mutations[0].priority == "high",
+         "prioritize an existing item"),
+    Case("the pool guy can wait",
+         lambda p: kinds(p) == ["prioritize"] and p.mutations[0].target == "a2"
+         and p.mutations[0].priority == "low",
+         "deprioritize an existing item"),
 ]
 
 

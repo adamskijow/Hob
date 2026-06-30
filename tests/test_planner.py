@@ -7,6 +7,7 @@ from core.models import (
     Complete,
     Drop,
     InterpreterContext,
+    Prioritize,
     Query,
     Reschedule,
     Undo,
@@ -314,6 +315,24 @@ def test_query_done_period():
 
 def test_undo_action_sets_flag():
     assert reconcile([Undo()], ctx()).undo is True
+
+
+def test_prioritize_resolves_target_and_level():
+    plan = reconcile([Prioritize(target="a3", level="high")], ctx(ACTIVE))
+    assert [m.kind for m in plan.mutations] == ["prioritize"]
+    assert plan.mutations[0].target == "a3" and plan.mutations[0].priority == "high"
+
+
+def test_prioritize_by_position():
+    plan = reconcile([Prioritize(target="2", level="low")], ctx(ACTIVE))
+    assert plan.mutations[0].target == "a2" and plan.mutations[0].priority == "low"
+
+
+def test_capture_carries_priority():
+    plan = reconcile(
+        [Capture(task="call plumber", raw="call plumber urgent", priority="high")], ctx()
+    )
+    assert plan.mutations[0].kind == "capture" and plan.mutations[0].priority == "high"
 
 
 def test_query_today_and_all():

@@ -20,6 +20,7 @@ from core.models import (
     Complete,
     Drop,
     InterpreterContext,
+    Prioritize,
     Query,
     Reschedule,
     Undo,
@@ -34,6 +35,7 @@ MODEL_UNREACHABLE = "model call failed"
 
 _STR = {"type": ["string", "null"]}
 _NUM = {"type": ["number", "null"]}
+_LEVEL = {"type": "string", "enum": ["high", "normal", "low"]}
 
 
 def _variant(type_value: str, props: dict, required: list[str]) -> dict:
@@ -62,8 +64,13 @@ ACTION_SCHEMA = {
                     _variant(
                         "capture",
                         {"task": _STR, "raw": _STR, "time": _STR, "relate": _STR,
-                         "repeat": _STR, "confidence": _NUM},
+                         "repeat": _STR, "priority": _LEVEL, "confidence": _NUM},
                         ["type", "raw"],
+                    ),
+                    _variant(
+                        "prioritize",
+                        {"target": _STR, "level": _LEVEL, "confidence": _NUM},
+                        ["type", "target", "level"],
                     ),
                     _variant(
                         "amend",
@@ -129,7 +136,18 @@ Return a JSON object {{"actions": [ ... ]}}. Each action is one of:
 - capture: a NEW task to remember. Fields: type "capture", task (clean \
 imperative label with no date or repeat words), raw (echo the user's words for \
 this task, keeping any date and time words), time (HH:MM or null), relate (see \
-below, else null), repeat (see below, else null), confidence (0 to 1).
+below, else null), repeat (see below, else null), priority, confidence (0 to 1). \
+Set priority "high" for urgent/important/asap/"top priority"/"do first", "low" \
+for "low priority"/"can wait"/"no rush"/"whenever/someday", else "normal". A new \
+task is still NEW even when urgent and even if it resembles an item on the list: \
+"call the plumber, it's urgent" is capture (priority high), not a change to "call \
+the pool guy".
+- prioritize: change the importance of an item ALREADY on the list. Fields: type \
+"prioritize", target (item number), level ("high", "normal", or "low"), \
+confidence. Use it when the user re-ranks an existing item: "make the prez deck \
+urgent", "the audit can wait", "bump the audit to the top", "deprioritize the \
+prez deck". Match the number exactly; never repurpose a different item because \
+the words look similar.
 - amend: change the TEXT of an EXISTING item (add a detail to it, or reword it). \
 Fields: type "amend", target (item id), task (the item's full new label, keeping \
 what is still true), confidence. Use when the user changes what an existing item \
@@ -283,6 +301,11 @@ def _float(value: object, default: float) -> float:
         return default
 
 
+def _level(value: object) -> str:
+    """Normalize a priority/level to high|normal|low; anything else is normal."""
+    return value if value in ("high", "normal", "low") else "normal"
+
+
 def _parse_one(action: object):
     if not isinstance(action, dict):
         return Unknown(note="non-object action")
@@ -300,7 +323,15 @@ def _parse_one(action: object):
             time=_str(action.get("time")),
             relate=_str(action.get("relate")),
             repeat=_str(action.get("repeat")),
+            priority=_level(action.get("priority")),
             confidence=conf,
+        )
+    if kind == "prioritize":
+        target = _str(action.get("target"))
+        return (
+            Prioritize(target=target, level=_level(action.get("level")), confidence=conf)
+            if target
+            else Unknown(note="prioritize without target")
         )
     if kind == "amend":
         target = _str(action.get("target"))

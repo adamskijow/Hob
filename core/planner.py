@@ -31,6 +31,7 @@ from core.models import (
     Capture,
     Complete,
     Drop,
+    Prioritize,
     Query,
     Reschedule,
     Undo,
@@ -61,7 +62,7 @@ def _phrase_in_message(phrase: str, message: str) -> bool:
 
 @dataclass
 class Mutation:
-    kind: str  # capture | complete | drop | reschedule
+    kind: str  # capture | complete | drop | reschedule | amend | prioritize
     task: str | None = None
     raw: str | None = None
     due_date: str | None = None
@@ -69,6 +70,7 @@ class Mutation:
     target: str | None = None
     reason: str | None = None
     repeat: str | None = None  # recurrence rule for a capture
+    priority: str | None = None  # high|normal|low, for capture and prioritize
 
 
 @dataclass
@@ -214,6 +216,7 @@ def _reconcile_capture(
         due_date=due_date,
         due_time=resolution.time,
         repeat=repeat,
+        priority=action.priority,
     )
     years = _too_far(due_date, today) if due_date else None
     if years is not None:
@@ -230,6 +233,16 @@ def _reconcile_amend(action: Amend, active: dict, by_pos: dict, plan: Plan) -> N
         plan.questions.append(f'what should "{active[target]}" say now?')
         return
     plan.mutations.append(Mutation(kind="amend", target=target, task=action.task))
+
+
+def _reconcile_prioritize(
+    action: Prioritize, active: dict, by_pos: dict, plan: Plan
+) -> None:
+    target = _check_target(action.target, action.confidence, active, by_pos, plan)
+    if target is None:
+        return
+    level = action.level if action.level in ("high", "normal", "low") else "normal"
+    plan.mutations.append(Mutation(kind="prioritize", target=target, priority=level))
 
 
 def _reconcile_reschedule(
@@ -393,6 +406,8 @@ def reconcile(actions: list, ctx) -> Plan:
             _reconcile_capture(action, today, fallback, active_due, by_pos, plan)
         elif isinstance(action, Amend):
             _reconcile_amend(action, active, by_pos, plan)
+        elif isinstance(action, Prioritize):
+            _reconcile_prioritize(action, active, by_pos, plan)
         elif isinstance(action, Complete):
             target = _check_target(action.target, action.confidence, active, by_pos, plan)
             if target is not None:

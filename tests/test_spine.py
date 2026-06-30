@@ -215,6 +215,26 @@ def test_done_query_lists_finished():
     assert "done:" in out and "prez" in out
 
 
+def test_capture_with_priority_then_reprioritize():
+    llm = FakeLlm([
+        {"actions": [{"type": "capture", "task": "call plumber",
+                      "raw": "call plumber urgent", "priority": "high"}]},
+        {"actions": [{"type": "prioritize", "target": "1", "level": "low"}]},
+    ])
+    store = SqliteStore(":memory:")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York")
+
+    out1 = svc.handle(msg("call the plumber, it's urgent"))
+    assert "urgent" in out1
+    it = store.open_items()[0]
+    assert it.priority == "high"
+
+    out2 = svc.handle(msg("actually the plumber can wait", message_id=2))
+    assert 'marked "call plumber" low priority' in out2
+    assert store.get_item(it.id).priority == "low"
+
+
 def test_amend_edits_item_text():
     llm = FakeLlm({"actions": [{"type": "amend", "target": "a1", "task": "prep the Q3 deck"}]})
     svc, store = service(llm)

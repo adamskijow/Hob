@@ -21,7 +21,7 @@ from core.models import (
     Item,
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS items (
@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS meta (
 
 _ITEM_COLS = (
     "id, raw_text, task, due_date, due_time, status, source, created_at, "
-    "updated_at, reminded, repeat"
+    "updated_at, reminded, repeat, priority"
 )
 
 
@@ -100,6 +100,11 @@ class SqliteStore:
         if version < 3:
             # recurring tasks: the repeat rule (NULL = one-off).
             self._conn.execute("ALTER TABLE items ADD COLUMN repeat TEXT")
+        if version < 4:
+            # priorities: high floats up the digest, low sinks.
+            self._conn.execute(
+                "ALTER TABLE items ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'"
+            )
         self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self._conn.commit()
 
@@ -121,7 +126,7 @@ class SqliteStore:
     def add_item(self, item: Item) -> None:
         with self._lock:
             self._conn.execute(
-                f"INSERT INTO items ({_ITEM_COLS}) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                f"INSERT INTO items ({_ITEM_COLS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     item.id,
                     item.raw_text,
@@ -134,6 +139,7 @@ class SqliteStore:
                     item.updated_at,
                     int(item.reminded),
                     item.repeat,
+                    item.priority,
                 ),
             )
             self._conn.commit()
@@ -149,7 +155,7 @@ class SqliteStore:
             self._conn.execute(
                 "UPDATE items SET raw_text=?, task=?, due_date=?, due_time=?, "
                 "status=?, source=?, created_at=?, updated_at=?, reminded=?, "
-                "repeat=? WHERE id=?",
+                "repeat=?, priority=? WHERE id=?",
                 (
                     item.raw_text,
                     item.task,
@@ -161,6 +167,7 @@ class SqliteStore:
                     item.updated_at,
                     int(item.reminded),
                     item.repeat,
+                    item.priority,
                     item.id,
                 ),
             )
@@ -326,6 +333,7 @@ class SqliteStore:
             updated_at=row["updated_at"],
             reminded=bool(row["reminded"]),
             repeat=row["repeat"],
+            priority=row["priority"],
         )
 
     @staticmethod

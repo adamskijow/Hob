@@ -31,6 +31,7 @@ class Item:
     updated_at: str  # ISO datetime
     reminded: bool = False  # an intraday reminder for its due time was sent
     repeat: str | None = None  # recurrence rule (core.recurrence); None = one-off
+    priority: str = "normal"  # high | normal | low; floats up/down the digest
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -78,6 +79,16 @@ class Capture:
     time: str | None = None  # HH:MM
     relate: str | None = None  # id of an existing item to inherit a date from
     repeat: str | None = None  # recurrence rule, e.g. "daily" or "weekly:mon"
+    priority: str = "normal"  # high | normal | low
+    confidence: float = 1.0
+
+
+@dataclass
+class Prioritize:
+    """Change the priority of an item already on the list."""
+
+    target: str  # item id / position from the active list
+    level: str  # high | normal | low
     confidence: float = 1.0
 
 

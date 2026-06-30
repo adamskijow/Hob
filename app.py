@@ -18,7 +18,7 @@ from datetime import date, timedelta
 
 from config import Config, ConfigError
 from core import recurrence
-from core.digest import ordered_open, render_digest, select_digest_items
+from core.digest import ordered_open, priority_mark, render_digest, select_digest_items
 from core.interpreter import MODEL_UNREACHABLE, interpret
 from core.models import (
     SOURCE_CAPTURE,
@@ -238,6 +238,7 @@ class MessageService:
                     created_at=ts,
                     updated_at=ts,
                     repeat=m.repeat,
+                    priority=m.priority or "normal",
                 )
                 self._store.add_item(item)
                 entries.append(
@@ -279,6 +280,8 @@ class MessageService:
                 item.reminded = False  # re-arm the reminder for the new time
             elif m.kind == "amend":
                 item.task = m.task  # the model supplied the full new label
+            elif m.kind == "prioritize":
+                item.priority = m.priority or "normal"
             item.updated_at = ts
             self._store.update_item(item)
             entries.append(
@@ -339,7 +342,9 @@ class MessageService:
             title = "today:"
         if not items:
             return f"{title} nothing"
-        return title + "\n" + "\n".join(f"{pos[i.id]}: {i.task}" for i in items)
+        return title + "\n" + "\n".join(
+            f"{pos[i.id]}: {i.task}{priority_mark(i)}" for i in items
+        )
 
     def _reply(
         self, applied: list[tuple[str, Item]], questions: list[str], answers: list[str]
@@ -360,6 +365,10 @@ class MessageService:
                 line += _when(it.due_date)
             if it.due_time:
                 line += f" at {it.due_time}"
+            if it.priority == "high":
+                line += " (urgent)"
+            elif it.priority == "low":
+                line += " (low priority)"
             return line
 
         # Always restate what was captured, with its timing, not a bare "got it".
@@ -384,6 +393,11 @@ class MessageService:
                 parts.append(line + (f" ({rel})" if rel else ""))
             elif kind == "amend":
                 parts.append(f'updated: "{item.task}"')
+            elif kind == "prioritize":
+                label = {"high": "urgent", "low": "low priority"}.get(
+                    item.priority, "normal priority"
+                )
+                parts.append(f'marked "{item.task}" {label}')
         parts.extend(questions)
         parts.extend(answers)
         return "\n".join(parts) if parts else "ok"
@@ -392,7 +406,9 @@ class MessageService:
         ordered = ordered_open(self._store.open_items(), self._clock.today().isoformat())
         if not ordered:
             return "nothing on deck"
-        return "\n".join(f"{n}: {i.task}" for n, i in enumerate(ordered, start=1))
+        return "\n".join(
+            f"{n}: {i.task}{priority_mark(i)}" for n, i in enumerate(ordered, start=1)
+        )
 
 
 class DigestService:
