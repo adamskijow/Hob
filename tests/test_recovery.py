@@ -26,7 +26,7 @@ def test_redelivered_message_not_reapplied():
     clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
     svc = MessageService(store, clock, capture_llm("buy milk"), "America/New_York")
 
-    assert svc.handle(msg("buy milk", 100)) == "got it"
+    assert svc.handle(msg("buy milk", 100)) == 'got it: "buy milk"'
     # same telegram message redelivered after a crash mid-offset-write
     assert svc.handle(msg("buy milk", 100)) == ""
     assert len(store.open_items()) == 1  # not duplicated

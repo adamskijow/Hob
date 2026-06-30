@@ -181,6 +181,8 @@ class MessageService:
                 item.status = STATUS_DROPPED
             elif m.kind == "reschedule":
                 item.due_date = m.due_date
+            elif m.kind == "amend":
+                item.task = m.task  # the model supplied the full new label
             item.updated_at = ts
             self._store.update_item(item)
             entries.append(
@@ -229,13 +231,21 @@ class MessageService:
     ) -> str:
         parts: list[str] = []
         captures = [it for kind, it in applied if kind == "capture"]
+
+        def _cap_line(it: Item) -> str:
+            line = f'"{it.task}"'
+            if it.due_date:
+                line += f" for {it.due_date}"
+            if it.due_time:
+                line += f" at {it.due_time}"
+            return line
+
+        # Always restate what was captured, not a bare "got it".
         if len(captures) == 1:
-            line = "got it"
-            if captures[0].due_date:
-                line += f" for {captures[0].due_date}"
-            parts.append(line)
+            parts.append("got it: " + _cap_line(captures[0]))
         elif len(captures) > 1:
-            parts.append(f"got it ({len(captures)} items)")
+            parts.append("got it:")
+            parts.extend(_cap_line(c) for c in captures)
         for kind, item in applied:
             if kind == "complete":
                 parts.append(f'done: "{item.task}"')
@@ -243,6 +253,8 @@ class MessageService:
                 parts.append(f'dropped: "{item.task}"')
             elif kind == "reschedule":
                 parts.append(f'moved "{item.task}" to {item.due_date}')
+            elif kind == "amend":
+                parts.append(f'updated: "{item.task}"')
         parts.extend(questions)
         parts.extend(answers)
         return "\n".join(parts) if parts else "ok"

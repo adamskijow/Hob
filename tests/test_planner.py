@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Planner reconciliation: model proposes, deterministic core decides."""
 from core.models import (
+    Amend,
     Bulk,
     Capture,
     Complete,
@@ -262,6 +263,45 @@ def test_capture_recovers_dropped_date_from_message():
         ctx(message="Tomorrow I need to harass Jerry"),
     )
     assert plan.mutations[0].due_date == "2026-06-30"
+
+
+def test_capture_relate_inherits_date():
+    # "bring soda" for an existing dated item inherits that item's date.
+    plan = reconcile(
+        [Capture(task="bring soda", raw="bring soda", relate="a3")], ctx(ACTIVE)
+    )
+    assert plan.mutations[0].due_date == "2026-06-28"  # a3's date
+
+
+def test_capture_relate_case_insensitive():
+    plan = reconcile(
+        [Capture(task="bring soda", raw="bring soda", relate="A3")], ctx(ACTIVE)
+    )
+    assert plan.mutations[0].due_date == "2026-06-28"
+
+
+def test_capture_own_date_beats_relate():
+    plan = reconcile(
+        [Capture(task="bring soda", raw="bring soda Friday", relate="a3")], ctx(ACTIVE)
+    )
+    assert plan.mutations[0].due_date == "2026-07-03"  # its own Friday, not a3's
+
+
+def test_amend_replaces_item_text():
+    plan = reconcile([Amend(target="a1", task="prep Q3 deck", confidence=0.9)], ctx(ACTIVE))
+    assert plan.mutations[0].kind == "amend"
+    assert plan.mutations[0].target == "a1"
+    assert plan.mutations[0].task == "prep Q3 deck"
+
+
+def test_amend_bad_target_asks():
+    plan = reconcile([Amend(target="zz", task="x", confidence=0.9)], ctx(ACTIVE))
+    assert not plan.mutations and plan.questions
+
+
+def test_amend_low_confidence_asks():
+    plan = reconcile([Amend(target="a1", task="x", confidence=0.2)], ctx(ACTIVE))
+    assert not plan.mutations and plan.questions
 
 
 def test_multi_capture_does_not_borrow_message_date():

@@ -74,6 +74,7 @@ class Capture:
     task: str  # clean label
     raw: str  # echo of the phrasing; the core resolves the date from this
     time: str | None = None  # HH:MM
+    relate: str | None = None  # id of an existing item to inherit a date from
     confidence: float = 1.0
 
 
@@ -94,6 +95,13 @@ class Drop:
 class Reschedule:
     target: str
     raw: str = ""  # date phrasing the core re-resolves the new date from
+    confidence: float = 1.0
+
+
+@dataclass
+class Amend:
+    target: str  # existing item id
+    task: str  # the full new label for that item
     confidence: float = 1.0
 
 

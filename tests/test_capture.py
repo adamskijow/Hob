@@ -32,7 +32,7 @@ def service(llm=None):
 
 def test_capture_stores_item_and_replies():
     svc, store = service(FakeLlm(capture_json("call the pool guy")))
-    assert svc.handle(msg("call the pool guy")) == "got it"
+    assert svc.handle(msg("call the pool guy")) == 'got it: "call the pool guy"'
     items = store.open_items()
     assert len(items) == 1
     assert items[0].task == "call the pool guy"
@@ -42,7 +42,7 @@ def test_capture_stores_item_and_replies():
 
 def test_capture_with_date_end_to_end():
     svc, store = service(FakeLlm(capture_json("org prez", "org prez Monday", "2026-07-06")))
-    assert svc.handle(msg("committed to the org prez Monday")) == "got it for 2026-07-06"
+    assert svc.handle(msg("committed to the org prez Monday")) == 'got it: "org prez" for 2026-07-06'
     item = store.open_items()[0]
     assert item.task == "org prez"
     assert item.due_date == "2026-07-06"
@@ -75,6 +75,6 @@ def test_help():
 def test_throw_tasks_all_day():
     svc, store = service(FakeLlm(capture_json("t")))
     for _ in range(5):
-        assert svc.handle(msg("a task")) == "got it"
+        assert svc.handle(msg("a task")) == 'got it: "t"'
     assert len(store.open_items()) == 5
     assert svc.handle(msg("/today")).count("\n") == 4

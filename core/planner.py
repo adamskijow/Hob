@@ -25,7 +25,16 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from core import dates
-from core.models import Bulk, Capture, Complete, Drop, Query, Reschedule, Unknown
+from core.models import (
+    Amend,
+    Bulk,
+    Capture,
+    Complete,
+    Drop,
+    Query,
+    Reschedule,
+    Unknown,
+)
 
 # Below this, a reference-bearing action (complete/drop/reschedule) is treated as
 # a guess and asked about rather than applied.
@@ -100,7 +109,11 @@ def _check_target(target: str, confidence: float, active: dict, plan: Plan) -> s
 
 
 def _reconcile_capture(
-    action: Capture, today: date, message_fallback: str | None, plan: Plan
+    action: Capture,
+    today: date,
+    message_fallback: str | None,
+    active_due: dict,
+    plan: Plan,
 ) -> None:
     resolution = dates.resolve(action.raw, today)
     if resolution.date is None and not resolution.ambiguous and message_fallback:
@@ -121,15 +134,31 @@ def _reconcile_capture(
         )
         return
 
+    due_date = resolution.date
+    if due_date is None and action.relate:
+        # A task for an existing item (e.g. "bring soda" for a birthday) with no
+        # date of its own inherits that item's date so it surfaces with it.
+        due_date = active_due.get(action.relate.lower())
+
     plan.mutations.append(
         Mutation(
             kind="capture",
             task=action.task,
             raw=action.raw,
-            due_date=resolution.date,
+            due_date=due_date,
             due_time=resolution.time,
         )
     )
+
+
+def _reconcile_amend(action: Amend, active: dict, plan: Plan) -> None:
+    target = _check_target(action.target, action.confidence, active, plan)
+    if target is None:
+        return
+    if not action.task:
+        plan.questions.append(f'what should "{active[target]}" say now?')
+        return
+    plan.mutations.append(Mutation(kind="amend", target=target, task=action.task))
 
 
 def _reconcile_reschedule(
@@ -240,10 +269,13 @@ def reconcile(actions: list, ctx) -> Plan:
     # A lone capture may recover a dropped date from the whole message; with
     # several captures we keep each action's own raw so they stay distinct.
     n_captures = sum(isinstance(a, Capture) for a in actions)
+    active_due = {i["id"].lower(): i.get("due_date") for i in ctx.active_items}
     for action in actions:
         if isinstance(action, Capture):
             fallback = ctx.message if n_captures == 1 else None
-            _reconcile_capture(action, today, fallback, plan)
+            _reconcile_capture(action, today, fallback, active_due, plan)
+        elif isinstance(action, Amend):
+            _reconcile_amend(action, active, plan)
         elif isinstance(action, Complete):
             target = _check_target(action.target, action.confidence, active, plan)
             if target is not None:

@@ -2,6 +2,7 @@
 """Interpreter: canned model JSON in, parsed Actions out, graceful on garbage."""
 from core.interpreter import MODEL_UNREACHABLE, build_prompt, interpret, parse_actions
 from core.models import (
+    Amend,
     Bulk,
     Capture,
     Complete,
@@ -96,6 +97,26 @@ def test_parse_complete_drop_reschedule_query():
 
 def test_reference_action_without_target_is_unknown():
     assert isinstance(parse_actions({"actions": [{"type": "complete"}]})[0], Unknown)
+
+
+def test_parse_capture_relate():
+    res = parse_actions(
+        {"actions": [{"type": "capture", "task": "bring soda", "raw": "bring soda",
+                      "relate": "a7"}]}
+    )
+    assert isinstance(res[0], Capture) and res[0].relate == "a7"
+
+
+def test_parse_amend():
+    res = parse_actions(
+        {"actions": [{"type": "amend", "target": "a2", "task": "prep Q3 deck"}]}
+    )
+    assert isinstance(res[0], Amend) and res[0].target == "a2"
+    assert res[0].task == "prep Q3 deck"
+
+
+def test_amend_without_text_is_unknown():
+    assert isinstance(parse_actions({"actions": [{"type": "amend", "target": "a2"}]})[0], Unknown)
 
 
 def test_parse_bulk():

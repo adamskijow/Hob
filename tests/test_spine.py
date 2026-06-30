@@ -40,6 +40,9 @@ def seed(store):
                 updated_at=created,
             )
         )
+    # Advance the id counter past the seeded ids so a later capture gets a4, not
+    # a1 (production ids always come from next_item_id, which bumps this).
+    store.set_meta("item_seq", str(len(base)))
 
 
 def service(llm):
@@ -156,6 +159,30 @@ def test_model_unreachable_says_so_and_preserves_pending():
     assert "can't reach the model" in out
     assert store.open_items() == []  # nothing applied
     assert store.get_meta("pending")  # an outage must not clear a pending question
+
+
+def test_amend_edits_item_text():
+    llm = FakeLlm({"actions": [{"type": "amend", "target": "a1", "task": "prep the Q3 deck"}]})
+    svc, store = service(llm)
+
+    out = svc.handle(msg("change the prez task to prep the Q3 deck"))
+
+    assert store.get_item("a1").task == "prep the Q3 deck"
+    assert 'updated: "prep the Q3 deck"' in out
+
+
+def test_capture_relate_inherits_date_end_to_end():
+    llm = FakeLlm(
+        {"actions": [{"type": "capture", "task": "bring soda", "raw": "bring soda",
+                      "relate": "a3"}]}
+    )
+    svc, store = service(llm)  # a3 is due 2026-06-28
+
+    out = svc.handle(msg("Shelly asked me to bring soda too"))
+
+    soda = [i for i in store.open_items() if i.task == "bring soda"][0]
+    assert soda.due_date == "2026-06-28"  # inherited a3's date
+    assert 'got it: "bring soda" for 2026-06-28' in out
 
 
 def test_bulk_drop_all_clears_the_list():

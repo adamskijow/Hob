@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import date
 
 from core.models import (
+    Amend,
     Bulk,
     Capture,
     Complete,
@@ -59,8 +60,14 @@ ACTION_SCHEMA = {
                 "oneOf": [
                     _variant(
                         "capture",
-                        {"task": _STR, "raw": _STR, "time": _STR, "confidence": _NUM},
+                        {"task": _STR, "raw": _STR, "time": _STR, "relate": _STR,
+                         "confidence": _NUM},
                         ["type", "raw"],
+                    ),
+                    _variant(
+                        "amend",
+                        {"target": _STR, "task": _STR, "confidence": _NUM},
+                        ["type", "target", "task"],
                     ),
                     _variant(
                         "complete",
@@ -116,7 +123,12 @@ The user's message:
 Return a JSON object {{"actions": [ ... ]}}. Each action is one of:
 - capture: a NEW task to remember. Fields: type "capture", task (clean \
 imperative label with no date words), raw (echo the user's words for this task, \
-keeping any date and time words), time (HH:MM or null), confidence (0 to 1).
+keeping any date and time words), time (HH:MM or null), relate (see below, else \
+null), confidence (0 to 1).
+- amend: change the TEXT of an EXISTING item (add a detail to it, or reword it). \
+Fields: type "amend", target (item id), task (the item's full new label, keeping \
+what is still true), confidence. Use when the user changes what an existing item \
+says: "also bring soda to the party", "rename the prez task to prep Q3".
 - complete: mark an EXISTING item done. Fields: type "complete", target (item \
 id), confidence.
 - drop: cancel an EXISTING item that no longer applies. Fields: type "drop", \
@@ -138,7 +150,14 @@ today", "today's stuff".
   - "date": one specific named day. Use for "all of friday", "monday's tasks".
 - unknown: you cannot tell what they want. Fields: type "unknown", note (short).
 
+relate: if a NEW captured task is FOR or PART OF an existing open item (e.g. \
+"bring soda" for an existing birthday), set relate to that item's id so the new \
+task inherits that item's date. Otherwise leave relate null.
+
 Choosing the action:
+- If the user adds a detail to an existing item itself, use amend. If it is a \
+distinct new task that belongs with an existing event, use capture with relate. \
+Either is acceptable when unsure; both keep it tied to that item.
 - A question (phrased as what/when/anything/how, or ending with "?") is a query, \
 never an edit. "what's on for tomorrow?" -> query.
 - Use complete, drop, or reschedule only when the user clearly states they \
@@ -256,8 +275,15 @@ def _parse_one(action: object):
             task=task or raw,
             raw=raw or task,
             time=_str(action.get("time")),
+            relate=_str(action.get("relate")),
             confidence=conf,
         )
+    if kind == "amend":
+        target = _str(action.get("target"))
+        new_task = _str(action.get("task"))
+        if not target or not new_task:
+            return Unknown(note="amend without target or text")
+        return Amend(target=target, task=new_task, confidence=conf)
     if kind == "complete":
         target = _str(action.get("target"))
         return Complete(target=target, confidence=conf) if target else Unknown(
