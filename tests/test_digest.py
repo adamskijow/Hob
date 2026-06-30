@@ -96,8 +96,8 @@ def test_render_markers():
         item("a2", "y", due="2026-06-29", time="09:00"),
     ]
     out = render_digest(ordered, "2026-06-29")
-    assert "a1: x (overdue, 2026-06-27)" in out
-    assert "a2: y (09:00)" in out
+    assert "1: x (overdue, 2026-06-27)" in out
+    assert "2: y (09:00)" in out
 
 
 def test_digest_service_sends_and_persists_order():
@@ -118,7 +118,7 @@ def test_digest_service_sends_and_persists_order():
     assert len(send.calls) == 1
     chat, text = send.calls[0]
     assert chat == 42
-    assert "a1: review audit (overdue, 2026-06-27)" in text
+    assert "1: review audit (overdue, 2026-06-27)" in text
     assert "future thing" not in text
     # persisted in presented order, so ordinals resolve later
     assert [d.id for d in store.last_digest().items] == ["a1", "a2", "a3"]

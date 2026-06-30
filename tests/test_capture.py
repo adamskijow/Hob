@@ -59,7 +59,7 @@ def test_today_lists_open_items():
     svc, store = service(FakeLlm([capture_json("first"), capture_json("second")]))
     svc.handle(msg("first"))
     svc.handle(msg("second"))
-    assert svc.handle(msg("/today")) == "a1: first\na2: second"
+    assert svc.handle(msg("/today")) == "1: first\n2: second"
 
 
 def test_today_empty():

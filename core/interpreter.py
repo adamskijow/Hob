@@ -177,9 +177,11 @@ capture. "dentist next Friday" -> capture. "call the pool guy" -> capture, even 
 if a similar item already exists.
 
 Resolving references:
-- To point at an existing item, set target to its id from the open items list.
-- The user may name it by description ("the prez one") or by position ("the \
-third one", matching this morning's digest order). Map either to the right id.
+- Each open item is listed as "number: id: label". To point at one, set target \
+(or relate) to its id.
+- The user may use the number ("drop 2"), the position ("the second one", "the \
+third one" by digest order), or a description ("the prez one"). Map any of these \
+to that item's id.
 - If you are unsure which item is meant, lower the confidence; never guess an id.
 
 Rules:
@@ -194,9 +196,9 @@ def _format_active(items: list[dict]) -> str:
     if not items:
         return "  (none)"
     return "\n".join(
-        f"  {i['id']}: {i['label']}"
+        f"  {n}: {i['id']}: {i['label']}"
         + (f" (due {i['due_date']})" if i.get("due_date") else "")
-        for i in items
+        for n, i in enumerate(items, start=1)
     )
 
 

@@ -17,7 +17,7 @@ from dataclasses import asdict
 from datetime import date
 
 from config import Config, ConfigError
-from core.digest import render_digest, select_digest_items
+from core.digest import ordered_open, render_digest, select_digest_items
 from core.interpreter import MODEL_UNREACHABLE, interpret
 from core.models import (
     SOURCE_CAPTURE,
@@ -136,9 +136,11 @@ class MessageService:
         return self._interpret_and_apply(text, message_id)
 
     def _context(self, text: str) -> InterpreterContext:
+        # Canonical order so the position numbers the model sees match what the
+        # user sees in /today and the digest.
+        ordered = ordered_open(self._store.open_items(), self._clock.today().isoformat())
         active = [
-            {"id": i.id, "label": i.task, "due_date": i.due_date}
-            for i in self._store.open_items()
+            {"id": i.id, "label": i.task, "due_date": i.due_date} for i in ordered
         ]
         last = self._store.last_digest()
         last_items = (
@@ -272,17 +274,20 @@ class MessageService:
 
     def _answer_query(self, q: QueryIntent) -> str:
         today = self._clock.today().isoformat()
+        open_items = self._store.open_items()
+        ordered = ordered_open(open_items, today)
+        pos = {i.id: n for n, i in enumerate(ordered, start=1)}
         if q.kind == "all":
-            items, title = self._store.open_items(), "all open:"
+            items, title = ordered, "all open:"
         elif q.kind == "date":
-            items = [i for i in self._store.open_items() if i.due_date == q.date]
+            items = [i for i in ordered if i.due_date == q.date]
             title = f"on {q.date}:"
         else:
-            items = select_digest_items(self._store.open_items(), today)
+            items = select_digest_items(open_items, today)
             title = "today:"
         if not items:
             return f"{title} nothing"
-        return title + "\n" + "\n".join(f"{i.id}: {i.task}" for i in items)
+        return title + "\n" + "\n".join(f"{pos[i.id]}: {i.task}" for i in items)
 
     def _reply(
         self, applied: list[tuple[str, Item]], questions: list[str], answers: list[str]
@@ -325,10 +330,10 @@ class MessageService:
         return "\n".join(parts) if parts else "ok"
 
     def _today(self) -> str:
-        items = self._store.open_items()
-        if not items:
+        ordered = ordered_open(self._store.open_items(), self._clock.today().isoformat())
+        if not ordered:
             return "nothing on deck"
-        return "\n".join(f"{i.id}: {i.task}" for i in items)
+        return "\n".join(f"{n}: {i.task}" for n, i in enumerate(ordered, start=1))
 
 
 class DigestService:

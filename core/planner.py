@@ -126,14 +126,35 @@ def _hold(plan: Plan, mutation: Mutation, question: str) -> None:
     plan.confirm.question = question
 
 
-def _check_target(target: str, confidence: float, active: dict, plan: Plan) -> str | None:
+_NUM_WORDS = {
+    "one": "1", "first": "1", "two": "2", "second": "2", "three": "3",
+    "third": "3", "four": "4", "fourth": "4", "five": "5", "fifth": "5",
+    "six": "6", "sixth": "6", "seven": "7", "seventh": "7", "eight": "8",
+    "eighth": "8", "nine": "9", "ninth": "9", "ten": "10", "tenth": "10",
+}
+
+
+def _resolve_ref(ref: str, active: dict, by_pos: dict) -> str | None:
+    """Map a target/relate reference to a stored id, tolerating the forms the
+    model emits: an id (a1, any case), a list position (2), a stray "id:"/"#"
+    prefix, or a spelled ordinal (first/second)."""
+    if not ref:
+        return None
+    r = ref.strip().lower().removeprefix("id:").removeprefix("#").strip()
+    r = _NUM_WORDS.get(r, r)
+    if r in active:
+        return r
+    return by_pos.get(r)  # a 1-based list position
+
+
+def _check_target(
+    target: str, confidence: float, active: dict, by_pos: dict, plan: Plan
+) -> str | None:
     """Validate a reference. Queue a question and return None if it does not
-    resolve confidently; otherwise return the id. Matching is case-insensitive
-    because the display shows ids uppercased (A6) though they are stored lower."""
-    key = target.lower()
-    if key not in active:
-        open_ids = ", ".join(active) if active else "none"
-        plan.questions.append(f"i could not find that item. open: {open_ids}.")
+    resolve confidently; otherwise return the id. Accepts an id or a position."""
+    key = _resolve_ref(target, active, by_pos)
+    if key is None:
+        plan.questions.append("i could not find that item. check /today for the list.")
         return None
     if confidence < CONFIDENCE_THRESHOLD:
         plan.questions.append(f'did you mean: "{active[key]}"?')
@@ -146,6 +167,7 @@ def _reconcile_capture(
     today: date,
     message_fallback: str | None,
     active_due: dict,
+    by_pos: dict,
     plan: Plan,
 ) -> None:
     resolution = dates.resolve(action.raw, today)
@@ -171,7 +193,8 @@ def _reconcile_capture(
     if due_date is None and action.relate:
         # A task for an existing item (e.g. "bring soda" for a birthday) with no
         # date of its own inherits that item's date so it surfaces with it.
-        due_date = active_due.get(action.relate.lower())
+        rid = _resolve_ref(action.relate, active_due, by_pos)
+        due_date = active_due.get(rid) if rid else None
 
     mutation = Mutation(
         kind="capture",
@@ -187,8 +210,8 @@ def _reconcile_capture(
     plan.mutations.append(mutation)
 
 
-def _reconcile_amend(action: Amend, active: dict, plan: Plan) -> None:
-    target = _check_target(action.target, action.confidence, active, plan)
+def _reconcile_amend(action: Amend, active: dict, by_pos: dict, plan: Plan) -> None:
+    target = _check_target(action.target, action.confidence, active, by_pos, plan)
     if target is None:
         return
     if not action.task:
@@ -198,9 +221,9 @@ def _reconcile_amend(action: Amend, active: dict, plan: Plan) -> None:
 
 
 def _reconcile_reschedule(
-    action: Reschedule, today: date, active: dict, message: str, plan: Plan
+    action: Reschedule, today: date, active: dict, by_pos: dict, message: str, plan: Plan
 ) -> None:
-    target = _check_target(action.target, action.confidence, active, plan)
+    target = _check_target(action.target, action.confidence, active, by_pos, plan)
     if target is None:
         return
     label = active[target]
@@ -320,24 +343,26 @@ def reconcile(actions: list, ctx) -> Plan:
     # several captures we keep each action's own raw so they stay distinct.
     n_captures = sum(isinstance(a, Capture) for a in actions)
     active_due = {i["id"].lower(): i.get("due_date") for i in ctx.active_items}
+    # 1-based position -> id, so a typed "drop 2" resolves to the displayed item.
+    by_pos = {str(n): i["id"] for n, i in enumerate(ctx.active_items, start=1)}
     for action in actions:
         if isinstance(action, Capture):
             fallback = ctx.message if n_captures == 1 else None
-            _reconcile_capture(action, today, fallback, active_due, plan)
+            _reconcile_capture(action, today, fallback, active_due, by_pos, plan)
         elif isinstance(action, Amend):
-            _reconcile_amend(action, active, plan)
+            _reconcile_amend(action, active, by_pos, plan)
         elif isinstance(action, Complete):
-            target = _check_target(action.target, action.confidence, active, plan)
+            target = _check_target(action.target, action.confidence, active, by_pos, plan)
             if target is not None:
                 plan.mutations.append(Mutation(kind="complete", target=target))
         elif isinstance(action, Drop):
-            target = _check_target(action.target, action.confidence, active, plan)
+            target = _check_target(action.target, action.confidence, active, by_pos, plan)
             if target is not None:
                 plan.mutations.append(
                     Mutation(kind="drop", target=target, reason=action.reason)
                 )
         elif isinstance(action, Reschedule):
-            _reconcile_reschedule(action, today, active, ctx.message, plan)
+            _reconcile_reschedule(action, today, active, by_pos, ctx.message, plan)
         elif isinstance(action, Query):
             _reconcile_query(action, today, ctx, plan)
         elif isinstance(action, Bulk):

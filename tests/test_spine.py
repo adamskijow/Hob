@@ -239,4 +239,4 @@ def test_query_today_lists_items():
     out = svc.handle(msg("what's on today?"))
 
     assert "today:" in out
-    assert "a3: review SR audit" in out  # overdue rolls into today
+    assert "1: review SR audit" in out  # overdue rolls in first

@@ -87,6 +87,32 @@ def test_complete_valid_target():
     assert not plan.questions
 
 
+def test_resolve_ref_tolerates_model_forms():
+    from core.planner import _resolve_ref
+    active, by_pos = {"a1": "x", "a3": "y"}, {"1": "a1", "2": "a3"}
+    assert _resolve_ref("a1", active, by_pos) == "a1"  # id
+    assert _resolve_ref("A1", active, by_pos) == "a1"  # uppercased id
+    assert _resolve_ref("2", active, by_pos) == "a3"  # position
+    assert _resolve_ref("id:a1", active, by_pos) == "a1"  # stray "id:" prefix
+    assert _resolve_ref("id:2", active, by_pos) == "a3"
+    assert _resolve_ref("first", active, by_pos) == "a1"  # spelled ordinal
+    assert _resolve_ref("#2", active, by_pos) == "a3"
+    assert _resolve_ref("zzz", active, by_pos) is None
+
+
+def test_target_by_position_number():
+    # The user sees positions; "drop 2" must resolve to the 2nd listed item's id.
+    plan = reconcile([Complete(target="2", confidence=0.9)], ctx(ACTIVE))
+    assert plan.mutations[0].target == "a2"
+
+
+def test_relate_by_position_number():
+    plan = reconcile(
+        [Capture(task="bring soda", raw="bring soda", relate="3")], ctx(ACTIVE)
+    )
+    assert plan.mutations[0].due_date == "2026-06-28"  # item #3 (a3) date
+
+
 def test_target_matched_case_insensitively():
     # The display shows ids uppercased (A1); typing that must still resolve.
     plan = reconcile([Complete(target="A1", confidence=0.9)], ctx(ACTIVE))

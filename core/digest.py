@@ -53,17 +53,30 @@ def select_digest_items(open_items: list[Item], today: str) -> list[Item]:
     return overdue + due_today + undated
 
 
+def ordered_open(items: list[Item], today: str) -> list[Item]:
+    """All open items in one canonical reading order: on-deck (overdue, due today,
+    undated) first, then future-dated. Positions are numbered over this so every
+    view and the morning digest agree on what "2" refers to."""
+    on_deck = select_digest_items(items, today)
+    seen = {i.id for i in on_deck}
+    future = sorted(
+        (i for i in items if i.id not in seen),
+        key=lambda i: (i.due_date or "", i.created_at),
+    )
+    return on_deck + future
+
+
 def render_digest(ordered: list[Item], today: str) -> str:
     """The morning message. Terse, one line per item."""
     if not ordered:
         return "morning. nothing on deck today."
     lines = ["morning. here is today:"]
-    for item in ordered:
+    for n, item in enumerate(ordered, start=1):
         if item.due_date and item.due_date < today:
             suffix = f" (overdue, {item.due_date})"
         elif item.due_time:
             suffix = f" ({item.due_time})"
         else:
             suffix = ""
-        lines.append(f"{item.id}: {item.task}{suffix}")
+        lines.append(f"{n}: {item.task}{suffix}")
     return "\n".join(lines)
