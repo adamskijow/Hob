@@ -72,6 +72,25 @@ def test_help():
     assert "today" in svc.handle(msg("/help")).lower()
 
 
+def test_start_welcomes_distinct_from_help():
+    svc, _ = service()
+    welcome = svc.handle(msg("/start"))
+    assert "hob" in welcome.lower() and "digest" in welcome.lower()
+    assert "07:00" in welcome  # mentions the wake time
+    assert welcome != svc.handle(msg("/help"))
+
+
+def test_model_ready_matching():
+    from app import _model_ready
+
+    class Llm:
+        def installed_models(self):
+            return ["qwen2.5:14b-instruct", "llama3.2:1b"]
+
+    assert _model_ready(Llm(), "qwen2.5:14b-instruct")
+    assert not _model_ready(Llm(), "qwen2.5:7b-instruct")
+
+
 def test_relative_phrasing():
     from datetime import date
     from app import _relative

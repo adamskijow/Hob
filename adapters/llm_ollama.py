@@ -38,6 +38,18 @@ class OllamaLlm:
         # forever; the core then degrades to Unknown and asks.
         self._client = ollama.Client(host=host, timeout=timeout)
 
+    def installed_models(self) -> list[str]:
+        """Names of locally pulled models. Raises if ollama is unreachable; used
+        by the preflight to tell 'ollama down' from 'model not pulled'."""
+        resp = self._client.list()
+        models = resp.get("models", []) if isinstance(resp, dict) else getattr(resp, "models", [])
+        names = []
+        for m in models:
+            name = m.get("model") if isinstance(m, dict) else getattr(m, "model", None)
+            if name:
+                names.append(name)
+        return names
+
     def complete_json(self, prompt: str, schema: dict) -> dict:
         try:
             response = self._client.chat(

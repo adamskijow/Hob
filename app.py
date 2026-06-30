@@ -106,18 +106,33 @@ class MessageService:
     core stay on opposite sides of this seam.
     """
 
-    def __init__(self, store: Store, clock: Clock, llm: Llm, timezone: str) -> None:
+    def __init__(
+        self, store: Store, clock: Clock, llm: Llm, timezone: str, wake_time: str = "07:00"
+    ) -> None:
         self._store = store
         self._clock = clock
         self._llm = llm
         self._timezone = timezone
+        self._wake_time = wake_time
+
+    def _welcome(self) -> str:
+        return (
+            'hi, i am hob. text me small tasks through the day ("call the vet at '
+            '3pm", "take out the trash every monday") and each morning at '
+            f"{self._wake_time} i will send one organized digest. correct it in "
+            'plain language ("did the vet one", "push it to friday"), ask me '
+            'things ("what is on today", "what is overdue"), and i will keep it '
+            "all right here. /help anytime."
+        )
 
     def handle(self, msg: InboundMessage) -> str:
         # Learn where to send the unsolicited morning digest.
         self._store.set_meta(CHAT_ID_KEY, str(msg.chat_id))
         text = msg.text.strip()
         low = text.lower()
-        if low in ("/start", "/help"):
+        if low == "/start":
+            return self._welcome()
+        if low == "/help":
             return HELP
         if low == "/today":
             return self._today()
@@ -431,10 +446,26 @@ class ReminderService:
             self._store.mark_reminded(item.id)
 
 
+def _model_ready(llm: OllamaLlm, model: str) -> bool:
+    return any(model == m or model in m for m in llm.installed_models())
+
+
 async def _run_daemon(cfg: Config, store: SqliteStore) -> None:
     clock = SystemClock(cfg.timezone)
     llm = OllamaLlm(cfg.model, cfg.ollama_host, keep_alive=cfg.keep_alive)
-    service = MessageService(store, clock, llm, cfg.timezone)
+    log = logging.getLogger("hob")
+    try:
+        if not _model_ready(llm, cfg.model):
+            log.warning(
+                "model %s is not pulled; messages will fail until you run: "
+                "ollama pull %s", cfg.model, cfg.model
+            )
+    except Exception:
+        log.warning(
+            "ollama not reachable at %s; messages will fail until it is up "
+            "(ollama serve, or Hearth)", cfg.ollama_host
+        )
+    service = MessageService(store, clock, llm, cfg.timezone, cfg.wake_time)
     telegram = TelegramAdapter(store, service.handle, token=cfg.telegram_token)
     digest = DigestService(store, clock, telegram.send)
     reminder = ReminderService(store, clock, telegram.send)
@@ -460,7 +491,47 @@ async def _run_daemon(cfg: Config, store: SqliteStore) -> None:
     await asyncio.gather(telegram.run(), scheduler.run())
 
 
+def _doctor() -> int:
+    """Preflight: check the environment a fresh install needs before first run."""
+    print("hob doctor")
+    try:
+        cfg = Config.from_env()
+        print(f"  OK   config: tz={cfg.timezone} wake={cfg.wake_time} db={cfg.db_path}")
+    except ConfigError as exc:
+        print(f"  FAIL config: {exc}")
+        return 2
+
+    ok = True
+    if cfg.telegram_enabled:
+        print("  OK   HOB_TELEGRAM_TOKEN is set")
+    else:
+        print("  WARN HOB_TELEGRAM_TOKEN not set: create a bot with @BotFather and "
+              "set it (the bot will not run without it)")
+        ok = False
+    try:
+        SqliteStore(cfg.db_path).close()
+        print(f"  OK   database writable: {cfg.db_path}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  FAIL database not writable: {cfg.db_path}: {exc}")
+        ok = False
+    llm = OllamaLlm(cfg.model, cfg.ollama_host)
+    try:
+        if _model_ready(llm, cfg.model):
+            print(f"  OK   ollama reachable; model present: {cfg.model}")
+        else:
+            print(f"  FAIL ollama is up but model {cfg.model} is not pulled. "
+                  f"Run: ollama pull {cfg.model}")
+            ok = False
+    except Exception:  # noqa: BLE001
+        print(f"  FAIL ollama not reachable at {cfg.ollama_host}. Start it "
+              "(ollama serve, or Hearth).")
+        ok = False
+    print("all good" if ok else "problems found (see above)")
+    return 0 if ok else 1
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
     )
@@ -468,6 +539,8 @@ def main(argv: list[str] | None = None) -> int:
     # token in the URL. Quiet it so the token never lands in the log file.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    if argv and argv[0] == "doctor":
+        return _doctor()
     try:
         cfg = Config.from_env()
     except ConfigError as exc:
@@ -486,7 +559,12 @@ def main(argv: list[str] | None = None) -> int:
     store = SqliteStore(cfg.db_path)
     try:
         if not cfg.telegram_enabled:
-            log.info("HOB_TELEGRAM_TOKEN not set; nothing to run, exiting")
+            print(
+                "hob: HOB_TELEGRAM_TOKEN not set, nothing to run. Create a bot "
+                "with @BotFather, set HOB_TELEGRAM_TOKEN, and check setup with "
+                "`python app.py doctor`. See README.",
+                file=sys.stderr,
+            )
             return 0
         try:
             asyncio.run(_run_daemon(cfg, store))

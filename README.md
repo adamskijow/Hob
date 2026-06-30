@@ -65,17 +65,25 @@ Requires [uv](https://docs.astral.sh/uv/) and a local
 ```
 uv sync                       # create the venv, fetch Python 3.12, install deps
 uv run pytest                 # run the test suite
+uv run python app.py doctor   # preflight: token, ollama, model, config, db
 uv run python app.py          # start hob
 ```
+
+`doctor` checks everything a first run needs and prints what to fix, so a missing
+token or an un-pulled model is caught before your first message instead of after.
 
 ### Create the Telegram bot
 
 1. In Telegram, message [@BotFather](https://t.me/BotFather) and send
    `/newbot`. Follow the prompts to name the bot.
 2. BotFather replies with an HTTP API token like `123456:ABC-DEF...`.
-3. Put it in the environment as `HOB_TELEGRAM_TOKEN` (see config below). Hob
-   learns which chat to send the morning digest to from the first message you
-   send it, so message the bot once after starting it.
+3. **Lock it to yourself.** In BotFather, open your bot's settings and set
+   *Bot Settings → Allowed Users / Restrict bot usage* to just you. Telegram
+   then blocks anyone else from messaging it; Hob has no per-user gate of its
+   own, so without this anyone who finds the bot can drive your list.
+4. Put the token in the environment as `HOB_TELEGRAM_TOKEN` (see config below).
+   Hob learns which chat to send the morning digest to from the first message you
+   send it, so message the bot once (try `/start`) after starting it.
 
 ### Pull the model
 
