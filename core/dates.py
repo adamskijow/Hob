@@ -165,10 +165,45 @@ def parse_time(text: str) -> str | None:
     return f"{hour:02d}:{minute:02d}"
 
 
+def leading_date(text: str, today: date) -> str | None:
+    """ISO date of a single date phrase at the START of text, else None. Lets a
+    leading date be shared across a multi-task message ("Tomorrow I need to A, B,
+    C") without misattributing a trailing one ("call A and email B tomorrow")."""
+    matches = search_dates(text, languages=["en"], settings=_settings(today)) or []
+    floor = today - timedelta(days=366)
+    matches = [(s, dt) for s, dt in matches if dt.date() >= floor]
+    if not matches or len({dt.date() for _, dt in matches}) != 1:
+        return None  # nothing, or more than one distinct date: do not share
+    low = text.lower()
+    earliest = min(matches, key=lambda m: low.find(m[0].lower()))
+    idx = low.find(earliest[0].lower())
+    if idx < 0:
+        return None
+    # Leading means only date-prefixing stopwords sit before it ("on monday ...",
+    # "tomorrow ..."), not a task word ("dentist friday ..." is dentist's date).
+    prefix = low[:idx].replace(",", " ").split()
+    if all(w in _DATE_PREFIXES for w in prefix):
+        return earliest[1].date().isoformat()
+    return None
+
+
+# Words that may precede a leading date without making it task-specific.
+_DATE_PREFIXES = {
+    "on", "by", "for", "this", "next", "the", "come", "starting", "around",
+    "about", "early", "late", "mid", "middle", "of", "end", "beginning",
+}
+
+
 def resolve(text: str, today: date) -> DateResolution:
     """Resolve a date and optional time from natural-language phrasing."""
     matches = search_dates(text, languages=["en"], settings=_settings(today)) or []
     datetimes = [dt for _, dt in matches]
+    # Drop implausible far-past parses. dateparser reads a bare number like "1130"
+    # ("my 1130 meeting", an 11:30 time) as the year 1130. We prefer future dates,
+    # so anything well before today is a misparse, not an intent: ignore it rather
+    # than schedule a task centuries ago.
+    floor = today - timedelta(days=366)
+    datetimes = [dt for dt in datetimes if dt.date() >= floor]
     explicit_time = next((_hm(dt) for dt in datetimes if _hm(dt)), None)
 
     # Bare ordinal day overrides dateparser, which misreads it as a month.

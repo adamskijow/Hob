@@ -147,6 +147,10 @@ CASES = [
     Case("send the morning digest at 7",
          lambda p: [(s.key, s.value) for s in p.settings] == [("wake_time", "07:00")],
          "NL setting (wake time)"),
+    Case("tomorrow I need to look at the slides, prep my 1130 meeting, and join the 2 o clock call",
+         lambda p: kinds(p) == ["capture", "capture", "capture"]
+         and all(m.due_date == "2026-06-30" for m in p.mutations),
+         "leading date shared across tasks; 1130 is not the year 1130"),
 ]
 
 

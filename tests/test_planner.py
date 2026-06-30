@@ -482,6 +482,25 @@ def test_amend_low_confidence_asks():
     assert not plan.mutations and plan.questions
 
 
+def test_multi_capture_shares_leading_date():
+    # "Tomorrow I need to A, B" -> the leading date reaches both tasks.
+    plan = reconcile(
+        [Capture(task="look at slides", raw="look at slides"),
+         Capture(task="prep meeting", raw="prep meeting")],
+        ctx(message="Tomorrow I need to look at slides and prep meeting"),
+    )
+    assert [m.due_date for m in plan.mutations] == ["2026-06-30", "2026-06-30"]
+
+
+def test_capture_uses_model_extracted_time():
+    # "1130" is not a year (dropped); the model's parsed time is kept as a fallback.
+    plan = reconcile(
+        [Capture(task="prep", raw="prep for my 1130 meeting", time="11:30")], ctx()
+    )
+    assert plan.mutations[0].due_date is None
+    assert plan.mutations[0].due_time == "11:30"
+
+
 def test_multi_capture_does_not_borrow_message_date():
     # With several captures the message fallback is off, so a date in the message
     # is not misattributed to all of them.

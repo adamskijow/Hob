@@ -182,17 +182,22 @@ def _reconcile_capture(
     action: Capture,
     today: date,
     message_fallback: str | None,
+    shared_date: str | None,
     active_due: dict,
     by_pos: dict,
     plan: Plan,
 ) -> None:
     resolution = dates.resolve(action.raw, today)
-    if resolution.date is None and not resolution.ambiguous and message_fallback:
-        # The model sometimes drops a leading date word ("Tomorrow ...") from
-        # raw. For a lone capture, recover the date from the whole message.
-        fallback = dates.resolve(message_fallback, today)
-        if fallback.ambiguous or fallback.date is not None:
-            resolution = fallback
+    if resolution.date is None and not resolution.ambiguous:
+        if shared_date is not None:
+            # A leading date shared across a multi-task message (computed above).
+            resolution = dates.DateResolution(date=shared_date)
+        elif message_fallback:
+            # The model sometimes drops a leading date word ("Tomorrow ...") from
+            # raw. For a lone capture, recover the date from the whole message.
+            fallback = dates.resolve(message_fallback, today)
+            if fallback.ambiguous or fallback.date is not None:
+                resolution = fallback
 
     if resolution.ambiguous:
         question = (
@@ -219,12 +224,18 @@ def _reconcile_capture(
         if first is not None:
             due_date = first.isoformat()
 
+    # The core owns date math, but a clock time needs none: trust the model's
+    # extracted time ("my 1130 meeting" -> 11:30) when we did not parse one.
+    due_time = resolution.time
+    if due_time is None and action.time:
+        due_time = dates.parse_time(action.time)
+
     mutation = Mutation(
         kind="capture",
         task=action.task,
         raw=action.raw,
         due_date=due_date,
-        due_time=resolution.time,
+        due_time=due_time,
         repeat=repeat,
         priority=action.priority,
         tag=action.tag,
@@ -422,14 +433,23 @@ def reconcile(actions: list, ctx) -> Plan:
     plan = Plan()
     # A lone capture may recover a dropped date from the whole message; with
     # several captures we keep each action's own raw so they stay distinct.
-    n_captures = sum(isinstance(a, Capture) for a in actions)
+    captures = [a for a in actions if isinstance(a, Capture)]
+    n_captures = len(captures)
     active_due = {i["id"].lower(): i.get("due_date") for i in ctx.active_items}
     # 1-based position -> id, so a typed "drop 2" resolves to the displayed item.
     by_pos = {str(n): i["id"] for n, i in enumerate(ctx.active_items, start=1)}
+    # A leading date that applies to a whole list ("Tomorrow I need to A, B, C")
+    # gets stripped from each task's raw by the model. Share a single date that
+    # sits at the START of the message across the captures that have none of their
+    # own. A trailing date ("call A and email B tomorrow") is not shared, and a
+    # capture with its own date keeps it (handled in _reconcile_capture).
+    shared_date = dates.leading_date(ctx.message, today) if n_captures > 1 else None
     for action in actions:
         if isinstance(action, Capture):
             fallback = ctx.message if n_captures == 1 else None
-            _reconcile_capture(action, today, fallback, active_due, by_pos, plan)
+            _reconcile_capture(
+                action, today, fallback, shared_date, active_due, by_pos, plan
+            )
         elif isinstance(action, Amend):
             _reconcile_amend(action, active, by_pos, plan)
         elif isinstance(action, Prioritize):

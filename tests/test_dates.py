@@ -2,7 +2,7 @@
 """Deterministic date resolution, seeded with a fixed today (Mon 2026-06-29)."""
 from datetime import date
 
-from core.dates import parse_time, resolve
+from core.dates import leading_date, parse_time, resolve
 
 TODAY = date(2026, 6, 29)  # Monday
 
@@ -76,6 +76,20 @@ def test_fuzzy_month_boundaries():
 def test_fuzzy_keeps_explicit_time():
     r = resolve("this weekend at 3pm", TODAY)
     assert r.date == "2026-07-04" and r.time == "15:00"
+
+
+def test_bare_number_not_read_as_far_past_year():
+    # dateparser reads "1130" (an 11:30 time) as the year 1130; we drop far-past.
+    assert resolve("prepare for my 1130 meeting", TODAY).date is None
+    # a genuinely recent past date is not over-filtered
+    assert resolve("yesterday", TODAY).date == "2026-06-28"
+
+
+def test_leading_date_vs_trailing():
+    assert leading_date("Tomorrow I need to do A, B, and C", TODAY) == "2026-06-30"
+    assert leading_date("on monday do A and B", TODAY) == "2026-07-06"
+    assert leading_date("call A and email B tomorrow", TODAY) is None  # trailing
+    assert leading_date("dentist friday and call mom", TODAY) is None  # not at start
 
 
 def test_parse_time():
