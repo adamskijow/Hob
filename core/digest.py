@@ -69,6 +69,12 @@ def priority_mark(item: Item) -> str:
     return ""
 
 
+def marks(item: Item) -> str:
+    """All the inline badges for a list line: priority, then tag."""
+    tag = f" [{item.tag}]" if item.tag else ""
+    return priority_mark(item) + tag
+
+
 def ordered_open(items: list[Item], today: str) -> list[Item]:
     """All open items in one canonical reading order: on-deck (overdue, due today,
     undated) first, then future-dated. Positions are numbered over this so every
@@ -94,5 +100,5 @@ def render_digest(ordered: list[Item], today: str) -> str:
             suffix = f" ({item.due_time})"
         else:
             suffix = ""
-        lines.append(f"{n}: {item.task}{suffix}{priority_mark(item)}")
+        lines.append(f"{n}: {item.task}{suffix}{marks(item)}")
     return "\n".join(lines)

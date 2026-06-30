@@ -235,6 +235,42 @@ def test_capture_with_priority_then_reprioritize():
     assert store.get_item(it.id).priority == "low"
 
 
+def test_tags_capture_and_query():
+    llm = FakeLlm([
+        {"actions": [
+            {"type": "capture", "task": "book caterer", "raw": "book caterer", "tag": "wedding"},
+            {"type": "capture", "task": "order flowers", "raw": "order flowers", "tag": "wedding"},
+        ]},
+        {"actions": [{"type": "query", "kind": "tag", "tag": "wedding"}]},
+    ])
+    store = SqliteStore(":memory:")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York")
+
+    svc.handle(msg("for the wedding: book the caterer, order flowers"))
+    assert {i.tag for i in store.open_items()} == {"wedding"}
+
+    out = svc.handle(msg("what's left for the wedding", message_id=2))
+    assert 'for "wedding":' in out and "book caterer" in out and "order flowers" in out
+
+
+def test_setting_wake_time_persists_and_scheduler_reads_it():
+    from adapters.scheduler import DigestScheduler, WAKE_TIME_KEY
+
+    llm = FakeLlm({"actions": [{"type": "setting", "key": "wake_time", "raw": "6:30"}]})
+    store = SqliteStore(":memory:")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York")
+
+    out = svc.handle(msg("send the morning digest at 6:30"))
+    assert "06:30" in out
+    assert store.get_meta(WAKE_TIME_KEY) == "06:30"
+
+    # the scheduler reads the override, not the configured default
+    sched = DigestScheduler(clock, store, fire=lambda: True, wake_time="07:00")
+    assert sched._wake_time() == "06:30"
+
+
 def test_amend_edits_item_text():
     llm = FakeLlm({"actions": [{"type": "amend", "target": "a1", "task": "prep the Q3 deck"}]})
     svc, store = service(llm)

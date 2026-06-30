@@ -45,6 +45,13 @@ A recurring task ("take out the trash every monday", "water the plants daily",
 "standup every weekday") reappears each occurrence: completing it advances to the
 next one and stays on the list rather than closing. Dropping it ends the series.
 
+Dates can be vague: "this weekend", "next week", "end of the month", "in a couple
+days" all resolve to concrete days (the core owns the math, never the model). A
+task can carry a priority ("call the plumber, it's urgent", "the audit can wait")
+that floats it up or down the digest, and a project tag ("for the wedding: book
+the caterer, order flowers") you can later query ("what's left for the wedding").
+You can change settings by chat too ("send the morning digest at 6:30").
+
 ## Commands
 
 - `/today` lists what is open.

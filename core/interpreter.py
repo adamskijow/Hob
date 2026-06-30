@@ -23,6 +23,7 @@ from core.models import (
     Prioritize,
     Query,
     Reschedule,
+    Setting,
     Undo,
     Unknown,
 )
@@ -64,8 +65,14 @@ ACTION_SCHEMA = {
                     _variant(
                         "capture",
                         {"task": _STR, "raw": _STR, "time": _STR, "relate": _STR,
-                         "repeat": _STR, "priority": _LEVEL, "confidence": _NUM},
+                         "repeat": _STR, "priority": _LEVEL, "tag": _STR,
+                         "confidence": _NUM},
                         ["type", "raw"],
+                    ),
+                    _variant(
+                        "setting",
+                        {"key": {"type": "string", "enum": ["wake_time"]}, "raw": _STR},
+                        ["type", "key", "raw"],
                     ),
                     _variant(
                         "prioritize",
@@ -96,8 +103,8 @@ ACTION_SCHEMA = {
                         "query",
                         {"kind": {"type": "string", "enum": [
                             "today", "date", "all", "overdue", "week", "search",
-                            "done"]},
-                         "date": _STR, "term": _STR},
+                            "done", "tag"]},
+                         "date": _STR, "term": _STR, "tag": _STR},
                         ["type", "kind"],
                     ),
                     _variant(
@@ -141,7 +148,13 @@ Set priority "high" for urgent/important/asap/"top priority"/"do first", "low" \
 for "low priority"/"can wait"/"no rush"/"whenever/someday", else "normal". A new \
 task is still NEW even when urgent and even if it resembles an item on the list: \
 "call the plumber, it's urgent" is capture (priority high), not a change to "call \
-the pool guy".
+the pool guy". Set tag to a project/list name when the user files tasks under one \
+("for the wedding: book the caterer, order flowers" -> two captures, each tag \
+"wedding"; "add taste the cake to the wedding list" -> tag "wedding"), else null.
+- setting: change a preference, not a task. Fields: type "setting", key \
+("wake_time" = the time the morning digest is sent), raw (the time words copied \
+from the message, e.g. "6:30", "8am"). Use for "change my wake time to 6:30", \
+"send the digest at 8", "wake me at 7 instead".
 - prioritize: change the importance of an item ALREADY on the list. Fields: type \
 "prioritize", target (item number), level ("high", "normal", or "low"), \
 confidence. Use it when the user re-ranks an existing item: "make the prez deck \
@@ -160,12 +173,14 @@ target, reason (optional), confidence.
 target (item id), raw (the new date words copied verbatim, e.g. "Friday", \
 "next Monday", "July 10"), confidence.
 - query: the user is asking about their tasks. Fields: type "query", kind, date \
-(ISO for a named upcoming day), term (search keywords). kind is one of: "today", \
+(ISO for a named upcoming day), term (search keywords), tag (project/list name). \
+kind is one of: "today", \
 "date" (a named upcoming day), "all", "overdue" (past due), "week" (next 7 days), \
 "search" (free text about a topic; set term to the keywords, e.g. "anything \
 about the pool guy" -> term "pool guy"), "done" (things ALREADY finished / \
 completed / got done / knocked out; "what did I finish today" -> done; set date \
-if a day is named).
+if a day is named), "tag" (what is in a project/list; "what's left for the \
+wedding" -> kind tag, tag "wedding").
 - bulk: act on MANY items at once with ONE action; never list them individually. \
 Fields: type "bulk", op ("complete", "drop", or "reschedule"), scope, date \
 (leave null; a separate program reads the day from the message), raw (op \
@@ -324,7 +339,16 @@ def _parse_one(action: object):
             relate=_str(action.get("relate")),
             repeat=_str(action.get("repeat")),
             priority=_level(action.get("priority")),
+            tag=_str(action.get("tag")),
             confidence=conf,
+        )
+    if kind == "setting":
+        key = _str(action.get("key"))
+        raw = _str(action.get("raw"))
+        return (
+            Setting(key=key, raw=raw)
+            if key and raw
+            else Unknown(note="setting without key or value")
         )
     if kind == "prioritize":
         target = _str(action.get("target"))
@@ -367,6 +391,7 @@ def _parse_one(action: object):
             kind=_str(action.get("kind")) or "today",
             date=_str(action.get("date")),
             term=_str(action.get("term")),
+            tag=_str(action.get("tag")),
         )
     if kind == "bulk":
         op = _str(action.get("op"))

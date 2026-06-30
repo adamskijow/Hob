@@ -10,6 +10,7 @@ from core.models import (
     Prioritize,
     Query,
     Reschedule,
+    Setting,
     Undo,
     Unknown,
 )
@@ -333,6 +334,32 @@ def test_capture_carries_priority():
         [Capture(task="call plumber", raw="call plumber urgent", priority="high")], ctx()
     )
     assert plan.mutations[0].kind == "capture" and plan.mutations[0].priority == "high"
+
+
+def test_capture_carries_tag():
+    plan = reconcile([Capture(task="book caterer", raw="book caterer", tag="wedding")], ctx())
+    assert plan.mutations[0].tag == "wedding"
+
+
+def test_query_tag():
+    plan = reconcile([Query(kind="tag", tag="wedding")], ctx(ACTIVE))
+    assert plan.queries[0].kind == "tag" and plan.queries[0].tag == "wedding"
+
+
+def test_query_term_beats_tag():
+    # "anything about the caterer" can come back with both; term wins -> search.
+    plan = reconcile([Query(kind="tag", tag="wedding", term="caterer")], ctx(ACTIVE))
+    assert plan.queries[0].kind == "search" and plan.queries[0].term == "caterer"
+
+
+def test_setting_wake_time_parsed():
+    plan = reconcile([Setting(key="wake_time", raw="6:30")], ctx())
+    assert [(s.key, s.value) for s in plan.settings] == [("wake_time", "06:30")]
+
+
+def test_setting_unparseable_asks():
+    plan = reconcile([Setting(key="wake_time", raw="whenever")], ctx())
+    assert not plan.settings and plan.questions
 
 
 def test_query_today_and_all():

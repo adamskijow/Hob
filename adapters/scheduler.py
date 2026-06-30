@@ -23,6 +23,10 @@ log = logging.getLogger("hob.scheduler")
 
 # meta key holding the ISO date of the last sent digest.
 LAST_DIGEST_KEY = "last_digest_date"
+# meta key holding a user-set wake time (HH:MM); overrides the configured default
+# so an in-chat "send the digest at 8" takes effect without a restart. Must match
+# app.WAKE_KEY.
+WAKE_TIME_KEY = "wake_time"
 
 
 class DigestScheduler:
@@ -38,10 +42,15 @@ class DigestScheduler:
         self._clock = clock
         self._store = store
         self._fire = fire  # callable, sync or async, no args
-        self._wake_time = wake_time
+        self._default_wake = wake_time  # config fallback; meta override wins
         self._poll_interval = poll_interval
         self._remind = remind  # optional callable, checked every tick
         self._stop = asyncio.Event()
+
+    def _wake_time(self) -> str:
+        """The live wake time: the user's in-chat setting if any, else the
+        configured default. Read each tick so a change takes effect at once."""
+        return self._store.get_meta(WAKE_TIME_KEY) or self._default_wake
 
     def stop(self) -> None:
         self._stop.set()
@@ -65,7 +74,7 @@ class DigestScheduler:
         so the next tick retries rather than skipping the day or crashing.
         """
         last = self._store.get_meta(LAST_DIGEST_KEY)
-        if not digest_owed(self._clock.now(), self._wake_time, last):
+        if not digest_owed(self._clock.now(), self._wake_time(), last):
             return False
         try:
             result = self._fire()
@@ -82,7 +91,7 @@ class DigestScheduler:
         return True
 
     async def run(self) -> None:
-        log.info("scheduler: wake_time=%s poll=%ss", self._wake_time, self._poll_interval)
+        log.info("scheduler: wake_time=%s poll=%ss", self._wake_time(), self._poll_interval)
         while not self._stop.is_set():
             await self._check_reminders()
             await self.tick()

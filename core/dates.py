@@ -20,7 +20,7 @@ import calendar
 import re
 import warnings
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 
 # dateparser emits a pytz-related warning on some platforms; quiet it.
 warnings.filterwarnings("ignore", module="dateparser")
@@ -79,16 +79,108 @@ def _hm(dt: datetime) -> str | None:
     return dt.strftime("%H:%M") if dt.time() != _MIDNIGHT else None
 
 
+def _last_of_month(year: int, month: int) -> date:
+    return date(year, month, calendar.monthrange(year, month)[1])
+
+
+def _next_month(today: date) -> tuple[int, int]:
+    month = today.month % 12 + 1
+    year = today.year + (1 if today.month == 12 else 0)
+    return year, month
+
+
+def _this_saturday(today: date) -> date:
+    return today + timedelta(days=(5 - today.weekday()) % 7)  # Sat=5
+
+
+def _next_monday(today: date) -> date:
+    return today - timedelta(days=today.weekday()) + timedelta(days=7)
+
+
+# "a couple of days", "few weeks": vague spans dateparser does not handle.
+_COUPLE_FEW = re.compile(r"\b(?:a\s+)?(couple|few)(?:\s+of)?\s+(days?|weeks?)\b", re.I)
+
+
+def _fuzzy(text: str, today: date) -> date | None:
+    """Relative phrases dateparser gets wrong or returns nothing for. The model
+    copies these words verbatim; we own the math here, with simple conventions:
+    weekend -> upcoming Saturday, next week -> next Monday, month/week ends ->
+    the last/first day, "a couple/few days" -> +2/+3."""
+    t = text.lower()
+
+    m = _COUPLE_FEW.search(t)
+    if m:
+        n = 2 if m.group(1) == "couple" else 3
+        per = 7 if m.group(2).startswith("week") else 1
+        return today + timedelta(days=n * per)
+
+    if re.search(r"\bnext\s+weekend\b", t):
+        return _this_saturday(today) + timedelta(days=7)
+    if re.search(r"\bweekend\b", t):
+        return _this_saturday(today)
+
+    if re.search(r"\bnext\s+month\b", t):
+        year, month = _next_month(today)
+        if re.search(r"\b(end|last)\b", t):
+            return _last_of_month(year, month)
+        return date(year, month, 1)  # beginning / first / bare "next month"
+
+    if re.search(r"\b(end|last day)\s+of\s+(?:the\s+|this\s+)?month\b", t) or re.search(
+        r"\bmonth['’]?s?\s+end\b", t
+    ):
+        return _last_of_month(today.year, today.month)
+    if re.search(r"\b(start|beginning|first)\s+of\s+(?:the\s+|this\s+)?month\b", t):
+        return _next_with_day(today, 1)
+
+    if re.search(r"\bnext\s+week\b", t):
+        monday = _next_monday(today)
+        if re.search(r"\b(mid|middle)\b", t):
+            return monday + timedelta(days=2)  # Wednesday
+        if re.search(r"\b(late|end)\b", t):
+            return monday + timedelta(days=4)  # Friday
+        return monday  # bare or "early next week"
+    if re.search(r"\b(end|rest)\s+of\s+(?:the\s+|this\s+)?week\b", t):
+        return today - timedelta(days=today.weekday()) + timedelta(days=4)  # this Fri
+
+    return None
+
+
+_TIME_RE = re.compile(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.IGNORECASE)
+
+
+def parse_time(text: str) -> str | None:
+    """A bare clock time as HH:MM 24h, for settings like the wake time. Handles
+    '6:30', '8', '8am', '6:30pm'. Returns None if no sensible time is present."""
+    m = _TIME_RE.search(text)
+    if not m:
+        return None
+    hour, minute = int(m.group(1)), int(m.group(2) or 0)
+    ampm = (m.group(3) or "").lower()
+    if ampm == "pm" and hour != 12:
+        hour += 12
+    elif ampm == "am" and hour == 12:
+        hour = 0
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
 def resolve(text: str, today: date) -> DateResolution:
     """Resolve a date and optional time from natural-language phrasing."""
     matches = search_dates(text, languages=["en"], settings=_settings(today)) or []
     datetimes = [dt for _, dt in matches]
+    explicit_time = next((_hm(dt) for dt in datetimes if _hm(dt)), None)
 
     # Bare ordinal day overrides dateparser, which misreads it as a month.
     ordinal = _ordinal_day(text, today)
     if ordinal is not None:
-        explicit_time = next((_hm(dt) for dt in datetimes if _hm(dt)), None)
         return DateResolution(date=ordinal.isoformat(), time=explicit_time)
+
+    # Fuzzy relative phrases ("this weekend", "end of the month") own the math;
+    # they override dateparser, which returns nothing or the wrong day for them.
+    fuzzy = _fuzzy(text, today)
+    if fuzzy is not None:
+        return DateResolution(date=fuzzy.isoformat(), time=explicit_time)
 
     if not datetimes:
         return DateResolution()

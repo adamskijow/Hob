@@ -34,6 +34,7 @@ from core.models import (
     Prioritize,
     Query,
     Reschedule,
+    Setting,
     Undo,
     Unknown,
 )
@@ -71,13 +72,21 @@ class Mutation:
     reason: str | None = None
     repeat: str | None = None  # recurrence rule for a capture
     priority: str | None = None  # high|normal|low, for capture and prioritize
+    tag: str | None = None  # project/list for a capture
 
 
 @dataclass
 class QueryIntent:
-    kind: str  # today | date | all | overdue | week | search | done
+    kind: str  # today | date | all | overdue | week | search | done | tag
     date: str | None = None  # ISO; for date, or the period start for done
     term: str | None = None  # search keywords, for kind=search
+    tag: str | None = None  # project/list name, for kind=tag
+
+
+@dataclass
+class SettingChange:
+    key: str  # wake_time
+    value: str  # validated value, e.g. "06:30"
 
 
 @dataclass
@@ -112,6 +121,7 @@ class Plan:
     pending: list[Pending] = field(default_factory=list)
     confirm: ConfirmIntent | None = None
     undo: bool = False  # the user asked to undo the last change
+    settings: list[SettingChange] = field(default_factory=list)
 
 
 def _too_far(due_iso: str, today: date) -> int | None:
@@ -217,6 +227,7 @@ def _reconcile_capture(
         due_time=resolution.time,
         repeat=repeat,
         priority=action.priority,
+        tag=action.tag,
     )
     years = _too_far(due_date, today) if due_date else None
     if years is not None:
@@ -233,6 +244,17 @@ def _reconcile_amend(action: Amend, active: dict, by_pos: dict, plan: Plan) -> N
         plan.questions.append(f'what should "{active[target]}" say now?')
         return
     plan.mutations.append(Mutation(kind="amend", target=target, task=action.task))
+
+
+def _reconcile_setting(action: Setting, plan: Plan) -> None:
+    if action.key == "wake_time":
+        value = dates.parse_time(action.raw)
+        if value is None:
+            plan.questions.append("what time should i send the morning digest?")
+            return
+        plan.settings.append(SettingChange(key="wake_time", value=value))
+    else:
+        plan.questions.append("i can only change the wake time right now.")
 
 
 def _reconcile_prioritize(
@@ -360,10 +382,14 @@ def _reconcile_query(action: Query, today: date, ctx, plan: Plan) -> None:
         plan.queries.append(QueryIntent(kind="done", date=start.isoformat()))
         return
     if term:
+        # "anything about X" -> search, even if the model also guessed a tag.
         plan.queries.append(QueryIntent(kind="search", term=term))
         return
     if kind == "search":  # asked to search but gave no term
         plan.queries.append(QueryIntent(kind="all"))
+        return
+    if kind == "tag" and action.tag:
+        plan.queries.append(QueryIntent(kind="tag", tag=action.tag))
         return
     if kind in ("overdue", "week"):
         plan.queries.append(QueryIntent(kind=kind))
@@ -408,6 +434,8 @@ def reconcile(actions: list, ctx) -> Plan:
             _reconcile_amend(action, active, by_pos, plan)
         elif isinstance(action, Prioritize):
             _reconcile_prioritize(action, active, by_pos, plan)
+        elif isinstance(action, Setting):
+            _reconcile_setting(action, plan)
         elif isinstance(action, Complete):
             target = _check_target(action.target, action.confidence, active, by_pos, plan)
             if target is not None:

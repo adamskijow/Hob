@@ -18,7 +18,7 @@ from datetime import date, timedelta
 
 from config import Config, ConfigError
 from core import recurrence
-from core.digest import ordered_open, priority_mark, render_digest, select_digest_items
+from core.digest import marks, ordered_open, render_digest, select_digest_items
 from core.interpreter import MODEL_UNREACHABLE, interpret
 from core.models import (
     SOURCE_CAPTURE,
@@ -32,7 +32,7 @@ from core.models import (
     Item,
     Unknown,
 )
-from core.planner import Mutation, QueryIntent, reconcile
+from core.planner import Mutation, QueryIntent, SettingChange, reconcile
 from core.ports import Clock, Llm, Store
 from core.undo import plan_undo
 from adapters.clock import SystemClock
@@ -59,6 +59,9 @@ CHAT_ID_KEY = "chat_id"
 PENDING_KEY = "pending"
 # meta key holding a destructive bulk (JSON {op, ids}) held back for a yes/no.
 CONFIRM_KEY = "pending_confirm"
+# meta key holding the user-set wake time (HH:MM), overriding the configured
+# default at runtime so "send the digest at 8" takes effect without a restart.
+WAKE_KEY = "wake_time"
 
 _AFFIRMATIONS = {
     "yes", "y", "yeah", "yep", "yup", "sure", "ok", "okay", "confirm",
@@ -194,6 +197,7 @@ class MessageService:
             return self._undo()
         applied = self._apply(plan.mutations, message_id)
         answers = [self._answer_query(q) for q in plan.queries]
+        answers += [self._apply_setting(s) for s in plan.settings]
         # Persist this turn's clarifications for the next message; "" clears any
         # that were just resolved or superseded.
         self._store.set_meta(
@@ -208,6 +212,12 @@ class MessageService:
             )
             questions.append(plan.confirm.question)
         return self._reply(applied, questions, answers)
+
+    def _apply_setting(self, s: SettingChange) -> str:
+        if s.key == "wake_time":
+            self._store.set_meta(WAKE_KEY, s.value)
+            return f"ok, morning digest at {s.value} from now on."
+        return "ok"
 
     def _apply_confirmed(self, data: list, message_id: str) -> str:
         """Apply the mutations that were held back, now that the user confirmed."""
@@ -239,6 +249,7 @@ class MessageService:
                     updated_at=ts,
                     repeat=m.repeat,
                     priority=m.priority or "normal",
+                    tag=m.tag,
                 )
                 self._store.add_item(item)
                 entries.append(
@@ -334,6 +345,10 @@ class MessageService:
             term = (q.term or "").lower()
             items = [i for i in ordered if term and term in i.task.lower()]
             title = f'matching "{q.term}":'
+        elif q.kind == "tag":
+            tag = (q.tag or "").lower()
+            items = [i for i in ordered if i.tag and i.tag.lower() == tag]
+            title = f'for "{q.tag}":'
         elif q.kind == "date":
             items = [i for i in ordered if i.due_date == q.date]
             title = f"on {q.date}:"
@@ -343,7 +358,7 @@ class MessageService:
         if not items:
             return f"{title} nothing"
         return title + "\n" + "\n".join(
-            f"{pos[i.id]}: {i.task}{priority_mark(i)}" for i in items
+            f"{pos[i.id]}: {i.task}{marks(i)}" for i in items
         )
 
     def _reply(
@@ -407,7 +422,7 @@ class MessageService:
         if not ordered:
             return "nothing on deck"
         return "\n".join(
-            f"{n}: {i.task}{priority_mark(i)}" for n, i in enumerate(ordered, start=1)
+            f"{n}: {i.task}{marks(i)}" for n, i in enumerate(ordered, start=1)
         )
 
 

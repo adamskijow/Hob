@@ -32,6 +32,7 @@ class Item:
     reminded: bool = False  # an intraday reminder for its due time was sent
     repeat: str | None = None  # recurrence rule (core.recurrence); None = one-off
     priority: str = "normal"  # high | normal | low; floats up/down the digest
+    tag: str | None = None  # project / list this task belongs to, e.g. "wedding"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -80,7 +81,16 @@ class Capture:
     relate: str | None = None  # id of an existing item to inherit a date from
     repeat: str | None = None  # recurrence rule, e.g. "daily" or "weekly:mon"
     priority: str = "normal"  # high | normal | low
+    tag: str | None = None  # project / list to file this task under
     confidence: float = 1.0
+
+
+@dataclass
+class Setting:
+    """Change a preference in plain language ("send the digest at 7")."""
+
+    key: str  # wake_time
+    raw: str  # the value words; the core parses and validates them
 
 
 @dataclass
@@ -121,9 +131,10 @@ class Amend:
 
 @dataclass
 class Query:
-    kind: str  # today | date | all | overdue | week | search | done
+    kind: str  # today | date | all | overdue | week | search | done | tag
     date: str | None = None  # ISO, for kind=date
     term: str | None = None  # free-text search keywords, for kind=search
+    tag: str | None = None  # project / list name, for kind=tag
 
 
 @dataclass

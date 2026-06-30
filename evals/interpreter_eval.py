@@ -130,6 +130,23 @@ CASES = [
          lambda p: kinds(p) == ["prioritize"] and p.mutations[0].target == "a2"
          and p.mutations[0].priority == "low",
          "deprioritize an existing item"),
+    Case("water the plants in a couple days",
+         lambda p: cap_due(p) == "2026-07-01",  # today 06-29 + 2
+         "fuzzy relative date (a couple days)"),
+    Case("finish the taxes by end of the month",
+         lambda p: cap_due(p) == "2026-06-30",
+         "fuzzy month-end date"),
+    Case("for the wedding: book the caterer, order flowers",
+         lambda p: kinds(p) == ["capture", "capture"]
+         and all(m.tag == "wedding" for m in p.mutations),
+         "tagged multi-capture under a project"),
+    Case("what's left for the wedding",
+         lambda p: p.queries and p.queries[0].kind == "tag"
+         and p.queries[0].tag == "wedding",
+         "tag query"),
+    Case("send the morning digest at 7",
+         lambda p: [(s.key, s.value) for s in p.settings] == [("wake_time", "07:00")],
+         "NL setting (wake time)"),
 ]
 
 
