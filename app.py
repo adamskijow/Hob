@@ -14,6 +14,7 @@ import logging
 import signal
 import sys
 from dataclasses import asdict
+from datetime import date
 
 from config import Config, ConfigError
 from core.digest import render_digest, select_digest_items
@@ -63,6 +64,32 @@ _AFFIRMATIONS = {
 
 def _is_affirmation(text: str) -> bool:
     return text in _AFFIRMATIONS or text.startswith("yes")
+
+
+def _relative(due_iso: str, today: date) -> str:
+    """A human 'in X' (or 'X ago') for a due date, so the reply always makes the
+    timing plain: 'tomorrow', 'in 3 days', 'in 200 years'."""
+    try:
+        n = (date.fromisoformat(due_iso) - today).days
+    except (TypeError, ValueError):
+        return ""
+    if n == 0:
+        return "today"
+    if n == 1:
+        return "tomorrow"
+    if n == -1:
+        return "yesterday"
+    past, n = n < 0, abs(n)
+    if n < 14:
+        val, unit = n, "day"
+    elif n < 60:
+        val, unit = round(n / 7), "week"
+    elif n < 365:
+        val, unit = round(n / 30), "month"
+    else:
+        val, unit = round(n / 365), "year"
+    phrase = f"{val} {unit}{'s' if val != 1 else ''}"
+    return f"{phrase} ago" if past else f"in {phrase}"
 
 
 def _dump(item: Item) -> str:
@@ -261,17 +288,22 @@ class MessageService:
         self, applied: list[tuple[str, Item]], questions: list[str], answers: list[str]
     ) -> str:
         parts: list[str] = []
+        today = self._clock.today()
         captures = [it for kind, it in applied if kind == "capture"]
+
+        def _when(due_date: str) -> str:
+            rel = _relative(due_date, today)
+            return f" for {due_date}" + (f" ({rel})" if rel else "")
 
         def _cap_line(it: Item) -> str:
             line = f'"{it.task}"'
             if it.due_date:
-                line += f" for {it.due_date}"
+                line += _when(it.due_date)
             if it.due_time:
                 line += f" at {it.due_time}"
             return line
 
-        # Always restate what was captured, not a bare "got it".
+        # Always restate what was captured, with its timing, not a bare "got it".
         if len(captures) == 1:
             parts.append("got it: " + _cap_line(captures[0]))
         elif len(captures) > 1:
@@ -283,7 +315,9 @@ class MessageService:
             elif kind == "drop":
                 parts.append(f'dropped: "{item.task}"')
             elif kind == "reschedule":
-                parts.append(f'moved "{item.task}" to {item.due_date}')
+                rel = _relative(item.due_date, today)
+                line = f'moved "{item.task}" to {item.due_date}'
+                parts.append(line + (f" ({rel})" if rel else ""))
             elif kind == "amend":
                 parts.append(f'updated: "{item.task}"')
         parts.extend(questions)

@@ -42,7 +42,7 @@ def test_capture_stores_item_and_replies():
 
 def test_capture_with_date_end_to_end():
     svc, store = service(FakeLlm(capture_json("org prez", "org prez Monday", "2026-07-06")))
-    assert svc.handle(msg("committed to the org prez Monday")) == 'got it: "org prez" for 2026-07-06'
+    assert svc.handle(msg("committed to the org prez Monday")) == 'got it: "org prez" for 2026-07-06 (in 7 days)'
     item = store.open_items()[0]
     assert item.task == "org prez"
     assert item.due_date == "2026-07-06"
@@ -70,6 +70,17 @@ def test_today_empty():
 def test_help():
     svc, _ = service()
     assert "today" in svc.handle(msg("/help")).lower()
+
+
+def test_relative_phrasing():
+    from datetime import date
+    from app import _relative
+    t = date(2026, 6, 29)
+    assert _relative("2026-06-29", t) == "today"
+    assert _relative("2026-06-30", t) == "tomorrow"
+    assert _relative("2026-07-03", t) == "in 4 days"
+    assert _relative("2226-06-29", t) == "in 200 years"
+    assert _relative("2026-06-28", t) == "yesterday"
 
 
 def test_throw_tasks_all_day():
