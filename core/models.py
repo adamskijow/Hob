@@ -74,9 +74,29 @@ class ActionLogEntry:
 # reconciles these before anything touches the store. Capture and Unknown are
 # used from Phase 5; the rest come online in Phase 7.
 @dataclass
+class When:
+    """A typed date intent. The model classifies a phrase into one of these; the
+    core (core.dates.resolve_intent) does the calendar math. The model never
+    computes a date itself, so it cannot get the arithmetic wrong."""
+
+    kind: str  # none|today|tomorrow|yesterday|weekday|offset|weekend|week|
+    #            month|month_day|ordinal_day|absolute|ambiguous
+    which: str | None = None  # this | next (weekday, weekend, week, month)
+    day: str | None = None  # mon..sun (weekday)
+    n: int | None = None  # count (offset)
+    unit: str | None = None  # day | week | month (offset)
+    anchor: str | None = None  # start | end (month)
+    part: str | None = None  # early | mid | late (week)
+    month: int | None = None  # 1..12 (month_day)
+    day_num: int | None = None  # day of month (month_day, ordinal_day)
+    date: str | None = None  # ISO YYYY-MM-DD (absolute, explicit date only)
+
+
+@dataclass
 class Capture:
     task: str  # clean label
-    raw: str  # echo of the phrasing; the core resolves the date from this
+    raw: str  # echo of the user's phrasing, stored for the record
+    when: When | None = None  # typed date intent; the core resolves the date
     time: str | None = None  # HH:MM
     relate: str | None = None  # id of an existing item to inherit a date from
     repeat: str | None = None  # recurrence rule, e.g. "daily" or "weekly:mon"
@@ -118,7 +138,8 @@ class Drop:
 @dataclass
 class Reschedule:
     target: str
-    raw: str = ""  # date phrasing the core re-resolves the new date from
+    when: When | None = None  # typed date intent for the new date
+    raw: str = ""  # echo of the phrasing, for the record
     confidence: float = 1.0
 
 
@@ -132,7 +153,8 @@ class Amend:
 @dataclass
 class Query:
     kind: str  # today | date | all | overdue | week | search | done | tag
-    date: str | None = None  # ISO, for kind=date
+    when: When | None = None  # typed date intent, for kind=date
+    date: str | None = None  # ISO, resolved by the core for kind=date
     term: str | None = None  # free-text search keywords, for kind=search
     tag: str | None = None  # project / list name, for kind=tag
 
@@ -144,8 +166,7 @@ class Bulk:
 
     op: str  # complete | drop | reschedule
     scope: str  # today | all | date
-    date: str | None = None  # ISO, for scope=date; re-resolved by the core
-    raw: str | None = None  # destination date words, for op=reschedule
+    when: When | None = None  # destination (op=reschedule) or scope day (scope=date)
     confidence: float = 1.0
 
 

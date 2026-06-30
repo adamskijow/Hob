@@ -26,6 +26,7 @@ from core.models import (
     Setting,
     Undo,
     Unknown,
+    When,
 )
 from core.ports import Llm
 
@@ -37,6 +38,19 @@ MODEL_UNREACHABLE = "model call failed"
 _STR = {"type": ["string", "null"]}
 _NUM = {"type": ["number", "null"]}
 _LEVEL = {"type": "string", "enum": ["high", "normal", "low"]}
+# A typed date intent: the model classifies, core.dates.resolve_intent does math.
+_WHEN = {
+    "type": "object",
+    "properties": {
+        "kind": {"type": "string", "enum": [
+            "none", "today", "tomorrow", "yesterday", "weekday", "offset",
+            "weekend", "week", "month", "month_day", "ordinal_day", "absolute",
+            "ambiguous"]},
+        "which": _STR, "day": _STR, "n": _NUM, "unit": _STR, "anchor": _STR,
+        "part": _STR, "month": _NUM, "day_num": _NUM, "date": _STR,
+    },
+    "required": ["kind"],
+}
 
 
 def _variant(type_value: str, props: dict, required: list[str]) -> dict:
@@ -64,10 +78,10 @@ ACTION_SCHEMA = {
                 "oneOf": [
                     _variant(
                         "capture",
-                        {"task": _STR, "raw": _STR, "time": _STR, "relate": _STR,
-                         "repeat": _STR, "priority": _LEVEL, "tag": _STR,
-                         "confidence": _NUM},
-                        ["type", "raw"],
+                        {"task": _STR, "raw": _STR, "when": _WHEN, "time": _STR,
+                         "relate": _STR, "repeat": _STR, "priority": _LEVEL,
+                         "tag": _STR, "confidence": _NUM},
+                        ["type", "raw", "when"],
                     ),
                     _variant(
                         "setting",
@@ -96,21 +110,20 @@ ACTION_SCHEMA = {
                     ),
                     _variant(
                         "reschedule",
-                        {"target": _STR, "raw": {"type": "string"}, "confidence": _NUM},
-                        ["type", "target", "raw"],
+                        {"target": _STR, "when": _WHEN, "confidence": _NUM},
+                        ["type", "target", "when"],
                     ),
                     _variant(
                         "query",
                         {"kind": {"type": "string", "enum": [
                             "today", "date", "all", "overdue", "week", "search",
                             "done", "tag"]},
-                         "date": _STR, "term": _STR, "tag": _STR},
+                         "when": _WHEN, "term": _STR, "tag": _STR},
                         ["type", "kind"],
                     ),
                     _variant(
                         "bulk",
-                        {"op": _STR, "scope": _STR, "date": _STR, "raw": _STR,
-                         "confidence": _NUM},
+                        {"op": _STR, "scope": _STR, "when": _WHEN, "confidence": _NUM},
                         ["type", "op", "scope"],
                     ),
                     _variant("undo", {}, ["type"]),
@@ -124,8 +137,8 @@ ACTION_SCHEMA = {
 
 _PROMPT = """\
 You convert a personal assistant's inbound text message into a JSON list of \
-actions. Be literal. A separate program resolves real dates, so never invent or \
-calculate a date; just copy the user's date words verbatim.
+actions. Be literal. You classify any date into a typed intent (see DATES); a \
+separate program does the calendar math, so never compute a date yourself.
 
 Context:
 - Today: {today} ({weekday})
@@ -141,105 +154,105 @@ The user's message:
 
 Return a JSON object {{"actions": [ ... ]}}. Each action is one of:
 - capture: a NEW task to remember. Fields: type "capture", task (clean \
-imperative label with no date or repeat words), raw (echo the user's words for \
-this task, keeping any date and time words), time (HH:MM or null), relate (see \
-below, else null), repeat (see below, else null), priority, confidence (0 to 1). \
-Set priority "high" for urgent/important/asap/"top priority"/"do first", "low" \
-for "low priority"/"can wait"/"no rush"/"whenever/someday", else "normal". A new \
-task is still NEW even when urgent and even if it resembles an item on the list: \
-"call the plumber, it's urgent" is capture (priority high), not a change to "call \
-the pool guy". Set tag to a project/list name when the user files tasks under one \
-("for the wedding: book the caterer, order flowers" -> two captures, each tag \
-"wedding"; "add taste the cake to the wedding list" -> tag "wedding"), else null.
+imperative label; the date, time, and repeat words belong in when/time/repeat, \
+NOT in task: "call the vet next friday at 3pm" -> task "call the vet"; "water \
+the plants in a couple days" -> task "water the plants"), raw (echo the user's \
+words for this task), when (a typed date intent, see DATES), time (HH:MM clock \
+time or null), relate (see below, else null), repeat (see below, else null), \
+priority, tag, confidence (0 to 1). Set priority "high" for \
+urgent/important/asap/"top priority"/"do first", "low" for "low priority"/"can \
+wait"/"no rush"/"whenever/someday", else "normal". A new task is still NEW even \
+when urgent and even if it resembles an item on the list: "call the plumber, \
+it's urgent" is capture (priority high), not a change to "call the pool guy". \
+Set tag to a project/list name when the user files tasks under one ("for the \
+wedding: book the caterer, order flowers" -> two captures, each tag "wedding"), \
+else null.
 - setting: change a preference, not a task. Fields: type "setting", key \
-("wake_time" = the time the morning digest is sent), raw (the time words copied \
-from the message, e.g. "6:30", "8am"). Use for "change my wake time to 6:30", \
-"send the digest at 8", "wake me at 7 instead".
+("wake_time" = the time the morning digest is sent), raw (the time words, e.g. \
+"6:30", "8am"). Use for "change my wake time to 6:30", "send the digest at 8".
 - prioritize: change the importance of an item ALREADY on the list. Fields: type \
 "prioritize", target (item number), level ("high", "normal", or "low"), \
 confidence. Use it when the user re-ranks an existing item: "make the prez deck \
-urgent", "the audit can wait", "bump the audit to the top", "deprioritize the \
-prez deck". Match the number exactly; never repurpose a different item because \
-the words look similar.
-- amend: change the TEXT of an EXISTING item (add a detail to it, or reword it). \
-Fields: type "amend", target (item id), task (the item's full new label, keeping \
-what is still true), confidence. Use when the user changes what an existing item \
-says: "also bring soda to the party", "rename the prez task to prep Q3".
-- complete: mark an EXISTING item done. Fields: type "complete", target (item \
-id), confidence.
-- drop: cancel an EXISTING item that no longer applies. Fields: type "drop", \
-target, reason (optional), confidence.
+urgent", "the audit can wait", "bump the audit to the top". Match the number \
+exactly; never repurpose a different item because the words look similar.
+- amend: change the TEXT of an EXISTING item (add a detail, or reword it). \
+Fields: type "amend", target (item id), task (the full new label, keeping what \
+is still true), confidence. Use when the user changes what an item says: \
+"rename the prez task to prep Q3".
+- complete: mark an EXISTING item done. Fields: type "complete", target, confidence.
+- drop: cancel an EXISTING item. Fields: type "drop", target, reason (optional), \
+confidence.
 - reschedule: move an EXISTING item to a new date. Fields: type "reschedule", \
-target (item id), raw (the new date words copied verbatim, e.g. "Friday", \
-"next Monday", "July 10"), confidence.
-- query: the user is asking about their tasks. Fields: type "query", kind, date \
-(ISO for a named upcoming day), term (search keywords), tag (project/list name). \
-kind is one of: "today", \
-"date" (a named upcoming day), "all", "overdue" (past due), "week" (next 7 days), \
-"search" (free text about a topic; set term to the keywords, e.g. "anything \
-about the pool guy" -> term "pool guy"), "done" (things ALREADY finished / \
-completed / got done / knocked out; "what did I finish today" -> done; set date \
-if a day is named), "tag" (what is in a project/list; "what's left for the \
-wedding" -> kind tag, tag "wedding").
+target (item id), when (a typed date intent for the new date, see DATES), \
+confidence.
+- query: the user is asking about their tasks. Fields: type "query", kind, when \
+(a date intent, for a specific day), term (search keywords), tag (project/list \
+name). kind is one of: "today", "date" (a specific day; also set when), "all", \
+"overdue" (past due), "week" (next 7 days), "search" (free text about a topic; \
+set term, e.g. "anything about the pool guy" -> term "pool guy"), "done" (things \
+ALREADY finished / completed / got done / knocked out; "what did I finish today" \
+-> done; set when if a day is named), "tag" (what is in a project/list; "what's \
+left for the wedding" -> kind tag, tag "wedding").
 - bulk: act on MANY items at once with ONE action; never list them individually. \
-Fields: type "bulk", op ("complete", "drop", or "reschedule"), scope, date \
-(leave null; a separate program reads the day from the message), raw (op \
-reschedule only: the destination date words copied EXACTLY from the message, \
-e.g. "to monday" -> "monday"; never a computed date), confidence. Use bulk when \
-the user means many items ("everything", "all", "today's stuff", "push \
-everything to tomorrow"). Pick scope:
-  - "all": every open item, including future-dated ones. Use for "everything", \
-"my whole list", "all my tasks", "delete it all".
-  - "today": only the items on deck today. Use for "everything today", "clear \
-today", "today's stuff".
+Fields: type "bulk", op ("complete", "drop", or "reschedule"), scope, when (op \
+reschedule only: a date intent for the destination), confidence. Use bulk when \
+the user means many items ("everything", "today's stuff", "push everything to \
+tomorrow"). Pick scope:
+  - "all": every open item. Use for "everything", "my whole list", "delete it all".
+  - "today": only items on deck today. Use for "everything today", "today's stuff".
   - "date": one specific named day. Use for "all of friday", "monday's tasks".
 - undo: the user wants to reverse their last change ("scratch that", "undo \
-that", "nevermind, put it back"). Fields: type "undo".
+that"). Fields: type "undo".
 - unknown: you cannot tell what they want. Fields: type "unknown", note (short).
+
+DATES: set "when" to a typed date intent - classify the phrase, never compute a date:
+- no date mentioned -> {{"kind":"none"}}
+- "today"/"tonight" -> {{"kind":"today"}}; "tomorrow" -> {{"kind":"tomorrow"}}; "yesterday" -> {{"kind":"yesterday"}}
+- a weekday BY NAME, even with "next" ("friday", "next friday", "this monday") -> {{"kind":"weekday","which":"this" or "next","day":"mon".."sun"}}
+- "in N days/weeks/months/years" ("a couple"=2, "a few"=3) -> {{"kind":"offset","n":N,"unit":"day"/"week"/"month"/"year"}}. "in 2 weeks" is offset, NOT week.
+- "this/next weekend" -> {{"kind":"weekend","which":"this" or "next"}}
+- "next week"/"this week", with NO weekday name and NO number (maybe early/mid/late) -> {{"kind":"week","which":"next","part":"early"/"mid"/"late"}}
+- start or end of this/next month -> {{"kind":"month","which":"this" or "next","anchor":"start" or "end"}}
+- a day of the month ("the 15th") -> {{"kind":"ordinal_day","day_num":15}}
+- an explicit month+day ("August 3") -> {{"kind":"month_day","month":8,"day_num":3}}
+- an explicit full date -> {{"kind":"absolute","date":"YYYY-MM-DD"}}
+- two or more possible days ("thursday or friday") -> {{"kind":"ambiguous"}}
+A clock time is NOT a date: put it in "time" (HH:MM); "my 1130 meeting" -> time "11:30", when {{"kind":"none"}}.
+A date at the START of a multi-task message ("Tomorrow I need to A, B, C") applies to EVERY task: give each that same "when".
 
 relate: if a NEW captured task is FOR or PART OF an existing open item (e.g. \
 "bring soda" for an existing birthday), set relate to that item's id so the new \
 task inherits that item's date. Otherwise leave relate null.
 
 repeat: if the task recurs, set repeat to "daily", "weekdays", or "weekly:<day>" \
-(e.g. "weekly:monday"). "take out the trash every monday" -> weekly:monday; \
-"water the plants daily" -> daily. A one-off date like "next friday" is NOT a \
-repeat; leave repeat null.
+(e.g. "weekly:monday"). "take out the trash every monday" -> weekly:monday. A \
+one-off date is NOT a repeat; leave repeat null and set when instead.
 
 Choosing the action:
 - If the user adds a detail to an existing item itself, use amend. If it is a \
-distinct new task that belongs with an existing event, use capture with relate. \
-Either is acceptable when unsure; both keep it tied to that item.
-- A question about the user's tasks or schedule is a query, never an edit \
-("what's on for tomorrow?"). A question that is not about their tasks (small \
-talk, general knowledge, "what's your favorite color?") is not actionable: \
-return a single unknown action.
+distinct new task that belongs with an existing event, use capture with relate.
+- A question about the user's tasks or schedule is a query, never an edit. A \
+question not about their tasks (small talk, general knowledge) is not \
+actionable: return a single unknown action.
 - Use complete, drop, or reschedule only when the user clearly states they \
-finished, cancelled, or moved one existing item: "did the prez", "drop the pool \
-call", "push the audit to Friday". The instruction word is what licenses the edit.
-- Resembling an item already on deck is not enough to edit it. With no finish, \
-cancel, or move word, a message that states a task and a time is a new capture: \
-"review the SR audit before standup tomorrow" -> capture (even though an "SR \
-audit" item exists); only "push/move the SR audit to friday" is a reschedule.
-- When the user refers to many items, use one bulk action, never one per item. \
-"delete everything"/"clear my whole list" -> bulk drop, scope all. "did \
-everything today" -> bulk complete, scope today.
-- A message that just names a task, with no such instruction, is a NEW task: use \
-capture. "dentist next Friday" -> capture. "call the pool guy" -> capture, even \
-if a similar item already exists.
+finished, cancelled, or moved one existing item. The instruction word licenses \
+the edit. Resembling an item on deck is not enough: "review the SR audit \
+tomorrow" -> capture (even though an "SR audit" item exists); only "push the SR \
+audit to friday" is a reschedule.
+- When the user refers to many items, use one bulk action, never one per item.
+- A message that just names a task, with no instruction word, is a NEW task: \
+capture. "dentist next Friday" -> capture. "call the pool guy" -> capture.
 
 Resolving references:
 - Each open item is listed as "number: id: label". To point at one, set target \
-(or relate) to its id.
-- The user may use the number ("drop 2"), the position ("the second one", "the \
-third one" by digest order), or a description ("the prez one"). Map any of these \
-to that item's id.
+(or relate) to its id, mapping a number ("drop 2"), position ("the second one"), \
+or description ("the prez one") to that id.
 - If you are unsure which item is meant, lower the confidence; never guess an id.
 
 Rules:
-- One message may do several things; emit one action each, for example "did the \
-prez, drop the pool call, push the audit to Friday".
-- Keep all date and time words inside raw exactly as written.
+- One message may do several things; emit one action each.
+- Put the date in when (a typed intent) and any clock time in time; echo the \
+user's words for a captured task in raw.
 - If the message is not about tasks at all, return a single unknown action.
 """
 
@@ -273,16 +286,16 @@ def _format_pending(pending: list[dict]) -> str:
         if p.get("kind") == "capture":
             lines.append(
                 f'- you asked "{p["question"]}" for a new task "{p["task"]}". to '
-                f'answer, emit a capture with task "{p["task"]}" and raw set to the '
-                "user's date words copied exactly (e.g. \"thursday\"), even if still "
-                "ambiguous; never a date number."
+                f'answer, emit a capture with task "{p["task"]}" and when set to '
+                'the date intent for the user\'s reply (e.g. {"kind":"weekday",'
+                '"day":"thu"} for thursday).'
             )
         else:
             lines.append(
                 f'- you asked "{p["question"]}" about "{p["label"]}". to answer, '
-                f"emit a reschedule with target {p['target']} and raw set to the "
-                "user's date words copied exactly (e.g. \"friday\"), even if still "
-                "ambiguous; never a date number."
+                f"emit a reschedule with target {p['target']} and when set to the "
+                'date intent for the user\'s reply (e.g. {"kind":"weekday",'
+                '"day":"fri"} for friday).'
             )
     return (
         "\nPending question (you asked this last turn and are waiting for the "
@@ -321,6 +334,35 @@ def _level(value: object) -> str:
     return value if value in ("high", "normal", "low") else "normal"
 
 
+def _int(value: object) -> int | None:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _when(value: object) -> When | None:
+    """Parse a typed date intent. Returns None for a missing or no-date intent so
+    the planner treats the task as undated."""
+    if not isinstance(value, dict):
+        return None
+    kind = _str(value.get("kind"))
+    if kind is None or kind == "none":
+        return None
+    return When(
+        kind=kind,
+        which=_str(value.get("which")),
+        day=_str(value.get("day")),
+        n=_int(value.get("n")),
+        unit=_str(value.get("unit")),
+        anchor=_str(value.get("anchor")),
+        part=_str(value.get("part")),
+        month=_int(value.get("month")),
+        day_num=_int(value.get("day_num")),
+        date=_str(value.get("date")),
+    )
+
+
 def _parse_one(action: object):
     if not isinstance(action, dict):
         return Unknown(note="non-object action")
@@ -335,6 +377,7 @@ def _parse_one(action: object):
         return Capture(
             task=task or raw,
             raw=raw or task,
+            when=_when(action.get("when")),
             time=_str(action.get("time")),
             relate=_str(action.get("relate")),
             repeat=_str(action.get("repeat")),
@@ -378,18 +421,14 @@ def _parse_one(action: object):
     if kind == "reschedule":
         target = _str(action.get("target"))
         return (
-            Reschedule(
-                target=target,
-                raw=_str(action.get("raw")) or "",
-                confidence=conf,
-            )
+            Reschedule(target=target, when=_when(action.get("when")), confidence=conf)
             if target
             else Unknown(note="reschedule without target")
         )
     if kind == "query":
         return Query(
             kind=_str(action.get("kind")) or "today",
-            date=_str(action.get("date")),
+            when=_when(action.get("when")),
             term=_str(action.get("term")),
             tag=_str(action.get("tag")),
         )
@@ -400,8 +439,7 @@ def _parse_one(action: object):
         return Bulk(
             op=op,
             scope=_str(action.get("scope")) or "today",
-            date=_str(action.get("date")),
-            raw=_str(action.get("raw")),
+            when=_when(action.get("when")),
             confidence=conf,
         )
     if kind == "undo":

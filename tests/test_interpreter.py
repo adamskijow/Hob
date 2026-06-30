@@ -84,14 +84,14 @@ def test_parse_complete_drop_reschedule_query():
             "actions": [
                 {"type": "complete", "target": "a1", "confidence": 0.9},
                 {"type": "drop", "target": "a2", "reason": "not happening"},
-                {"type": "reschedule", "target": "a3", "raw": "to Friday"},
-                {"type": "query", "kind": "date", "date": "2026-06-30"},
+                {"type": "reschedule", "target": "a3", "when": {"kind": "weekday", "day": "fri"}},
+                {"type": "query", "kind": "date", "when": {"kind": "tomorrow"}},
             ]
         }
     )
     assert isinstance(res[0], Complete) and res[0].target == "a1"
     assert isinstance(res[1], Drop) and res[1].reason == "not happening"
-    assert isinstance(res[2], Reschedule) and res[2].raw == "to Friday"
+    assert isinstance(res[2], Reschedule) and res[2].when.day == "fri"
     assert isinstance(res[3], Query) and res[3].kind == "date"
 
 

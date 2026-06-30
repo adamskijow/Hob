@@ -1,88 +1,61 @@
 # SPDX-License-Identifier: MIT
-"""Deterministic date resolution, seeded with a fixed today (Mon 2026-06-29)."""
+"""Date-intent resolution (pure calendar math), leading-date detection, and time
+parsing. Seeded with a fixed today (Mon 2026-06-29)."""
 from datetime import date
 
-from core.dates import leading_date, parse_time, resolve
+from core.dates import leading_date, parse_time, resolve_intent
+from core.models import When
 
 TODAY = date(2026, 6, 29)  # Monday
 
 
-def test_weekday_resolves_to_next_occurrence():
-    assert resolve("Monday", TODAY).date == "2026-07-06"
-    assert resolve("Wednesday", TODAY).date == "2026-07-01"
+def r(**kw):
+    return resolve_intent(When(**kw), TODAY)
 
 
-def test_next_friday():
-    assert resolve("next Friday", TODAY).date == "2026-07-03"
+def test_simple_kinds():
+    assert r(kind="none").date is None
+    assert r(kind="today").date == "2026-06-29"
+    assert r(kind="tomorrow").date == "2026-06-30"
+    assert r(kind="yesterday").date == "2026-06-28"
 
 
-def test_tomorrow_has_no_time():
-    r = resolve("tomorrow", TODAY)
-    assert r.date == "2026-06-30"
-    assert r.time is None
+def test_weekday():
+    assert r(kind="weekday", day="mon").date == "2026-07-06"  # next monday
+    assert r(kind="weekday", day="wed").date == "2026-07-01"
+    assert r(kind="weekday", which="next", day="fri").date == "2026-07-03"
 
 
-def test_ordinal_day_of_month():
-    # dateparser misreads "the 3rd" as a month; our handler fixes it.
-    assert resolve("the 3rd", TODAY).date == "2026-07-03"
-    assert resolve("submit the form on the 3rd", TODAY).date == "2026-07-03"
+def test_offset():
+    assert r(kind="offset", n=2, unit="day").date == "2026-07-01"
+    assert r(kind="offset", n=3, unit="day").date == "2026-07-02"
+    assert r(kind="offset", n=2, unit="week").date == "2026-07-13"
 
 
-def test_bare_time_today():
-    r = resolve("call at 3pm", TODAY)
-    assert r.time == "15:00"
-    assert r.date == "2026-06-29"
+def test_weekend_and_week():
+    assert r(kind="weekend", which="this").date == "2026-07-04"
+    assert r(kind="weekend", which="next").date == "2026-07-11"
+    assert r(kind="week", which="next").date == "2026-07-06"  # next monday
+    assert r(kind="week", which="next", part="mid").date == "2026-07-08"
 
 
-def test_explicit_date_and_time():
-    r = resolve("Friday at 3pm", TODAY)
-    assert r.date == "2026-07-03"
-    assert r.time == "15:00"
+def test_month_boundaries():
+    assert r(kind="month", which="this", anchor="end").date == "2026-06-30"
+    assert r(kind="month", which="next", anchor="start").date == "2026-07-01"
+    assert r(kind="month", which="next", anchor="end").date == "2026-07-31"
 
 
-def test_no_date_is_not_ambiguous():
-    r = resolve("review the SR audit before standup", TODAY)
-    assert r.date is None and r.time is None and r.ambiguous is False
+def test_explicit_days():
+    assert r(kind="ordinal_day", day_num=15).date == "2026-07-15"
+    assert r(kind="month_day", month=8, day_num=3).date == "2026-08-03"
+    assert r(kind="absolute", date="2026-09-01").date == "2026-09-01"
 
 
-def test_ambiguous_phrase_is_flagged_never_guessed():
-    r = resolve("Friday or Monday", TODAY)
-    assert r.ambiguous is True
-    assert r.date is None
-
-
-def test_phrase_inside_sentence():
-    assert resolve("committed to the org prez Monday", TODAY).date == "2026-07-06"
-
-
-def test_fuzzy_relative_phrases():
-    assert resolve("next week", TODAY).date == "2026-07-06"  # next Monday
-    assert resolve("early next week", TODAY).date == "2026-07-06"
-    assert resolve("mid next week", TODAY).date == "2026-07-08"  # Wednesday
-    assert resolve("this weekend", TODAY).date == "2026-07-04"  # Saturday
-    assert resolve("next weekend", TODAY).date == "2026-07-11"
-    assert resolve("a couple days", TODAY).date == "2026-07-01"  # +2
-    assert resolve("in a few days", TODAY).date == "2026-07-02"  # +3
-    assert resolve("in a couple weeks", TODAY).date == "2026-07-13"  # +14
-
-
-def test_fuzzy_month_boundaries():
-    assert resolve("end of the month", TODAY).date == "2026-06-30"
-    assert resolve("by end of month", TODAY).date == "2026-06-30"
-    assert resolve("beginning of next month", TODAY).date == "2026-07-01"
-    assert resolve("end of next month", TODAY).date == "2026-07-31"
-
-
-def test_fuzzy_keeps_explicit_time():
-    r = resolve("this weekend at 3pm", TODAY)
-    assert r.date == "2026-07-04" and r.time == "15:00"
-
-
-def test_bare_number_not_read_as_far_past_year():
-    # dateparser reads "1130" (an 11:30 time) as the year 1130; we drop far-past.
-    assert resolve("prepare for my 1130 meeting", TODAY).date is None
-    # a genuinely recent past date is not over-filtered
-    assert resolve("yesterday", TODAY).date == "2026-06-28"
+def test_ambiguous_and_none():
+    res = resolve_intent(When(kind="ambiguous"), TODAY)
+    assert res.ambiguous is True and res.date is None
+    assert resolve_intent(None, TODAY).date is None
+    assert resolve_intent(When(kind="weekday", day="bogus"), TODAY).date is None
 
 
 def test_leading_date_vs_trailing():
@@ -99,3 +72,4 @@ def test_parse_time():
     assert parse_time("6:30pm") == "18:30"
     assert parse_time("noon") is None  # not a clock format we accept
     assert parse_time("25:00") is None
+    assert parse_time(None) is None

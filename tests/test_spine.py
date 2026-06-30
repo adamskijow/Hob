@@ -58,8 +58,9 @@ def test_multi_action_correction_applies_all():
             "actions": [
                 {"type": "complete", "target": "a1", "confidence": 0.95},
                 {"type": "drop", "target": "a2", "confidence": 0.95},
-                {"type": "reschedule", "target": "a3", "raw": "to Friday",
-                 "due": "2026-07-03", "confidence": 0.95},
+                {"type": "reschedule", "target": "a3",
+                 "when": {"kind": "weekday", "which": "next", "day": "fri"},
+                 "confidence": 0.95},
             ]
         }
     )
@@ -121,9 +122,10 @@ def test_pending_clarification_resume():
     llm = FakeLlm(
         [
             {"actions": [{"type": "capture", "task": "lunch with sam",
-                          "raw": "lunch with sam thursday or friday"}]},
+                          "raw": "lunch with sam thursday or friday",
+                          "when": {"kind": "ambiguous"}}]},
             {"actions": [{"type": "capture", "task": "lunch with sam",
-                          "raw": "thursday"}]},
+                          "raw": "thursday", "when": {"kind": "weekday", "day": "thu"}}]},
         ]
     )
     store = SqliteStore(":memory:")  # unseeded, so the capture gets a clean id
@@ -298,7 +300,8 @@ def test_capture_relate_inherits_date_end_to_end():
 def test_far_future_capture_confirms_then_applies():
     llm = FakeLlm(
         {"actions": [{"type": "capture", "task": "take out the trash",
-                      "raw": "take out the trash in 200 years"}]}
+                      "raw": "take out the trash in 200 years",
+                      "when": {"kind": "offset", "n": 200, "unit": "year"}}]}
     )
     svc, store = service(llm)
 

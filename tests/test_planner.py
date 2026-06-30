@@ -13,6 +13,7 @@ from core.models import (
     Setting,
     Undo,
     Unknown,
+    When,
 )
 from core.planner import reconcile
 
@@ -43,23 +44,19 @@ def test_capture_without_date():
     assert plan.mutations[0].due_date is None
 
 
-def test_capture_resolves_date_from_raw():
-    plan = reconcile([Capture(task="org prez", raw="org prez Monday")], ctx())
-    assert plan.mutations[0].due_date == "2026-07-06"
+def test_capture_resolves_date_from_intent():
+    plan = reconcile(
+        [Capture(task="org prez", raw="org prez Monday", when=When(kind="weekday", day="mon"))],
+        ctx(),
+    )
+    assert plan.mutations[0].due_date == "2026-07-06"  # core does the math
     assert not plan.questions
 
 
-def test_ambiguous_date_asks_and_applies_nothing():
-    plan = reconcile([Capture(task="x", raw="Friday or Monday")], ctx())
+def test_ambiguous_intent_asks_and_applies_nothing():
+    plan = reconcile([Capture(task="x", raw="Friday or Monday", when=When(kind="ambiguous"))], ctx())
     assert not plan.mutations
     assert len(plan.questions) == 1
-
-
-def test_capture_date_owned_by_parser():
-    # The model proposes no date; the parser alone resolves "Monday".
-    plan = reconcile([Capture(task="x", raw="Monday")], ctx())
-    assert plan.mutations[0].due_date == "2026-07-06"
-    assert not plan.questions
 
 
 def test_capture_undated_when_parser_finds_nothing():
@@ -70,7 +67,8 @@ def test_capture_undated_when_parser_finds_nothing():
 
 
 def test_bare_time_capture():
-    plan = reconcile([Capture(task="call", raw="call at 3pm")], ctx())
+    # The model extracts the clock time; the core parses it (no date math).
+    plan = reconcile([Capture(task="call", raw="call at 3pm", time="3pm")], ctx())
     assert plan.mutations[0].due_time == "15:00"
 
 
@@ -143,34 +141,23 @@ def test_drop_with_reason():
 
 def test_reschedule_resolves_date():
     plan = reconcile(
-        [Reschedule(target="a3", raw="to Friday", confidence=0.9)],
-        ctx(ACTIVE, message="push the audit to Friday"),
+        [Reschedule(target="a3", when=When(kind="weekday", which="next", day="fri"), confidence=0.9)],
+        ctx(ACTIVE),
     )
     assert plan.mutations[0].kind == "reschedule"
     assert plan.mutations[0].due_date == "2026-07-03"
 
 
 def test_reschedule_without_date_asks():
-    plan = reconcile(
-        [Reschedule(target="a3", raw="later", confidence=0.9)],
-        ctx(ACTIVE, message="move the audit later"),
-    )
+    plan = reconcile([Reschedule(target="a3", when=None, confidence=0.9)], ctx(ACTIVE))
     assert not plan.mutations
     assert plan.questions
 
 
 def test_reschedule_bad_target_asks():
-    plan = reconcile([Reschedule(target="zz", raw="to Friday", confidence=0.9)], ctx(ACTIVE))
-    assert not plan.mutations
-    assert plan.questions
-
-
-def test_reschedule_phrase_not_in_message_asks():
-    # The model invented a date absent from the message (a query misread as a
-    # reschedule); the guard refuses to mutate and asks.
     plan = reconcile(
-        [Reschedule(target="a3", raw="next Monday", confidence=0.9)],
-        ctx(ACTIVE, message="what's on for tomorrow?"),
+        [Reschedule(target="zz", when=When(kind="weekday", day="fri"), confidence=0.9)],
+        ctx(ACTIVE),
     )
     assert not plan.mutations
     assert plan.questions
@@ -180,7 +167,10 @@ def test_reschedule_phrase_not_in_message_asks():
 
 
 def test_ambiguous_capture_sets_pending():
-    plan = reconcile([Capture(task="lunch with sam", raw="thursday or friday")], ctx())
+    plan = reconcile(
+        [Capture(task="lunch with sam", raw="thursday or friday", when=When(kind="ambiguous"))],
+        ctx(),
+    )
     assert not plan.mutations
     assert len(plan.pending) == 1
     assert plan.pending[0].kind == "capture"
@@ -188,25 +178,11 @@ def test_ambiguous_capture_sets_pending():
 
 
 def test_reschedule_unresolved_sets_pending():
-    plan = reconcile(
-        [Reschedule(target="a3", raw="later", confidence=0.9)],
-        ctx(ACTIVE, message="move the audit later"),
-    )
+    plan = reconcile([Reschedule(target="a3", when=None, confidence=0.9)], ctx(ACTIVE))
     assert not plan.mutations
     assert len(plan.pending) == 1
     assert plan.pending[0].kind == "reschedule"
     assert plan.pending[0].target == "a3"
-
-
-def test_reschedule_guard_fail_sets_no_pending():
-    # A hallucinated reschedule must not become resumable: a stray date next turn
-    # must not move this item.
-    plan = reconcile(
-        [Reschedule(target="a3", raw="next Monday", confidence=0.9)],
-        ctx(ACTIVE, message="what's on for tomorrow?"),
-    )
-    assert plan.questions
-    assert not plan.pending
 
 
 # Bulk actions ----------------------------------------------------------------
@@ -252,22 +228,23 @@ def test_bulk_date_resolves_day_from_message():
         {"id": "a5", "label": "thing friday", "due_date": "2026-07-03"},
     ]
     plan = reconcile(
-        [Bulk(op="drop", scope="date")], ctx(active, message="drop all of friday")
+        [Bulk(op="drop", scope="date", when=When(kind="weekday", which="next", day="fri"))],
+        ctx(active),
     )
     assert {m.target for m in plan.mutations} == {"a5"}  # friday = 2026-07-03
 
 
 def test_bulk_date_ambiguous_asks():
-    plan = reconcile(
-        [Bulk(op="drop", scope="date")], ctx(ACTIVE, message="clear thursday or friday")
-    )
+    plan = reconcile([Bulk(op="drop", scope="date", when=When(kind="ambiguous"))], ctx(ACTIVE))
     assert not plan.mutations
     assert plan.questions
 
 
 def test_bulk_no_match_changes_nothing():
+    # A day with no items on it: scope resolves, but nothing matches.
     plan = reconcile(
-        [Bulk(op="drop", scope="date")], ctx(ACTIVE, message="clear out july 20")
+        [Bulk(op="drop", scope="date", when=When(kind="month_day", month=7, day_num=20))],
+        ctx(ACTIVE),
     )
     assert not plan.mutations
     assert plan.questions
@@ -282,18 +259,15 @@ def test_low_confidence_bulk_confirms_not_applies():
 
 def test_bulk_reschedule_moves_matching():
     plan = reconcile(
-        [Bulk(op="reschedule", scope="all", raw="wednesday")],
-        ctx(ACTIVE, message="push everything to wednesday"),
+        [Bulk(op="reschedule", scope="all", when=When(kind="weekday", day="wed"))],
+        ctx(ACTIVE),
     )
     assert {m.target for m in plan.mutations} == {"a1", "a2", "a3"}
     assert all(m.kind == "reschedule" and m.due_date == "2026-07-01" for m in plan.mutations)
 
 
 def test_bulk_reschedule_unresolved_asks():
-    plan = reconcile(
-        [Bulk(op="reschedule", scope="all", raw="later")],
-        ctx(ACTIVE, message="push everything later"),
-    )
+    plan = reconcile([Bulk(op="reschedule", scope="all", when=None)], ctx(ACTIVE))
     assert not plan.mutations and plan.questions
 
 
@@ -369,28 +343,23 @@ def test_query_today_and_all():
     assert plan.queries[0].kind == "all"
 
 
-def test_query_date_resolved_from_message_not_model():
-    # model could lie about the date; we resolve from the message text
-    plan = reconcile([Query(kind="date", date="1999-01-01")], ctx(ACTIVE, message="what's on for tomorrow?"))
+def test_query_date_from_intent():
+    # The day comes from the query's date intent; the core does the math.
+    plan = reconcile([Query(kind="date", when=When(kind="tomorrow"))], ctx(ACTIVE))
     assert plan.queries[0].kind == "date"
     assert plan.queries[0].date == "2026-06-30"
 
 
-def test_query_named_day_overrides_model_kind():
-    # The model mislabeled a "tomorrow" query as today; the message decides.
-    plan = reconcile(
-        [Query(kind="today")], ctx(ACTIVE, message="what is my schedule for tomorrow again")
-    )
-    assert plan.queries[0].kind == "date"
-    assert plan.queries[0].date == "2026-06-30"
+def test_query_today_intent_is_today_query():
+    plan = reconcile([Query(kind="date", when=When(kind="today"))], ctx(ACTIVE))
+    assert plan.queries[0].kind == "today"
 
 
-def test_capture_recovers_dropped_date_from_message():
-    # The model dropped the leading "Tomorrow" from raw; a lone capture recovers
-    # the date from the whole message.
+def test_capture_dated_from_intent():
+    # A lone capture's date comes straight from its typed intent.
     plan = reconcile(
-        [Capture(task="harass Jerry", raw="harass Jerry")],
-        ctx(message="Tomorrow I need to harass Jerry"),
+        [Capture(task="harass Jerry", raw="harass Jerry tomorrow", when=When(kind="tomorrow"))],
+        ctx(),
     )
     assert plan.mutations[0].due_date == "2026-06-30"
 
@@ -421,7 +390,11 @@ def test_capture_unsupported_repeat_is_one_off():
 
 def test_capture_far_future_confirms():
     # "in 200 years" is probably a typo or a joke: hold it for a yes/no.
-    plan = reconcile([Capture(task="take out the trash", raw="in 200 years")], ctx())
+    plan = reconcile(
+        [Capture(task="take out the trash", raw="in 200 years",
+                 when=When(kind="offset", n=200, unit="year"))],
+        ctx(),
+    )
     assert not plan.mutations
     assert plan.confirm is not None
     assert plan.confirm.mutations[0].kind == "capture"
@@ -430,14 +403,18 @@ def test_capture_far_future_confirms():
 
 def test_capture_near_future_applies():
     # A couple of years out is plausible; apply without confirming.
-    plan = reconcile([Capture(task="renew passport", raw="in 2 years")], ctx())
+    plan = reconcile(
+        [Capture(task="renew passport", raw="in 2 years",
+                 when=When(kind="offset", n=2, unit="year"))],
+        ctx(),
+    )
     assert plan.mutations and plan.confirm is None
 
 
 def test_reschedule_far_future_confirms():
     plan = reconcile(
-        [Reschedule(target="a3", raw="in 100 years", confidence=0.9)],
-        ctx(ACTIVE, message="push the audit in 100 years"),
+        [Reschedule(target="a3", when=When(kind="offset", n=100, unit="year"), confidence=0.9)],
+        ctx(ACTIVE),
     )
     assert not plan.mutations
     assert plan.confirm is not None and plan.confirm.mutations[0].kind == "reschedule"
@@ -460,7 +437,9 @@ def test_capture_relate_case_insensitive():
 
 def test_capture_own_date_beats_relate():
     plan = reconcile(
-        [Capture(task="bring soda", raw="bring soda Friday", relate="a3")], ctx(ACTIVE)
+        [Capture(task="bring soda", raw="bring soda Friday",
+                 when=When(kind="weekday", which="next", day="fri"), relate="a3")],
+        ctx(ACTIVE),
     )
     assert plan.mutations[0].due_date == "2026-07-03"  # its own Friday, not a3's
 
@@ -516,11 +495,9 @@ def test_multi_action_batch():
     actions = [
         Complete(target="a1", confidence=0.9),
         Drop(target="a2", confidence=0.9),
-        Reschedule(target="a3", raw="to Friday", confidence=0.9),
+        Reschedule(target="a3", when=When(kind="weekday", which="next", day="fri"), confidence=0.9),
     ]
-    plan = reconcile(
-        actions, ctx(ACTIVE, message="did org prez, drop pool, push audit to Friday")
-    )
+    plan = reconcile(actions, ctx(ACTIVE))
     kinds = [m.kind for m in plan.mutations]
     assert kinds == ["complete", "drop", "reschedule"]
     assert not plan.questions

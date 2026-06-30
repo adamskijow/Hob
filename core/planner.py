@@ -4,14 +4,11 @@
 Pure, no I/O. This is where correctness lives: the model's output is a proposal,
 not a command.
 
-- Dates: the model never proposes a resolved date; the new date is re-resolved
-  from the raw phrasing (core.dates). The parser owns dates entirely. Ambiguity
-  (more than one date in the phrase) produces a clarifying question and applies
-  nothing; a reschedule whose phrase resolves to nothing also asks.
-- Reschedule guard: the model is told to copy date words verbatim, so a date
-  phrase that does not actually appear in the message is a hallucination (a
-  question or a plain capture misread as a reschedule). The planner asks rather
-  than moving anything.
+- Dates: the model never proposes a resolved date; it classifies the phrase into
+  a typed intent and core.dates.resolve_intent does the calendar math. The model
+  owns understanding, the core owns arithmetic. An intent of kind "ambiguous"
+  produces a clarifying question and applies nothing; an unresolvable intent on a
+  reschedule also asks.
 - References: every target must match a real id in the active list, and
   confidence must clear the threshold; otherwise ask, never mutate.
 
@@ -20,7 +17,6 @@ allocate ids or read the clock. The edge (MessageService) materializes them.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
@@ -46,19 +42,6 @@ CONFIDENCE_THRESHOLD = 0.5
 # A resolved date further out than this is probably a typo or a joke ("in 200
 # years"); confirm before applying rather than scheduling it silently.
 FAR_FUTURE_DAYS = 365 * 5
-
-_WORD = re.compile(r"\w+")
-
-
-def _phrase_in_message(phrase: str, message: str) -> bool:
-    """True if every word of the model's date phrase appears in the message.
-    The prompt tells the model to copy date words verbatim; a phrase absent from
-    the message is a hallucination, so the caller asks instead of mutating."""
-    words = _WORD.findall(phrase.lower())
-    if not words:
-        return False
-    haystack = set(_WORD.findall(message.lower()))
-    return all(w in haystack for w in words)
 
 
 @dataclass
@@ -153,14 +136,25 @@ _NUM_WORDS = {
 def _resolve_ref(ref: str, active: dict, by_pos: dict) -> str | None:
     """Map a target/relate reference to a stored id, tolerating the forms the
     model emits: an id (a1, any case), a list position (2), a stray "id:"/"#"
-    prefix, or a spelled ordinal (first/second)."""
+    prefix, a spelled ordinal (first/second), or the whole "id: label (due ...)"
+    line copied verbatim (we take the leading token)."""
     if not ref:
         return None
     r = ref.strip().lower().removeprefix("id:").removeprefix("#").strip()
     r = _NUM_WORDS.get(r, r)
     if r in active:
         return r
-    return by_pos.get(r)  # a 1-based list position
+    if r in by_pos:
+        return by_pos[r]  # a 1-based list position
+    # The model sometimes copies the whole list line ("a3: review the SR audit");
+    # the id or position it put first still identifies the item.
+    head = r.replace(":", " ").split()
+    if head:
+        first = _NUM_WORDS.get(head[0], head[0])
+        if first in active:
+            return first
+        return by_pos.get(first)
+    return None
 
 
 def _check_target(
@@ -181,29 +175,18 @@ def _check_target(
 def _reconcile_capture(
     action: Capture,
     today: date,
-    message_fallback: str | None,
     shared_date: str | None,
     active_due: dict,
     by_pos: dict,
     plan: Plan,
 ) -> None:
-    resolution = dates.resolve(action.raw, today)
-    if resolution.date is None and not resolution.ambiguous:
-        if shared_date is not None:
-            # A leading date shared across a multi-task message (computed above).
-            resolution = dates.DateResolution(date=shared_date)
-        elif message_fallback:
-            # The model sometimes drops a leading date word ("Tomorrow ...") from
-            # raw. For a lone capture, recover the date from the whole message.
-            fallback = dates.resolve(message_fallback, today)
-            if fallback.ambiguous or fallback.date is not None:
-                resolution = fallback
+    resolution = dates.resolve_intent(action.when, today)
+    if resolution.date is None and not resolution.ambiguous and shared_date is not None:
+        # A leading date shared across a multi-task message (computed above).
+        resolution = dates.DateResolution(date=shared_date)
 
     if resolution.ambiguous:
-        question = (
-            f'when is "{action.task}" due? i read more than one date '
-            f'in "{action.raw}".'
-        )
+        question = f'when is "{action.task}" due? that read as more than one date.'
         plan.questions.append(question)
         plan.pending.append(
             Pending(kind="capture", question=question, task=action.task)
@@ -224,11 +207,8 @@ def _reconcile_capture(
         if first is not None:
             due_date = first.isoformat()
 
-    # The core owns date math, but a clock time needs none: trust the model's
-    # extracted time ("my 1130 meeting" -> 11:30) when we did not parse one.
-    due_time = resolution.time
-    if due_time is None and action.time:
-        due_time = dates.parse_time(action.time)
+    # The model classifies dates (when); a clock time it parses directly (time).
+    due_time = dates.parse_time(action.time)
 
     mutation = Mutation(
         kind="capture",
@@ -279,21 +259,14 @@ def _reconcile_prioritize(
 
 
 def _reconcile_reschedule(
-    action: Reschedule, today: date, active: dict, by_pos: dict, message: str, plan: Plan
+    action: Reschedule, today: date, active: dict, by_pos: dict, plan: Plan
 ) -> None:
     target = _check_target(action.target, action.confidence, active, by_pos, plan)
     if target is None:
         return
     label = active[target]
 
-    if not _phrase_in_message(action.raw, message):
-        # Likely a hallucination (a question or capture misread as a reschedule).
-        # Ask, but do not make it resumable: a stray "friday" next turn must not
-        # move this item.
-        plan.questions.append(f'did you want to move "{label}"? if so, to when?')
-        return
-
-    resolution = dates.resolve(action.raw, today)
+    resolution = dates.resolve_intent(action.when, today)
 
     if resolution.ambiguous:
         question = f'when should i move "{label}" to? that read as more than one date.'
@@ -334,14 +307,13 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
         plan.questions.append("i did not catch a task there. can you rephrase?")
         return
     scope = action.scope if action.scope in ("today", "all", "date") else "today"
+    when = dates.resolve_intent(action.when, today)
     target_date = None
     if scope == "date":
-        # Never trust a model date; re-resolve the day from the message.
-        resolution = dates.resolve(ctx.message, today)
-        if resolution.ambiguous or resolution.date is None:
+        if when.ambiguous or when.date is None:
             plan.questions.append("which day did you mean?")
             return
-        target_date = resolution.date
+        target_date = when.date
     matching = [
         i for i in ctx.active_items if _in_scope(i, scope, ctx.today, target_date)
     ]
@@ -351,17 +323,12 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
     ids = [i["id"] for i in matching]
     if action.op == "reschedule":
         # Move them all to one destination date (non-destructive, so no confirm).
-        raw = action.raw or ""
-        if not _phrase_in_message(raw, ctx.message):
-            plan.questions.append("to when should i move them?")
-            return
-        resolution = dates.resolve(raw, today)
-        if resolution.ambiguous or resolution.date is None:
+        if when.ambiguous or when.date is None:
             plan.questions.append("to when should i move them?")
             return
         for item_id in ids:
             plan.mutations.append(
-                Mutation(kind="reschedule", target=item_id, due_date=resolution.date)
+                Mutation(kind="reschedule", target=item_id, due_date=when.date)
             )
         return
     if action.confidence < CONFIDENCE_THRESHOLD:
@@ -406,15 +373,13 @@ def _reconcile_query(action: Query, today: date, ctx, plan: Plan) -> None:
         plan.queries.append(QueryIntent(kind=kind))
         return
     model_kind = kind if kind in ("today", "date", "all") else "today"
-    # The model is unreliable at classifying the kind ("tomorrow" came back as a
-    # bogus kind). Decide from the message: a specific non-today day named in the
-    # query is a date query for that day, whatever the model said.
-    resolution = dates.resolve(ctx.message, today)
+    # A specific day named in the query (its when intent) is a date query for
+    # that day; today -> today query.
+    resolution = dates.resolve_intent(action.when, today)
     if resolution.ambiguous:
         plan.questions.append("which day did you mean?")
         return
     if resolution.date is not None:
-        # A specific day is named: today -> today query, otherwise a date query.
         if resolution.date == today.isoformat():
             plan.queries.append(QueryIntent(kind="today"))
         else:
@@ -431,25 +396,23 @@ def reconcile(actions: list, ctx) -> Plan:
     today = date.fromisoformat(ctx.today)
     active = {i["id"]: i.get("label", "") for i in ctx.active_items}
     plan = Plan()
-    # A lone capture may recover a dropped date from the whole message; with
-    # several captures we keep each action's own raw so they stay distinct.
     captures = [a for a in actions if isinstance(a, Capture)]
     n_captures = len(captures)
     active_due = {i["id"].lower(): i.get("due_date") for i in ctx.active_items}
     # 1-based position -> id, so a typed "drop 2" resolves to the displayed item.
     by_pos = {str(n): i["id"] for n, i in enumerate(ctx.active_items, start=1)}
-    # A leading date that applies to a whole list ("Tomorrow I need to A, B, C")
-    # gets stripped from each task's raw by the model. Share a single date that
-    # sits at the START of the message across the captures that have none of their
-    # own. A trailing date ("call A and email B tomorrow") is not shared, and a
-    # capture with its own date keeps it (handled in _reconcile_capture).
-    shared_date = dates.leading_date(ctx.message, today) if n_captures > 1 else None
+    # A date at the START of a multi-task message ("Tomorrow I need to A, B, C")
+    # applies to all the tasks; the model attaches it to the first one and leaves
+    # the rest with no date. Detect the leading date in the text, then take the
+    # actual date from the first task's intent (exact math). A trailing date
+    # ("call A and email B tomorrow") is not at the start, so it is not shared.
+    shared_date = None
+    if n_captures > 1 and dates.leading_date(ctx.message, today) is not None:
+        first = dates.resolve_intent(captures[0].when, today)
+        shared_date = first.date or dates.leading_date(ctx.message, today)
     for action in actions:
         if isinstance(action, Capture):
-            fallback = ctx.message if n_captures == 1 else None
-            _reconcile_capture(
-                action, today, fallback, shared_date, active_due, by_pos, plan
-            )
+            _reconcile_capture(action, today, shared_date, active_due, by_pos, plan)
         elif isinstance(action, Amend):
             _reconcile_amend(action, active, by_pos, plan)
         elif isinstance(action, Prioritize):
@@ -467,7 +430,7 @@ def reconcile(actions: list, ctx) -> Plan:
                     Mutation(kind="drop", target=target, reason=action.reason)
                 )
         elif isinstance(action, Reschedule):
-            _reconcile_reschedule(action, today, active, by_pos, ctx.message, plan)
+            _reconcile_reschedule(action, today, active, by_pos, plan)
         elif isinstance(action, Query):
             _reconcile_query(action, today, ctx, plan)
         elif isinstance(action, Bulk):

@@ -19,8 +19,13 @@ def msg(text):
     return InboundMessage(text=text, chat_id=1, message_id=mid, update_id=mid)
 
 
-def capture_json(task, raw=None, due=None):
-    return {"actions": [{"type": "capture", "task": task, "raw": raw or task, "due": due}]}
+def capture_json(task, raw=None, when=None, time=None):
+    action = {"type": "capture", "task": task, "raw": raw or task}
+    if when is not None:
+        action["when"] = when
+    if time is not None:
+        action["time"] = time
+    return {"actions": [action]}
 
 
 def service(llm=None):
@@ -41,7 +46,9 @@ def test_capture_stores_item_and_replies():
 
 
 def test_capture_with_date_end_to_end():
-    svc, store = service(FakeLlm(capture_json("org prez", "org prez Monday", "2026-07-06")))
+    svc, store = service(FakeLlm(
+        capture_json("org prez", "org prez Monday", when={"kind": "weekday", "day": "mon"})
+    ))
     assert svc.handle(msg("committed to the org prez Monday")) == 'got it: "org prez" for 2026-07-06 (in 7 days)'
     item = store.open_items()[0]
     assert item.task == "org prez"
@@ -49,7 +56,7 @@ def test_capture_with_date_end_to_end():
 
 
 def test_ambiguous_date_asks_and_stores_nothing():
-    svc, store = service(FakeLlm(capture_json("thing", "Friday or Monday")))
+    svc, store = service(FakeLlm(capture_json("thing", "Friday or Monday", when={"kind": "ambiguous"})))
     out = svc.handle(msg("thing Friday or Monday"))
     assert "when" in out.lower()
     assert store.open_items() == []

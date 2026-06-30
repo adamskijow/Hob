@@ -86,8 +86,9 @@ def test_multi_action_batch_undo_restores_exact_state():
             "actions": [
                 {"type": "complete", "target": "a1", "confidence": 0.95},
                 {"type": "drop", "target": "a2", "confidence": 0.95},
-                {"type": "reschedule", "target": "a3", "raw": "to Friday",
-                 "due": "2026-07-03", "confidence": 0.95},
+                {"type": "reschedule", "target": "a3",
+                 "when": {"kind": "weekday", "which": "next", "day": "fri"},
+                 "confidence": 0.95},
             ]
         }
     )
@@ -129,6 +130,6 @@ def test_undo_with_nothing_to_undo():
 
 def test_questions_do_not_create_an_undoable_batch():
     # ambiguous capture -> a question, no mutation, so nothing to undo
-    svc, store = seeded_service(FakeLlm({"actions": [{"type": "capture", "task": "x", "raw": "Friday or Monday"}]}))
+    svc, store = seeded_service(FakeLlm({"actions": [{"type": "capture", "task": "x", "raw": "Friday or Monday", "when": {"kind": "ambiguous"}}]}))
     svc.handle(msg("x friday or monday"))
     assert svc.handle(msg("/undo")) == "nothing to undo"
