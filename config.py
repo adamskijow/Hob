@@ -31,6 +31,7 @@ class Config:
     db_path: str
     ollama_host: str
     keep_alive: str  # how long ollama keeps the model loaded; "-1" = resident
+    reminder_lead: int  # minutes before a timed item's due moment to ping
 
     @property
     def telegram_enabled(self) -> bool:
@@ -39,6 +40,13 @@ class Config:
     @classmethod
     def from_env(cls, env: dict | None = None) -> "Config":
         src = os.environ if env is None else env
+        lead_raw = src.get("HOB_REMINDER_LEAD", "10").strip()
+        try:
+            reminder_lead = int(lead_raw)
+        except ValueError as exc:
+            raise ConfigError(
+                f"HOB_REMINDER_LEAD must be a whole number of minutes, got {lead_raw!r}"
+            ) from exc
         cfg = cls(
             telegram_token=src.get("HOB_TELEGRAM_TOKEN", "").strip(),
             model=src.get("HOB_MODEL", "qwen2.5:7b-instruct").strip(),
@@ -47,6 +55,7 @@ class Config:
             db_path=src.get("HOB_DB_PATH", "hob.db").strip(),
             ollama_host=src.get("HOB_OLLAMA_HOST", "http://localhost:11434").strip(),
             keep_alive=src.get("HOB_KEEP_ALIVE", "-1").strip(),
+            reminder_lead=reminder_lead,
         )
         cfg.validate()
         return cfg
@@ -68,4 +77,8 @@ class Config:
             raise ConfigError(
                 f"HOB_KEEP_ALIVE must be -1, seconds, or a duration like 30m, "
                 f"got {self.keep_alive!r}"
+            )
+        if self.reminder_lead < 0:
+            raise ConfigError(
+                f"HOB_REMINDER_LEAD must be 0 or more minutes, got {self.reminder_lead}"
             )

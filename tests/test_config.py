@@ -25,7 +25,16 @@ def test_defaults_applied():
     assert c.wake_time == "07:00"
     assert c.db_path == "hob.db"
     assert c.keep_alive == "-1"  # resident by default
+    assert c.reminder_lead == 10  # a heads-up 10 min before, by default
     assert not c.telegram_enabled
+
+
+def test_reminder_lead_override_and_validation():
+    assert Config.from_env({**BASE, "HOB_REMINDER_LEAD": "0"}).reminder_lead == 0
+    assert Config.from_env({**BASE, "HOB_REMINDER_LEAD": "30"}).reminder_lead == 30
+    for bad in ("soon", "-5"):
+        with pytest.raises(ConfigError):
+            Config.from_env({**BASE, "HOB_REMINDER_LEAD": bad})
 
 
 def test_keep_alive_override_and_validation():

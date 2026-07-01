@@ -463,21 +463,24 @@ class DigestService:
 
 
 class ReminderService:
-    """Pings the user when a timed item's due moment arrives, so "call at 3pm"
-    is not only surfaced in the morning digest. send is async(chat_id, text)."""
+    """Pings the user a lead time before a timed item's due moment, so "call at
+    3pm" is a heads-up (say, 2:50) rather than only a digest line and not only a
+    ping at 3:00 sharp. send is async(chat_id, text)."""
 
-    def __init__(self, store: Store, clock: Clock, send) -> None:
+    def __init__(self, store: Store, clock: Clock, send, lead_minutes: int = 0) -> None:
         self._store = store
         self._clock = clock
         self._send = send
+        self._lead = timedelta(minutes=max(0, lead_minutes))
 
     async def check(self) -> None:
         chat = self._store.get_meta(CHAT_ID_KEY)
         if chat is None:
             return
-        now_iso = self._clock.now().strftime("%Y-%m-%dT%H:%M")
-        for item in self._store.due_reminders(now_iso):
-            await self._send(int(chat), f'reminder: "{item.task}"')
+        # Fire when now reaches (due - lead): compare due moments to now + lead.
+        threshold = (self._clock.now() + self._lead).strftime("%Y-%m-%dT%H:%M")
+        for item in self._store.due_reminders(threshold):
+            await self._send(int(chat), f'reminder: "{item.task}" at {item.due_time}')
             self._store.mark_reminded(item.id)
 
 
@@ -503,7 +506,7 @@ async def _run_daemon(cfg: Config, store: SqliteStore) -> None:
     service = MessageService(store, clock, llm, cfg.timezone, cfg.wake_time)
     telegram = TelegramAdapter(store, service.handle, token=cfg.telegram_token)
     digest = DigestService(store, clock, telegram.send)
-    reminder = ReminderService(store, clock, telegram.send)
+    reminder = ReminderService(store, clock, telegram.send, cfg.reminder_lead)
     scheduler = DigestScheduler(
         clock, store, digest.fire, cfg.wake_time, remind=reminder.check
     )

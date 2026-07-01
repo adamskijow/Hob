@@ -49,9 +49,10 @@ chat transcript; the task list itself carries the rest. You can also act on many
 items at once in plain language ("did everything today", "clear my whole list",
 "drop all of friday").
 
-A task with a time ("call the vet at 3pm") also gets a one-off reminder ping at
-that moment, not just a line in the morning digest. Rescheduling it re-arms the
-reminder for the new time.
+A task with a time ("call the vet at 3pm") also gets a one-off reminder ping a
+short lead before it (10 minutes by default, set with `HOB_REMINDER_LEAD`), so
+it is a heads-up rather than a line in the morning digest or a ping at the exact
+moment. Rescheduling it re-arms the reminder for the new time.
 
 A recurring task ("take out the trash every monday", "water the plants daily",
 "standup every weekday") reappears each occurrence: completing it advances to the
@@ -129,6 +130,7 @@ All configuration is environment variables:
 | `HOB_DB_PATH` | SQLite file path | `hob.db` |
 | `HOB_OLLAMA_HOST` | Ollama endpoint | `http://localhost:11434` |
 | `HOB_KEEP_ALIVE` | How long Ollama keeps the model loaded: `-1` resident, seconds, or a duration like `30m` | `-1` |
+| `HOB_REMINDER_LEAD` | Minutes before a timed task to send its reminder | `10` |
 
 Wake time and timezone are validated at startup; a bad value exits with a clear
 message and a non-zero code. The wake time can also be set in chat ("send the

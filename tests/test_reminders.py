@@ -55,11 +55,29 @@ def test_reminder_service_sends_and_marks_once():
     svc = ReminderService(s, FakeClock(datetime(2026, 6, 30, 15, 1, tzinfo=TZ)), send)
 
     asyncio.run(svc.check())
-    assert send.calls == [(42, 'reminder: "call bob"')]
+    assert send.calls == [(42, 'reminder: "call bob" at 15:00')]
     assert s.get_item("a1").reminded is True
 
     asyncio.run(svc.check())  # not re-sent
     assert len(send.calls) == 1
+
+
+def test_reminder_fires_lead_minutes_early():
+    s = store_with([item("a1", "standup", "2026-06-30", "15:00")])
+    send = FakeSend()
+    # 10-min lead: at 14:50 the 15:00 item is due for a heads-up.
+    svc = ReminderService(s, FakeClock(datetime(2026, 6, 30, 14, 50, tzinfo=TZ)), send, 10)
+    asyncio.run(svc.check())
+    assert send.calls == [(42, 'reminder: "standup" at 15:00')]
+
+
+def test_reminder_lead_not_yet_in_window():
+    s = store_with([item("a1", "standup", "2026-06-30", "15:00")])
+    send = FakeSend()
+    # 10-min lead: at 14:49 the 15:00 item is still one minute early.
+    svc = ReminderService(s, FakeClock(datetime(2026, 6, 30, 14, 49, tzinfo=TZ)), send, 10)
+    asyncio.run(svc.check())
+    assert send.calls == []
 
 
 def test_reminder_does_nothing_without_chat():
