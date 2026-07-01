@@ -171,6 +171,14 @@ class Bulk:
 
 
 @dataclass
+class Chitchat:
+    """A social pleasantry with no task and no question (a greeting, thanks, an
+    acknowledgment). The model supplies a short, warm reply."""
+
+    reply: str | None = None
+
+
+@dataclass
 class Undo:
     """The user asked to undo the last change ("scratch that", "undo that")."""
 

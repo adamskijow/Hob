@@ -211,7 +211,11 @@ class MessageService:
                 json.dumps([asdict(m) for m in plan.confirm.mutations]),
             )
             questions.append(plan.confirm.question)
-        return self._reply(applied, questions, answers)
+        reply = self._reply(applied, questions, answers)
+        # A bare pleasantry ("thanks bud") gets a warm reply, not a task nag.
+        if plan.chitchat and reply == "ok":
+            return plan.chitchat
+        return reply
 
     def _apply_setting(self, s: SettingChange) -> str:
         if s.key == "wake_time":

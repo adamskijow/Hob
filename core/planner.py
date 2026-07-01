@@ -25,6 +25,7 @@ from core.models import (
     Amend,
     Bulk,
     Capture,
+    Chitchat,
     Complete,
     Drop,
     Prioritize,
@@ -105,6 +106,7 @@ class Plan:
     confirm: ConfirmIntent | None = None
     undo: bool = False  # the user asked to undo the last change
     settings: list[SettingChange] = field(default_factory=list)
+    chitchat: str | None = None  # a warm reply to a social pleasantry
 
 
 def _too_far(due_iso: str, today: date) -> int | None:
@@ -446,6 +448,8 @@ def reconcile(actions: list, ctx) -> Plan:
             _reconcile_bulk(action, today, ctx, plan)
         elif isinstance(action, Undo):
             plan.undo = True
+        elif isinstance(action, Chitchat):
+            plan.chitchat = (action.reply or "sure thing").strip()
         elif isinstance(action, Unknown):
             plan.questions.append("i did not catch a task there. can you rephrase?")
     return plan

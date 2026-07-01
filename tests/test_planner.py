@@ -4,6 +4,7 @@ from core.models import (
     Amend,
     Bulk,
     Capture,
+    Chitchat,
     Complete,
     Drop,
     InterpreterContext,
@@ -292,6 +293,12 @@ def test_query_done_period():
 
 def test_undo_action_sets_flag():
     assert reconcile([Undo()], ctx()).undo is True
+
+
+def test_chitchat_sets_reply():
+    plan = reconcile([Chitchat(reply="anytime!")], ctx())
+    assert plan.chitchat == "anytime!"
+    assert not plan.mutations and not plan.questions
 
 
 def test_prioritize_resolves_target_and_level():

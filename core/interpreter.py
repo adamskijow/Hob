@@ -17,6 +17,7 @@ from core.models import (
     Amend,
     Bulk,
     Capture,
+    Chitchat,
     Complete,
     Drop,
     InterpreterContext,
@@ -127,6 +128,7 @@ ACTION_SCHEMA = {
                         ["type", "op", "scope"],
                     ),
                     _variant("undo", {}, ["type"]),
+                    _variant("chitchat", {"reply": _STR}, ["type"]),
                     _variant("unknown", {"note": _STR}, ["type"]),
                 ]
             },
@@ -203,13 +205,20 @@ tomorrow"). Pick scope:
   - "date": one specific named day. Use for "all of friday", "monday's tasks".
 - undo: the user wants to reverse their last change ("scratch that", "undo \
 that"). Fields: type "undo".
-- unknown: you cannot tell what they want. Fields: type "unknown", note (short).
+- chitchat: a social pleasantry with NO task and NO question - a greeting, \
+thanks, or an acknowledgment ("thanks", "thanks bud", "ok cool", "good morning", \
+"nice", "lol", "you're the best"). Fields: type "chitchat", reply (a short, warm \
+acknowledgment, a few words at most, e.g. "anytime!", "you got it"). Do NOT use \
+chitchat for a question or a request.
+- unknown: you cannot tell what task they want, or it is some other message you \
+cannot act on (a non-task question, small talk that is not a pleasantry). \
+Fields: type "unknown", note (short).
 
 DATES: set "when" to a typed date intent - classify the phrase, never compute a date:
 - no date mentioned -> {{"kind":"none"}}
 - "today"/"tonight" -> {{"kind":"today"}}; "tomorrow" -> {{"kind":"tomorrow"}}; "yesterday" -> {{"kind":"yesterday"}}
 - a weekday BY NAME, even with "next" ("friday", "next friday", "this monday") -> {{"kind":"weekday","which":"this" or "next","day":"mon".."sun"}}
-- "in N days/weeks/months/years" ("a couple"=2, "a few"=3) -> {{"kind":"offset","n":N,"unit":"day"/"week"/"month"/"year"}}. "in 2 weeks" is offset, NOT week. If a number is followed by an unclear or non-time word (a typo like "two works"), do NOT guess a unit - use {{"kind":"ambiguous"}}.
+- "in N days/weeks/months/years" ("a couple"=2, "a few"=3) -> {{"kind":"offset","n":N,"unit":"day"/"week"/"month"/"year"}}. "in 2 weeks" is offset, NOT week.
 - "this/next weekend" -> {{"kind":"weekend","which":"this" or "next"}}
 - "next week"/"this week", with NO weekday name and NO number (maybe early/mid/late) -> {{"kind":"week","which":"next","part":"early"/"mid"/"late"}}
 - start or end of this/next month -> {{"kind":"month","which":"this" or "next","anchor":"start" or "end"}}
@@ -255,7 +264,8 @@ Rules:
 - One message may do several things; emit one action each.
 - Put the date in when (a typed intent) and any clock time in time; echo the \
 user's words for a captured task in raw.
-- If the message is not about tasks at all, return a single unknown action.
+- If the message is a pleasantry (thanks, a greeting), use chitchat; if it is \
+some other non-task message, return a single unknown action.
 """
 
 
@@ -446,6 +456,8 @@ def _parse_one(action: object):
         )
     if kind == "undo":
         return Undo()
+    if kind == "chitchat":
+        return Chitchat(reply=_str(action.get("reply")))
     if kind == "unknown":
         return Unknown(note=_str(action.get("note")))
     return Unknown(note=f"unhandled type {kind!r}")

@@ -273,6 +273,17 @@ def test_setting_wake_time_persists_and_scheduler_reads_it():
     assert sched._wake_time() == "06:30"
 
 
+def test_pleasantry_gets_warm_reply_not_nag():
+    llm = FakeLlm({"actions": [{"type": "chitchat", "reply": "anytime!"}]})
+    store = SqliteStore(":memory:")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York")
+
+    out = svc.handle(msg("thanks bud"))
+    assert out == "anytime!"
+    assert "rephrase" not in out
+
+
 def test_amend_edits_item_text():
     llm = FakeLlm({"actions": [{"type": "amend", "target": "a1", "task": "prep the Q3 deck"}]})
     svc, store = service(llm)

@@ -151,9 +151,9 @@ CASES = [
          lambda p: kinds(p) == ["capture", "capture", "capture"]
          and all(m.due_date == "2026-06-30" for m in p.mutations),
          "leading date shared across tasks; 1130 is not the year 1130"),
-    Case("hit the griddy in two works",
-         lambda p: not p.mutations and bool(p.questions),
-         "unclear unit (typo) asks instead of guessing days"),
+    Case("thanks bud, you're the best",
+         lambda p: p.chitchat is not None and not p.mutations and not p.queries,
+         "pleasantry gets a warm reply, not a task nag"),
 ]
 
 
