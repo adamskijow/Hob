@@ -40,6 +40,8 @@ def select_digest_items(open_items: list[Item], today: str) -> list[Item]:
     """
     overdue, due_today, undated = [], [], []
     for item in open_items:
+        if item.waiting_since:
+            continue  # parked on someone else: not part of today's deck
         if item.due_date is None:
             undated.append(item)
         elif item.due_date < today:
@@ -70,22 +72,29 @@ def priority_mark(item: Item) -> str:
 
 
 def marks(item: Item) -> str:
-    """All the inline badges for a list line: priority, then tag."""
+    """All the inline badges for a list line: priority, tag, waiting."""
     tag = f" [{item.tag}]" if item.tag else ""
-    return priority_mark(item) + tag
+    waiting = " [waiting]" if item.waiting_since else ""
+    return priority_mark(item) + tag + waiting
 
 
 def ordered_open(items: list[Item], today: str) -> list[Item]:
     """All open items in one canonical reading order: on-deck (overdue, due today,
-    undated) first, then future-dated. Positions are numbered over this so every
-    view and the morning digest agree on what "2" refers to."""
+    undated) first, then future-dated, then waiting (parked) items last. Positions
+    are numbered over this so every view and the morning digest agree on what "2"
+    refers to, and waiting items stay referenceable."""
     on_deck = select_digest_items(items, today)
     seen = {i.id for i in on_deck}
+    rest = [i for i in items if i.id not in seen]
     future = sorted(
-        (i for i in items if i.id not in seen),
+        (i for i in rest if not i.waiting_since),
         key=lambda i: (i.due_date or "", i.created_at),
     )
-    return on_deck + future
+    waiting = sorted(
+        (i for i in rest if i.waiting_since),
+        key=lambda i: (i.waiting_since, i.created_at),
+    )
+    return on_deck + future + waiting
 
 
 STALE_DAYS = 3  # rolled over this many days -> worth asking about
@@ -98,12 +107,26 @@ def _days_over(item: Item, today: str) -> int:
     return (date.fromisoformat(today) - date.fromisoformat(item.due_date)).days
 
 
-def render_digest(ordered: list[Item], today: str) -> str:
+def render_digest(
+    ordered: list[Item], today: str, waiting: list[Item] | None = None
+) -> str:
     """The morning message. Terse, one line per item. An item that keeps rolling
     over is marked with its day count, and the worst repeat offender gets one
-    gentle question at the end so the list does not silently rot."""
+    gentle question at the end so the list does not silently rot. Waiting items
+    that have been parked a while get a "still waiting" line."""
+    waiting = waiting or []
+    stale_waits = [
+        (i, (date.fromisoformat(today) - date.fromisoformat(i.waiting_since)).days)
+        for i in waiting
+        if i.waiting_since and i.waiting_since <= today
+    ]
+    stale_waits = [(i, n) for i, n in stale_waits if n >= STALE_DAYS]
     if not ordered:
-        return "morning. nothing on deck today."
+        if not stale_waits:
+            return "morning. nothing on deck today."
+        lines = ["morning. nothing on deck today."]
+        lines += [f'still waiting: "{i.task}" ({n}d). worth a nudge?' for i, n in stale_waits]
+        return "\n".join(lines)
     lines = ["morning. here is today:"]
     for n, item in enumerate(ordered, start=1):
         over = _days_over(item, today)
@@ -121,4 +144,5 @@ def render_digest(ordered: list[Item], today: str) -> str:
             f'"{stale.task}" has rolled over {worst + 1} days now. '
             "still on, or should i push or drop it?"
         )
+    lines += [f'still waiting: "{i.task}" ({n}d). worth a nudge?' for i, n in stale_waits]
     return "\n".join(lines)

@@ -350,6 +350,58 @@ def test_undo_action_sets_flag():
     assert reconcile([Undo()], ctx()).undo is True
 
 
+def test_note_wait_resume_reconcile():
+    from core.models import Note, Resume, Wait
+
+    plan = reconcile([Note(target="a1", text="gate code 4412")], ctx(ACTIVE))
+    assert plan.mutations[0].kind == "note" and plan.mutations[0].note == "gate code 4412"
+    plan = reconcile([Wait(target="2")], ctx(ACTIVE))
+    assert plan.mutations[0].kind == "wait" and plan.mutations[0].target == "a2"
+    waiting_active = [dict(a, waiting=(a["id"] == "a2")) for a in ACTIVE]
+    plan = reconcile([Resume(target="a2")], ctx(waiting_active))
+    assert plan.mutations[0].kind == "resume"
+
+
+def test_capture_carries_waiting_and_note():
+    plan = reconcile(
+        [Capture(task="wait for plumber", raw="waiting on the plumber",
+                 waiting=True, note="about the leak")],
+        ctx(),
+    )
+    assert plan.mutations[0].waiting is True
+    assert plan.mutations[0].note == "about the leak"
+
+
+def test_resume_retargets_to_the_only_waiting_item():
+    from core.models import Resume
+
+    active = [
+        {"id": "a1", "label": "grab milk", "due_date": None, "waiting": False},
+        {"id": "a2", "label": "send jerry the contract", "due_date": None, "waiting": True},
+    ]
+    # Model picked the non-waiting focus item; the planner retargets.
+    plan = reconcile([Resume(target="a1")], ctx(active))
+    assert plan.mutations[0].kind == "resume" and plan.mutations[0].target == "a2"
+    # With nothing waiting: a question, no mutation.
+    none_waiting = [dict(a, waiting=False) for a in active]
+    plan2 = reconcile([Resume(target="a1")], ctx(none_waiting))
+    assert not plan2.mutations and plan2.questions
+
+
+def test_bulk_today_excludes_waiting():
+    active = [
+        {"id": "a1", "label": "x", "due_date": None, "waiting": False},
+        {"id": "a2", "label": "parked", "due_date": None, "waiting": True},
+    ]
+    plan = reconcile([Bulk(op="complete", scope="today")], ctx(active))
+    assert {m.target for m in plan.mutations} == {"a1"}
+
+
+def test_query_waiting_kind():
+    plan = reconcile([Query(kind="waiting")], ctx(ACTIVE))
+    assert plan.queries[0].kind == "waiting"
+
+
 def test_chitchat_sets_reply():
     plan = reconcile([Chitchat(reply="anytime!")], ctx())
     assert plan.chitchat == "anytime!"

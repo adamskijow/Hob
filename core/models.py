@@ -34,6 +34,8 @@ class Item:
     priority: str = "normal"  # high | normal | low; floats up/down the digest
     tag: str | None = None  # project / list this task belongs to, e.g. "wedding"
     snooze_until: str | None = None  # ISO datetime; the reminder re-fires then
+    note: str | None = None  # a detail stuck to the task ("gate code 4412")
+    waiting_since: str | None = None  # ISO date; parked on someone else since
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -103,6 +105,33 @@ class Capture:
     repeat: str | None = None  # recurrence rule, e.g. "daily" or "weekly:mon"
     priority: str = "normal"  # high | normal | low
     tag: str | None = None  # project / list to file this task under
+    waiting: bool = False  # blocked on someone else from the start
+    note: str | None = None  # extra detail worth keeping with the task
+    confidence: float = 1.0
+
+
+@dataclass
+class Note:
+    """Attach a detail to an existing item ("gate code is 4412")."""
+
+    target: str
+    text: str
+    confidence: float = 1.0
+
+
+@dataclass
+class Wait:
+    """Park an existing item as blocked on someone else."""
+
+    target: str
+    confidence: float = 1.0
+
+
+@dataclass
+class Resume:
+    """Unpark a waiting item; the block cleared."""
+
+    target: str
     confidence: float = 1.0
 
 
@@ -218,3 +247,6 @@ class InterpreterContext:
     # The item a replied-to Hob message (e.g. a reminder) was about ({id, label});
     # bare words in the reply ("done", "snooze 20") refer to it.
     replied: dict | None = None
+    # Who forwarded this message to hob (a Telegram forward), else None. A
+    # forwarded message's text is content to capture, not a command to hob.
+    forwarded_from: str | None = None

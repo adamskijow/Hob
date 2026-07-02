@@ -182,6 +182,16 @@ CASES = [
     Case("make it 4pm",
          lambda p: not p.mutations,
          "bare follow-up with no focus does not guess"),
+    Case("add a note to the audit one: bring the Q3 numbers",
+         lambda p: kinds(p) == ["note"] and p.mutations[0].target == "a3"
+         and "q3" in (p.mutations[0].note or "").lower(),
+         "note attaches to an existing item"),
+    Case("the prez deck is waiting on sam's slides",
+         lambda p: kinds(p) == ["wait"] and p.mutations[0].target == "a1",
+         "wait parks an existing item"),
+    Case("what am i waiting on",
+         lambda p: p.queries and p.queries[0].kind == "waiting",
+         "waiting query"),
 ]
 
 

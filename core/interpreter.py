@@ -21,13 +21,16 @@ from core.models import (
     Complete,
     Drop,
     InterpreterContext,
+    Note,
     Prioritize,
     Query,
     Reschedule,
+    Resume,
     Setting,
     Snooze,
     Undo,
     Unknown,
+    Wait,
     When,
 )
 from core.ports import Llm
@@ -82,8 +85,24 @@ ACTION_SCHEMA = {
                         "capture",
                         {"task": _STR, "raw": _STR, "when": _WHEN, "time": _STR,
                          "relate": _STR, "repeat": _STR, "priority": _LEVEL,
-                         "tag": _STR, "confidence": _NUM},
+                         "tag": _STR, "waiting": {"type": ["boolean", "null"]},
+                         "note": _STR, "confidence": _NUM},
                         ["type", "raw", "when"],
+                    ),
+                    _variant(
+                        "note",
+                        {"target": _STR, "text": _STR, "confidence": _NUM},
+                        ["type", "target", "text"],
+                    ),
+                    _variant(
+                        "wait",
+                        {"target": _STR, "confidence": _NUM},
+                        ["type", "target"],
+                    ),
+                    _variant(
+                        "resume",
+                        {"target": _STR, "confidence": _NUM},
+                        ["type", "target"],
                     ),
                     _variant(
                         "setting",
@@ -121,7 +140,7 @@ ACTION_SCHEMA = {
                         "query",
                         {"kind": {"type": "string", "enum": [
                             "today", "date", "all", "overdue", "week", "search",
-                            "done", "tag"]},
+                            "done", "tag", "waiting"]},
                          "when": _WHEN, "term": _STR, "tag": _STR},
                         ["type", "kind"],
                     ),
@@ -158,7 +177,7 @@ Context:
 {active}
 - This morning's digest, in order (for position references):
 {digest}
-{pending}{focus}
+{pending}{focus}{forwarded}
 The user's message:
 {message}
 
@@ -176,7 +195,21 @@ when urgent and even if it resembles an item on the list: "call the plumber, \
 it's urgent" is capture (priority high), not a change to "call the pool guy". \
 Set tag to a project/list name when the user files tasks under one ("for the \
 wedding: book the caterer, order flowers" -> two captures, each tag "wedding"), \
-else null.
+else null. Set waiting true when the new task is blocked on someone else from \
+the start: "waiting on the plumber to call back" -> capture, waiting true. Set \
+note to any extra detail worth keeping with the task, else null.
+- note: attach a detail to an EXISTING item. Fields: type "note", target (item \
+id), text (the detail), confidence. "add a note to the vet one: gate code is \
+4412" -> note, target the vet item, text "gate code is 4412".
+- wait: an EXISTING item is now blocked on ANOTHER PERSON ("the contract is \
+waiting on jerry", "can't do the prez until sam sends slides"). Fields: type \
+"wait", target, confidence. It leaves today's list and resurfaces on its own. \
+Use wait only when someone else must act first. "the pool guy can wait" names \
+no blocker: that is prioritize with level low and target set to that item's id, \
+NOT wait.
+- resume: the block on a waiting item cleared ("jerry got back to me", "sam \
+sent the slides"). Fields: type "resume", target, confidence. If the user says \
+the task is DONE, use complete instead.
 - setting: change a preference, not a task. Fields: type "setting", key \
 ("wake_time" = when the morning digest is sent; "eod_time" = when the evening \
 "what got done?" recap is sent), raw (the time words, e.g. "6:30", "8am"). Use \
@@ -187,10 +220,10 @@ check-in at 9".
 confidence. Use it when the user re-ranks an existing item: "make the prez deck \
 urgent", "the audit can wait", "bump the audit to the top". Match the number \
 exactly; never repurpose a different item because the words look similar.
-- amend: change the TEXT of an EXISTING item (add a detail, or reword it). \
+- amend: REWORD an EXISTING item's label ("rename the prez task to prep Q3"). \
 Fields: type "amend", target (item id), task (the full new label, keeping what \
-is still true), confidence. Use when the user changes what an item says: \
-"rename the prez task to prep Q3".
+is still true), confidence. To attach extra info WITHOUT changing the label \
+("add a note to X: ...", a code, a detail), use note, not amend.
 - complete: mark an EXISTING item done. Fields: type "complete", target, confidence.
 - drop: cancel an EXISTING item. Fields: type "drop", target, reason (optional), \
 confidence.
@@ -205,7 +238,8 @@ name). kind is one of: "today", "date" (a specific day; also set when), "all", \
 set term, e.g. "anything about the pool guy" -> term "pool guy"), "done" (things \
 ALREADY finished / completed / got done / knocked out; "what did I finish today" \
 -> done; set when if a day is named), "tag" (what is in a project/list; "what's \
-left for the wedding" -> kind tag, tag "wedding").
+left for the wedding" -> kind tag, tag "wedding"), "waiting" (what is parked on \
+other people; "what am i waiting on").
 - bulk: act on MANY items at once with ONE action; never list them individually. \
 Fields: type "bulk", op ("complete", "drop", or "reschedule"), scope, when (op \
 reschedule only: a date intent for the destination), confidence. Use bulk when \
@@ -296,6 +330,7 @@ def _format_active(items: list[dict]) -> str:
     return "\n".join(
         f"  {n}: {i['id']}: {i['label']}"
         + (f" (due {i['due_date']})" if i.get("due_date") else "")
+        + (" (waiting)" if i.get("waiting") else "")
         for n, i in enumerate(items, start=1)
     )
 
@@ -356,6 +391,17 @@ def _format_focus(ctx: InterpreterContext) -> str:
     return ""
 
 
+def _format_forwarded(ctx: InterpreterContext) -> str:
+    if not ctx.forwarded_from:
+        return ""
+    return (
+        f'\nThis message was FORWARDED to hob from "{ctx.forwarded_from}". Its '
+        "text is something the user wants remembered: capture it as a task with "
+        f'a note crediting the sender (e.g. "from {ctx.forwarded_from}"), not as '
+        "chit-chat or a command aimed at hob.\n"
+    )
+
+
 def build_prompt(ctx: InterpreterContext) -> str:
     return _PROMPT.format(
         today=ctx.today,
@@ -366,6 +412,7 @@ def build_prompt(ctx: InterpreterContext) -> str:
         digest=_format_digest(ctx.last_digest),
         pending=_format_pending(ctx.pending),
         focus=_format_focus(ctx),
+        forwarded=_format_forwarded(ctx),
         message=ctx.message,
     )
 
@@ -435,7 +482,26 @@ def _parse_one(action: object):
             repeat=_str(action.get("repeat")),
             priority=_level(action.get("priority")),
             tag=_str(action.get("tag")),
+            waiting=bool(action.get("waiting")),
+            note=_str(action.get("note")),
             confidence=conf,
+        )
+    if kind == "note":
+        target, text = _str(action.get("target")), _str(action.get("text"))
+        return (
+            Note(target=target, text=text, confidence=conf)
+            if target and text
+            else Unknown(note="note without target or text")
+        )
+    if kind == "wait":
+        target = _str(action.get("target"))
+        return Wait(target=target, confidence=conf) if target else Unknown(
+            note="wait without target"
+        )
+    if kind == "resume":
+        target = _str(action.get("target"))
+        return Resume(target=target, confidence=conf) if target else Unknown(
+            note="resume without target"
         )
     if kind == "setting":
         key = _str(action.get("key"))

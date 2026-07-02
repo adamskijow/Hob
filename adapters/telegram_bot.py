@@ -63,6 +63,25 @@ class InboundMessage:
     update_id: int
     reply_to: int | None = None  # message id this one replies to, if any
     edited: bool = False  # True when the user edited an earlier message
+    forwarded_from: str | None = None  # original sender of a forwarded message
+
+
+def _forward_name(message: object) -> str | None:
+    """Who a forwarded message originally came from, best effort across the
+    origin shapes Telegram uses (user, hidden user, chat, channel)."""
+    origin = getattr(message, "forward_origin", None)
+    if origin is None:
+        return None
+    user = getattr(origin, "sender_user", None)
+    if user is not None:
+        return getattr(user, "first_name", None) or "someone"
+    hidden = getattr(origin, "sender_user_name", None)
+    if hidden:
+        return hidden
+    chat = getattr(origin, "chat", None) or getattr(origin, "sender_chat", None)
+    if chat is not None:
+        return getattr(chat, "title", None) or "a chat"
+    return "someone"
 
 
 class TelegramAdapter:
@@ -75,11 +94,13 @@ class TelegramAdapter:
         bot: object | None = None,
         poll_timeout: int = 30,
         error_backoff: float = 3.0,
+        reaction_handler=None,  # callable(message_id, [emoji]) -> reply str
     ) -> None:
         if bot is None and token is None:
             raise ValueError("TelegramAdapter needs either a bot or a token")
         self._store = store
         self._handler = handler
+        self._reaction_handler = reaction_handler
         self._token = token
         self._bot = bot
         self._poll_timeout = poll_timeout
@@ -110,6 +131,28 @@ class TelegramAdapter:
         if reply:
             await self._bot.send_message(chat_id=msg.chat_id, text=present(reply))
 
+    async def _handle_reaction(self, reaction: object) -> None:
+        """A reaction changed on some message; pass the newly added emojis to
+        the handler, which decides whether they mean anything."""
+        if self._reaction_handler is None:
+            return
+        old = {getattr(r, "emoji", None) for r in getattr(reaction, "old_reaction", [])}
+        added = [
+            e for e in (
+                getattr(r, "emoji", None) for r in getattr(reaction, "new_reaction", [])
+            )
+            if e and e not in old
+        ]
+        if not added:
+            return
+        reply = self._reaction_handler(reaction.message_id, added)
+        if inspect.isawaitable(reply):
+            reply = await reply
+        if reply:
+            await self._bot.send_message(
+                chat_id=reaction.chat.id, text=present(reply)
+            )
+
     async def _handle_update(self, update: object) -> None:
         message = getattr(update, "message", None)
         edited = False
@@ -127,8 +170,12 @@ class TelegramAdapter:
                 update_id=update.update_id,
                 reply_to=getattr(replied, "message_id", None),
                 edited=edited,
+                forwarded_from=_forward_name(message),
             )
             await self._dispatch(msg)
+        reaction = getattr(update, "message_reaction", None)
+        if reaction is not None:
+            await self._handle_reaction(reaction)
         # Advance past this update only after it is fully handled, so a crash
         # mid-handling reprocesses just this one, never the whole backlog.
         self._save_offset(update.update_id + 1)
@@ -139,7 +186,7 @@ class TelegramAdapter:
         updates = await self._bot.get_updates(
             offset=offset,
             timeout=self._poll_timeout,
-            allowed_updates=["message", "edited_message"],
+            allowed_updates=["message", "edited_message", "message_reaction"],
         )
         for update in updates:
             await self._handle_update(update)
@@ -162,3 +209,19 @@ class TelegramAdapter:
         associate a later reply with what this message was about."""
         sent = await self._ensure_bot().send_message(chat_id=chat_id, text=present(text))
         return getattr(sent, "message_id", None)
+
+    async def pin(self, chat_id: int, message_id: int, unpin_message_id: int | None) -> None:
+        """Pin today's digest (quietly) and unpin yesterday's. Pin failures are
+        cosmetic: log and move on, never break the digest."""
+        bot = self._ensure_bot()
+        try:
+            if unpin_message_id is not None:
+                await bot.unpin_chat_message(chat_id=chat_id, message_id=unpin_message_id)
+        except Exception:
+            log.info("unpin failed (already unpinned?); continuing")
+        try:
+            await bot.pin_chat_message(
+                chat_id=chat_id, message_id=message_id, disable_notification=True
+            )
+        except Exception:
+            log.exception("pin failed; digest sent unpinned")

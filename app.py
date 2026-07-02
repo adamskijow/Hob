@@ -70,6 +70,10 @@ EOD_KEY = "eod_time"
 # resolve. Stale focus is ignored after this many minutes.
 FOCUS_KEY = "focus"
 FOCUS_TTL_MINUTES = 15
+# Reactions on a Hob message that maps to an item: these complete it, this drops
+# it. Anything else (hearts on chit-chat) is appreciation, not an instruction.
+REACT_COMPLETE = {"\U0001F44D", "\U0001F44C", "\U0001F4AF", "\U0001F3C6"}
+REACT_DROP = {"\U0001F44E"}
 
 _AFFIRMATIONS = {
     "yes", "y", "yeah", "yep", "yup", "sure", "ok", "okay", "confirm",
@@ -165,7 +169,10 @@ class MessageService:
         # narrow window between applying and advancing it.
         if self._store.has_actions_for_message(message_id):
             return ""
-        return self._interpret_and_apply(text, message_id, reply_to=msg.reply_to)
+        return self._interpret_and_apply(
+            text, message_id, reply_to=msg.reply_to,
+            forwarded_from=msg.forwarded_from,
+        )
 
     def _replied_item(self, reply_to: int | None) -> dict | None:
         """The item a replied-to Hob message (e.g. a reminder) was about, so bare
@@ -180,12 +187,19 @@ class MessageService:
             return None
         return {"id": item.id, "label": item.task}
 
-    def _context(self, text: str, reply_to: int | None = None) -> InterpreterContext:
+    def _context(
+        self,
+        text: str,
+        reply_to: int | None = None,
+        forwarded_from: str | None = None,
+    ) -> InterpreterContext:
         # Canonical order so the position numbers the model sees match what the
         # user sees in /today and the digest.
         ordered = ordered_open(self._store.open_items(), self._clock.today().isoformat())
         active = [
-            {"id": i.id, "label": i.task, "due_date": i.due_date} for i in ordered
+            {"id": i.id, "label": i.task, "due_date": i.due_date,
+             "waiting": bool(i.waiting_since)}
+            for i in ordered
         ]
         last = self._store.last_digest()
         last_items = (
@@ -202,6 +216,7 @@ class MessageService:
             pending=json.loads(raw_pending) if raw_pending else [],
             focus=self._load_focus(),
             replied=self._replied_item(reply_to),
+            forwarded_from=forwarded_from,
         )
 
     def _load_focus(self) -> list[dict]:
@@ -235,10 +250,39 @@ class MessageService:
                 json.dumps({"ts": self._clock.now().isoformat(), "items": items}),
             )
 
+    def handle_reaction(self, message_id: int, emojis: list[str]) -> str:
+        """A reaction on a Hob message that maps to an item: a thumbs-up family
+        emoji completes it, a thumbs-down drops it. Reactions on anything else
+        (hearts on chit-chat) are appreciation, not instructions: ignored."""
+        item_id = self._store.ref_for(message_id)
+        if item_id is None:
+            return ""
+        item = self._store.get_item(item_id)
+        if item is None or item.status != STATUS_OPEN:
+            return ""
+        kind = None
+        if any(e in REACT_COMPLETE for e in emojis):
+            kind = "complete"
+        elif any(e in REACT_DROP for e in emojis):
+            kind = "drop"
+        if kind is None:
+            return ""
+        # One reaction is one undoable batch; re-reacting the same message is
+        # idempotent via the message guard.
+        inbound = f"reaction:{message_id}"
+        if self._store.has_actions_for_message(inbound):
+            return ""
+        applied = self._apply([Mutation(kind=kind, target=item_id)], inbound)
+        return self._reply(applied, [], [])
+
     def _interpret_and_apply(
-        self, text: str, message_id: str, reply_to: int | None = None
+        self,
+        text: str,
+        message_id: str,
+        reply_to: int | None = None,
+        forwarded_from: str | None = None,
     ) -> str:
-        ctx = self._context(text, reply_to)
+        ctx = self._context(text, reply_to, forwarded_from)
         actions = interpret(self._llm, ctx)
         # A model outage degrades to a single Unknown with this note. Don't treat
         # it as a confusing message: say so, change nothing, and leave any pending
@@ -317,6 +361,10 @@ class MessageService:
                     repeat=m.repeat,
                     priority=m.priority or "normal",
                     tag=m.tag,
+                    note=m.note,
+                    waiting_since=(
+                        self._clock.today().isoformat() if m.waiting else None
+                    ),
                 )
                 self._store.add_item(item)
                 entries.append(
@@ -370,6 +418,12 @@ class MessageService:
                 until = self._clock.now() + timedelta(minutes=m.minutes or 10)
                 item.snooze_until = until.strftime("%Y-%m-%dT%H:%M")
                 item.reminded = False  # re-arm so the ping fires again
+            elif m.kind == "note":
+                item.note = f"{item.note}; {m.note}" if item.note else m.note
+            elif m.kind == "wait":
+                item.waiting_since = self._clock.today().isoformat()
+            elif m.kind == "resume":
+                item.waiting_since = None
             item.updated_at = ts
             self._store.update_item(item)
             entries.append(
@@ -441,6 +495,15 @@ class MessageService:
             tag = (q.tag or "").lower()
             items = [i for i in ordered if i.tag and i.tag.lower() == tag]
             title = f'for "{q.tag}":'
+        elif q.kind == "waiting":
+            items = [i for i in ordered if i.waiting_since]
+            if not items:
+                return "waiting on: nothing"
+            lines = []
+            for i in items:
+                days = (self._clock.today() - date.fromisoformat(i.waiting_since)).days
+                lines.append(f"{pos[i.id]}: {i.task} ({days}d)")
+            return "waiting on:\n" + "\n".join(lines)
         elif q.kind == "date":
             items = [i for i in ordered if i.due_date == q.date]
             title = f"on {q.date}:"
@@ -476,6 +539,10 @@ class MessageService:
                 line += " (urgent)"
             elif it.priority == "low":
                 line += " (low priority)"
+            if it.waiting_since:
+                line += " (waiting)"
+            if it.note:
+                line += f" ({it.note})"
             return line
 
         # Always restate what was captured, with its timing, not a bare "got it".
@@ -512,6 +579,14 @@ class MessageService:
             elif kind == "snooze":
                 at = (item.snooze_until or "")[-5:]  # HH:MM tail of the ISO stamp
                 parts.append(f'snoozed "{item.task}", will ping again at {at}')
+            elif kind == "note":
+                parts.append(f'noted on "{item.task}": {item.note}')
+            elif kind == "wait":
+                parts.append(
+                    f'parked "{item.task}" as waiting. i\'ll check in on it.'
+                )
+            elif kind == "resume":
+                parts.append(f'back on: "{item.task}"')
         parts.extend(questions)
         parts.extend(answers)
         return "\n".join(parts) if parts else "ok"
@@ -525,23 +600,32 @@ class MessageService:
         )
 
 
+# meta key holding the Telegram message id of the currently pinned digest.
+PINNED_KEY = "pinned_digest_mid"
+
+
 class DigestService:
     """Builds the morning digest, sends it, and records what was presented so
-    later references resolve. send is an async callable(chat_id, text).
+    later references resolve. send is an async callable(chat_id, text); pin is
+    an optional async callable(chat_id, message_id, unpin_message_id) that pins
+    today's digest and unpins yesterday's.
     """
 
-    def __init__(self, store: Store, clock: Clock, send) -> None:
+    def __init__(self, store: Store, clock: Clock, send, pin=None) -> None:
         self._store = store
         self._clock = clock
         self._send = send
+        self._pin = pin
 
     async def fire(self) -> bool:
         """Send today's digest. Returns True if it went out, False if it could
         not (no chat id yet). The scheduler uses this to decide whether to mark
         the day done, so a digest owed before the first message is not lost."""
         today = self._clock.today().isoformat()
-        ordered = select_digest_items(self._store.open_items(), today)
-        text = render_digest(ordered, today)
+        open_items = self._store.open_items()
+        ordered = select_digest_items(open_items, today)
+        waiting = [i for i in open_items if i.waiting_since]
+        text = render_digest(ordered, today, waiting)
         digest = Digest(
             sent_at=self._clock.now().isoformat(),
             items=[DigestItem(id=i.id, label=i.task) for i in ordered],
@@ -552,8 +636,12 @@ class DigestService:
             return False
         # Send first; only record the digest once it is actually delivered, so a
         # send failure retries cleanly without leaving orphan digest rows.
-        await self._send(int(chat), text)
+        sent_id = await self._send(int(chat), text)
         self._store.save_digest(digest)
+        if self._pin is not None and isinstance(sent_id, int):
+            old = self._store.get_meta(PINNED_KEY)
+            await self._pin(int(chat), sent_id, int(old) if old else None)
+            self._store.set_meta(PINNED_KEY, str(sent_id))
         return True
 
 
@@ -607,6 +695,8 @@ class ReminderService:
             text = f'reminder: "{item.task}" at {item.due_time}'
             if item.snooze_until:
                 text = f'reminder (snoozed): "{item.task}" at {item.due_time}'
+            if item.note:
+                text += f" ({item.note})"
             sent_id = await self._send(int(chat), text)
             self._store.mark_reminded(item.id)
             # Remember which item this ping was about, so a Telegram reply to it
@@ -635,8 +725,11 @@ async def _run_daemon(cfg: Config, store: SqliteStore) -> None:
             "(ollama serve, or Hearth)", cfg.ollama_host
         )
     service = MessageService(store, clock, llm, cfg.timezone, cfg.wake_time)
-    telegram = TelegramAdapter(store, service.handle, token=cfg.telegram_token)
-    digest = DigestService(store, clock, telegram.send)
+    telegram = TelegramAdapter(
+        store, service.handle, token=cfg.telegram_token,
+        reaction_handler=service.handle_reaction,
+    )
+    digest = DigestService(store, clock, telegram.send, pin=telegram.pin)
     reminder = ReminderService(store, clock, telegram.send, cfg.reminder_lead)
     eod = EODService(store, clock, telegram.send)
     scheduler = DigestScheduler(

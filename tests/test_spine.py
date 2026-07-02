@@ -359,6 +359,62 @@ def test_edited_message_reinterprets():
     assert out.startswith("took the edit")
 
 
+def test_note_then_wait_then_resume():
+    llm = FakeLlm([
+        {"actions": [{"type": "note", "target": "a2", "text": "gate code 4412"}]},
+        {"actions": [{"type": "wait", "target": "a2"}]},
+        {"actions": [{"type": "resume", "target": "a2"}]},
+    ])
+    svc, store = service(llm)
+
+    out1 = svc.handle(msg("add a note to the pool one: gate code 4412"))
+    assert 'noted on "call the pool guy": gate code 4412' in out1
+    assert store.get_item("a2").note == "gate code 4412"
+
+    out2 = svc.handle(msg("the pool guy is waiting on a callback", message_id=2))
+    assert "parked" in out2
+    assert store.get_item("a2").waiting_since == "2026-06-29"
+
+    out3 = svc.handle(msg("pool guy called back", message_id=3))
+    assert 'back on: "call the pool guy"' in out3
+    assert store.get_item("a2").waiting_since is None
+
+
+def test_forwarded_message_context_reaches_prompt():
+    llm = FakeLlm({"actions": [{"type": "capture", "task": "grab milk",
+                                "raw": "grab milk", "note": "from Sarah"}]})
+    store = SqliteStore(":memory:")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York")
+
+    out = svc.handle(InboundMessage(text="can you grab milk", chat_id=1,
+                                    message_id=1, update_id=1,
+                                    forwarded_from="Sarah"))
+
+    assert "FORWARDED" in llm.calls[0][0] and "Sarah" in llm.calls[0][0]
+    assert store.open_items()[0].note == "from Sarah"
+    assert "from Sarah" in out
+
+
+def test_reaction_completes_and_ignores_unmapped():
+    llm = FakeLlm({"actions": []})
+    store = SqliteStore(":memory:")
+    store.add_item(Item(id="a1", raw_text="call bob", task="call bob",
+                        due_date="2026-06-29", due_time="15:00", status="open",
+                        source="capture", created_at="2026-06-29T08:00:00",
+                        updated_at="2026-06-29T08:00:00"))
+    store.set_meta("item_seq", "1")
+    store.record_sent_ref(777, "a1")
+    clock = FakeClock(datetime(2026, 6, 29, 15, 5, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York")
+
+    assert svc.handle_reaction(999, ["❤"]) == ""  # heart on chit-chat: ignored
+    out = svc.handle_reaction(777, ["\U0001F44D"])  # thumbs up the reminder
+    assert 'done: "call bob"' in out
+    assert store.get_item("a1").status == "done"
+    assert svc.handle_reaction(777, ["\U0001F44D"]) == ""  # idempotent
+
+
 def test_pleasantry_gets_warm_reply_not_nag():
     llm = FakeLlm({"actions": [{"type": "chitchat", "reply": "anytime!"}]})
     store = SqliteStore(":memory:")

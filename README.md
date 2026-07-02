@@ -68,6 +68,18 @@ today?" and your free-text answer checks items off. And a task that keeps
 rolling over is marked in the digest ("day 4") with a gentle question about
 whether it is still real, so the list does not silently rot.
 
+More Telegram-native moves: forward any message to Hob (a "grab milk?" text
+from someone) and it becomes a task credited to the sender; react to a reminder
+with a thumbs-up to complete it (thumbs-down drops it); and each morning's
+digest is pinned in the chat, replacing yesterday's pin.
+
+Tasks can carry notes ("add a note to the vet one: gate code is 4412"), which
+show up on the reminder when it fires. A task blocked on someone else ("the
+contract is waiting on jerry") parks as waiting: it leaves the daily list and
+reminders, stays visible as [waiting], answers "what am I waiting on", and
+resurfaces in the digest after a few days ("still waiting: ... (4d). worth a
+nudge?"). "jerry got back to me" puts it back on deck.
+
 A recurring task ("take out the trash every monday", "water the plants daily",
 "standup every weekday") reappears each occurrence: completing it advances to the
 next one and stays on the list rather than closing. Dropping it ends the series.

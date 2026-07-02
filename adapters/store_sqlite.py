@@ -21,7 +21,7 @@ from core.models import (
     Item,
 )
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS items (
@@ -62,7 +62,8 @@ CREATE TABLE IF NOT EXISTS meta (
 
 _ITEM_COLS = (
     "id, raw_text, task, due_date, due_time, status, source, created_at, "
-    "updated_at, reminded, repeat, priority, tag, snooze_until"
+    "updated_at, reminded, repeat, priority, tag, snooze_until, note, "
+    "waiting_since"
 )
 
 
@@ -117,6 +118,11 @@ class SqliteStore:
                 "CREATE TABLE IF NOT EXISTS sent_refs ("
                 "tg_message_id INTEGER PRIMARY KEY, item_id TEXT NOT NULL)"
             )
+        if version < 7:
+            # notes: a detail stuck to a task; waiting_since: parked on someone
+            # else since this date (resurfaces after a few days).
+            self._conn.execute("ALTER TABLE items ADD COLUMN note TEXT")
+            self._conn.execute("ALTER TABLE items ADD COLUMN waiting_since TEXT")
         self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self._conn.commit()
 
@@ -138,7 +144,7 @@ class SqliteStore:
     def add_item(self, item: Item) -> None:
         with self._lock:
             self._conn.execute(
-                f"INSERT INTO items ({_ITEM_COLS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                f"INSERT INTO items ({_ITEM_COLS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     item.id,
                     item.raw_text,
@@ -154,6 +160,8 @@ class SqliteStore:
                     item.priority,
                     item.tag,
                     item.snooze_until,
+                    item.note,
+                    item.waiting_since,
                 ),
             )
             self._conn.commit()
@@ -169,7 +177,8 @@ class SqliteStore:
             self._conn.execute(
                 "UPDATE items SET raw_text=?, task=?, due_date=?, due_time=?, "
                 "status=?, source=?, created_at=?, updated_at=?, reminded=?, "
-                "repeat=?, priority=?, tag=?, snooze_until=? WHERE id=?",
+                "repeat=?, priority=?, tag=?, snooze_until=?, note=?, "
+                "waiting_since=? WHERE id=?",
                 (
                     item.raw_text,
                     item.task,
@@ -184,6 +193,8 @@ class SqliteStore:
                     item.priority,
                     item.tag,
                     item.snooze_until,
+                    item.note,
+                    item.waiting_since,
                     item.id,
                 ),
             )
@@ -210,6 +221,7 @@ class SqliteStore:
         rows = self._conn.execute(
             f"SELECT {_ITEM_COLS} FROM items WHERE status = ? "
             "AND due_date IS NOT NULL AND due_time IS NOT NULL AND reminded = 0 "
+            "AND waiting_since IS NULL "  # parked on someone else: no pings
             "AND ((snooze_until IS NULL AND (due_date || 'T' || due_time) <= ?) "
             "     OR (snooze_until IS NOT NULL AND snooze_until <= ?)) "
             "ORDER BY due_date, due_time",
@@ -390,6 +402,8 @@ class SqliteStore:
             priority=row["priority"],
             tag=row["tag"],
             snooze_until=row["snooze_until"],
+            note=row["note"],
+            waiting_since=row["waiting_since"],
         )
 
     @staticmethod

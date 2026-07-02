@@ -121,6 +121,29 @@ def test_render_markers():
     assert "2: y (09:00)" in out
 
 
+def test_waiting_items_leave_the_deck_but_stay_referenceable():
+    from core.digest import ordered_open
+
+    a = item("a1", "normal one")
+    b = item("a2", "parked one")
+    b.waiting_since = "2026-06-27"
+    assert [i.id for i in select_digest_items([a, b], "2026-06-29")] == ["a1"]
+    ordered = ordered_open([a, b], "2026-06-29")
+    assert [i.id for i in ordered] == ["a1", "a2"]  # waiting last, still numbered
+
+
+def test_render_still_waiting_nudge():
+    a = item("a1", "normal one")
+    w = item("a2", "contract from jerry")
+    w.waiting_since = "2026-06-25"  # 4 days by 06-29
+    out = render_digest([a], "2026-06-29", waiting=[w])
+    assert 'still waiting: "contract from jerry" (4d)' in out
+    fresh = item("a3", "new wait")
+    fresh.waiting_since = "2026-06-28"
+    quiet = render_digest([a], "2026-06-29", waiting=[fresh])
+    assert "still waiting" not in quiet  # under the threshold
+
+
 def test_eod_service_lists_on_deck_or_skips():
     from app import EODService
 

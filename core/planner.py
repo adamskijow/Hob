@@ -28,13 +28,16 @@ from core.models import (
     Chitchat,
     Complete,
     Drop,
+    Note,
     Prioritize,
     Query,
     Reschedule,
+    Resume,
     Setting,
     Snooze,
     Undo,
     Unknown,
+    Wait,
 )
 
 # Below this, a reference-bearing action (complete/drop/reschedule) is treated as
@@ -59,6 +62,8 @@ class Mutation:
     priority: str | None = None  # high|normal|low, for capture and prioritize
     tag: str | None = None  # project/list for a capture
     minutes: int | None = None  # snooze length
+    note: str | None = None  # note text (kind=note, or a capture's initial note)
+    waiting: bool = False  # capture starts parked on someone else
 
 
 @dataclass
@@ -232,6 +237,8 @@ def _reconcile_capture(
         repeat=repeat,
         priority=action.priority,
         tag=action.tag,
+        note=action.note,
+        waiting=action.waiting,
     )
     years = _too_far(due_date, today) if due_date else None
     if years is not None:
@@ -334,12 +341,15 @@ def _reconcile_reschedule(
 
 def _in_scope(item: dict, scope: str, today: str, target_date: str | None) -> bool:
     """Whether an open item falls in a bulk action's scope. 'today' mirrors the
-    digest's on-deck set: undated, due today, or overdue (future excluded)."""
+    digest's on-deck set: undated, due today, or overdue (future and parked
+    waiting items excluded)."""
     due = item.get("due_date")
     if scope == "all":
         return True
     if scope == "date":
         return due == target_date
+    if item.get("waiting"):
+        return False  # parked on someone else: not part of "today's stuff"
     return due is None or due <= today
 
 
@@ -410,7 +420,7 @@ def _reconcile_query(action: Query, today: date, ctx, plan: Plan) -> None:
     if kind == "tag" and action.tag:
         plan.queries.append(QueryIntent(kind="tag", tag=action.tag))
         return
-    if kind in ("overdue", "week"):
+    if kind in ("overdue", "week", "waiting"):
         plan.queries.append(QueryIntent(kind=kind))
         return
     model_kind = kind if kind in ("today", "date", "all") else "today"
@@ -482,6 +492,35 @@ def reconcile(actions: list, ctx) -> Plan:
                 plan.mutations.append(
                     Mutation(kind="snooze", target=target, minutes=max(1, action.minutes))
                 )
+        elif isinstance(action, Note):
+            target = _check_target(action.target, action.confidence, active, by_pos, plan)
+            if target is not None:
+                plan.mutations.append(
+                    Mutation(kind="note", target=target, note=action.text)
+                )
+        elif isinstance(action, Wait):
+            target = _check_target(action.target, action.confidence, active, by_pos, plan)
+            if target is not None:
+                plan.mutations.append(Mutation(kind="wait", target=target))
+        elif isinstance(action, Resume):
+            target = _check_target(action.target, action.confidence, active, by_pos, plan)
+            if target is not None:
+                # Resume only means something on a waiting item. If the model
+                # picked a non-waiting one (focus pull), retarget to the only
+                # waiting item; with several, ask instead of guessing.
+                waiting_ids = [
+                    i["id"] for i in ctx.active_items if i.get("waiting")
+                ]
+                if target not in waiting_ids:
+                    if len(waiting_ids) == 1:
+                        target = waiting_ids[0]
+                    elif not waiting_ids:
+                        plan.questions.append("nothing is parked as waiting right now.")
+                        continue
+                    else:
+                        plan.questions.append("which waiting item do you mean?")
+                        continue
+                plan.mutations.append(Mutation(kind="resume", target=target))
         elif isinstance(action, Undo):
             plan.undo = True
         elif isinstance(action, Chitchat):

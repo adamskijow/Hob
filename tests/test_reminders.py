@@ -100,6 +100,22 @@ def test_snoozed_item_fires_at_snooze_until_not_due():
     assert [i.id for i in s.due_reminders("2026-06-30T15:20", "2026-06-30T15:20")] == ["a1"]
 
 
+def test_waiting_item_gets_no_reminder():
+    it = item("a1", "call bob", "2026-06-30", "15:00")
+    it.waiting_since = "2026-06-29"
+    s = store_with([it])
+    assert s.due_reminders("2026-06-30T16:00", "2026-06-30T16:00") == []
+
+
+def test_note_and_waiting_survive_round_trip():
+    it = item("a1", "x", "2026-06-30", None)
+    it.note = "gate code 4412"
+    it.waiting_since = "2026-06-29"
+    s = store_with([it])
+    got = s.get_item("a1")
+    assert got.note == "gate code 4412" and got.waiting_since == "2026-06-29"
+
+
 def test_sent_refs_round_trip():
     s = store_with([])
     s.record_sent_ref(555, "a1")
