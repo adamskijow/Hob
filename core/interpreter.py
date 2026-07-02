@@ -25,6 +25,7 @@ from core.models import (
     Query,
     Reschedule,
     Setting,
+    Snooze,
     Undo,
     Unknown,
     When,
@@ -86,7 +87,8 @@ ACTION_SCHEMA = {
                     ),
                     _variant(
                         "setting",
-                        {"key": {"type": "string", "enum": ["wake_time"]}, "raw": _STR},
+                        {"key": {"type": "string", "enum": ["wake_time", "eod_time"]},
+                         "raw": _STR},
                         ["type", "key", "raw"],
                     ),
                     _variant(
@@ -111,7 +113,8 @@ ACTION_SCHEMA = {
                     ),
                     _variant(
                         "reschedule",
-                        {"target": _STR, "when": _WHEN, "confidence": _NUM},
+                        {"target": _STR, "when": _WHEN, "time": _STR,
+                         "confidence": _NUM},
                         ["type", "target", "when"],
                     ),
                     _variant(
@@ -126,6 +129,11 @@ ACTION_SCHEMA = {
                         "bulk",
                         {"op": _STR, "scope": _STR, "when": _WHEN, "confidence": _NUM},
                         ["type", "op", "scope"],
+                    ),
+                    _variant(
+                        "snooze",
+                        {"target": _STR, "minutes": _NUM, "confidence": _NUM},
+                        ["type", "target", "minutes"],
                     ),
                     _variant("undo", {}, ["type"]),
                     _variant("chitchat", {"reply": _STR}, ["type"]),
@@ -150,7 +158,7 @@ Context:
 {active}
 - This morning's digest, in order (for position references):
 {digest}
-{pending}
+{pending}{focus}
 The user's message:
 {message}
 
@@ -170,8 +178,10 @@ Set tag to a project/list name when the user files tasks under one ("for the \
 wedding: book the caterer, order flowers" -> two captures, each tag "wedding"), \
 else null.
 - setting: change a preference, not a task. Fields: type "setting", key \
-("wake_time" = the time the morning digest is sent), raw (the time words, e.g. \
-"6:30", "8am"). Use for "change my wake time to 6:30", "send the digest at 8".
+("wake_time" = when the morning digest is sent; "eod_time" = when the evening \
+"what got done?" recap is sent), raw (the time words, e.g. "6:30", "8am"). Use \
+for "change my wake time to 6:30", "send the digest at 8", "do the evening \
+check-in at 9".
 - prioritize: change the importance of an item ALREADY on the list. Fields: type \
 "prioritize", target (item number), level ("high", "normal", or "low"), \
 confidence. Use it when the user re-ranks an existing item: "make the prez deck \
@@ -184,9 +194,10 @@ is still true), confidence. Use when the user changes what an item says: \
 - complete: mark an EXISTING item done. Fields: type "complete", target, confidence.
 - drop: cancel an EXISTING item. Fields: type "drop", target, reason (optional), \
 confidence.
-- reschedule: move an EXISTING item to a new date. Fields: type "reschedule", \
-target (item id), when (a typed date intent for the new date, see DATES), \
-confidence.
+- reschedule: move an EXISTING item to a new date and/or time. Fields: type \
+"reschedule", target (item id), when (a typed date intent for the new date, see \
+DATES; {{"kind":"none"}} if only the time changes), time (HH:MM if the user \
+gives a new clock time, else null; "make it 4pm" -> time "16:00"), confidence.
 - query: the user is asking about their tasks. Fields: type "query", kind, when \
 (a date intent, for a specific day), term (search keywords), tag (project/list \
 name). kind is one of: "today", "date" (a specific day; also set when), "all", \
@@ -203,6 +214,11 @@ tomorrow"). Pick scope:
   - "all": every open item. Use for "everything", "my whole list", "delete it all".
   - "today": only items on deck today. Use for "everything today", "today's stuff".
   - "date": one specific named day. Use for "all of friday", "monday's tasks".
+- snooze: put off an item's reminder ping without moving the task. Fields: type \
+"snooze", target (item id), minutes ("snooze 20" -> 20, "snooze an hour" -> 60, \
+bare "snooze"/"not now" -> 10), confidence. Use when the user reacts to a \
+reminder with snooze/"not now"/"remind me again in N"; a new date or time for \
+the task itself is a reschedule instead.
 - undo: the user wants to reverse their last change ("scratch that", "undo \
 that"). Fields: type "undo".
 - chitchat: a social pleasantry with NO task and NO question - a greeting, \
@@ -264,6 +280,11 @@ Rules:
 - One message may do several things; emit one action each.
 - Put the date in when (a typed intent) and any clock time in time; echo the \
 user's words for a captured task in raw.
+- A bare follow-up with no subject of its own ("make it 4pm", "that's urgent", \
+"actually thursday", "done with that") refers to the just-discussed or \
+replied-to item listed in the context above. If no such item is listed, do not \
+guess: return unknown. A message with its own subject ("buy milk tomorrow") is \
+NOT a follow-up.
 - If the message is a pleasantry (thanks, a greeting), use chitchat; if it is \
 some other non-task message, return a single unknown action.
 """
@@ -317,6 +338,24 @@ def _format_pending(pending: list[dict]) -> str:
     )
 
 
+def _format_focus(ctx: InterpreterContext) -> str:
+    """The conversational anchor for bare follow-ups: the item a replied-to Hob
+    message was about (strongest), else the recently touched items."""
+    if ctx.replied:
+        return (
+            "\nThe user is REPLYING to hob's message about this item - bare "
+            'words like "done", "snooze 20", "push it to friday" refer to it:\n'
+            f"  {ctx.replied['id']}: {ctx.replied['label']}\n"
+        )
+    if ctx.focus:
+        lines = "\n".join(f"  {f['id']}: {f['label']}" for f in ctx.focus)
+        return (
+            "\nJust discussed (most recent first) - a bare follow-up refers to "
+            "the first of these:\n" + lines + "\n"
+        )
+    return ""
+
+
 def build_prompt(ctx: InterpreterContext) -> str:
     return _PROMPT.format(
         today=ctx.today,
@@ -326,6 +365,7 @@ def build_prompt(ctx: InterpreterContext) -> str:
         active=_format_active(ctx.active_items),
         digest=_format_digest(ctx.last_digest),
         pending=_format_pending(ctx.pending),
+        focus=_format_focus(ctx),
         message=ctx.message,
     )
 
@@ -433,7 +473,12 @@ def _parse_one(action: object):
     if kind == "reschedule":
         target = _str(action.get("target"))
         return (
-            Reschedule(target=target, when=_when(action.get("when")), confidence=conf)
+            Reschedule(
+                target=target,
+                when=_when(action.get("when")),
+                time=_str(action.get("time")),
+                confidence=conf,
+            )
             if target
             else Unknown(note="reschedule without target")
         )
@@ -454,6 +499,11 @@ def _parse_one(action: object):
             when=_when(action.get("when")),
             confidence=conf,
         )
+    if kind == "snooze":
+        target = _str(action.get("target"))
+        if not target:
+            return Unknown(note="snooze without target")
+        return Snooze(target=target, minutes=_int(action.get("minutes")) or 10, confidence=conf)
     if kind == "undo":
         return Undo()
     if kind == "chitchat":

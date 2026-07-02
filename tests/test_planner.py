@@ -19,9 +19,11 @@ from core.models import (
 from core.planner import reconcile
 
 
-def ctx(active=None, message=""):
+def ctx(active=None, message="", focus=None, replied=None):
     return InterpreterContext(
         message=message,
+        focus=focus or [],
+        replied=replied,
         today="2026-06-29",  # Monday
         now="2026-06-29T09:00:00",
         timezone="America/New_York",
@@ -155,6 +157,59 @@ def test_reschedule_without_date_asks():
     plan = reconcile([Reschedule(target="a3", when=None, confidence=0.9)], ctx(ACTIVE))
     assert not plan.mutations
     assert plan.questions
+
+
+def test_reschedule_time_only():
+    # "make it 4pm" as a follow-up: no new date, just a clock time.
+    plan = reconcile(
+        [Reschedule(target="a3", when=None, time="4pm", confidence=0.9)],
+        ctx(ACTIVE, message="make it 4pm",
+            focus=[{"id": "a3", "label": "review SR audit"}]),
+    )
+    assert plan.mutations[0].kind == "reschedule"
+    assert plan.mutations[0].due_date is None
+    assert plan.mutations[0].due_time == "16:00"
+    assert not plan.questions
+
+
+def test_reschedule_time_only_padded_today_keeps_day():
+    # The model pads "make it 4pm" with kind today; no today-word in the message
+    # means the day is not changing.
+    plan = reconcile(
+        [Reschedule(target="a3", when=When(kind="today"), time="4pm", confidence=0.9)],
+        ctx(ACTIVE, message="make it 4pm",
+            focus=[{"id": "a3", "label": "review SR audit"}]),
+    )
+    assert plan.mutations[0].due_date is None  # padded today ignored
+    assert plan.mutations[0].due_time == "16:00"
+    # but an explicit "today at 4" keeps the date change
+    plan2 = reconcile(
+        [Reschedule(target="a3", when=When(kind="today"), time="4pm", confidence=0.9)],
+        ctx(ACTIVE, message="do it today at 4pm",
+            focus=[{"id": "a3", "label": "review SR audit"}]),
+    )
+    assert plan2.mutations[0].due_date == "2026-06-29"
+
+
+def test_reschedule_time_only_unanchored_asks():
+    # "make it 4pm" with no focus, no reply anchor, and no overlap with the
+    # item's words is a guess: ask instead of moving.
+    plan = reconcile(
+        [Reschedule(target="a3", when=None, time="4pm", confidence=0.9)],
+        ctx(ACTIVE, message="make it 4pm"),
+    )
+    assert not plan.mutations
+    assert plan.questions
+
+
+def test_reschedule_date_and_time():
+    plan = reconcile(
+        [Reschedule(target="a3", when=When(kind="weekday", day="fri"), time="9am",
+                    confidence=0.9)],
+        ctx(ACTIVE),
+    )
+    assert plan.mutations[0].due_date == "2026-07-03"
+    assert plan.mutations[0].due_time == "09:00"
 
 
 def test_reschedule_bad_target_asks():

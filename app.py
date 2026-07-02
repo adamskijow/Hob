@@ -14,7 +14,7 @@ import logging
 import signal
 import sys
 from dataclasses import asdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from config import Config, ConfigError
 from core import recurrence
@@ -46,9 +46,10 @@ log = logging.getLogger("hob.message")
 HELP = (
     'send tasks in plain language: "call the vet at 3pm", "take out the trash '
     'every monday". correct the same way: "did the prez one", "push it to friday", '
-    '"drop 2". ask: "what\'s on today", "what\'s overdue", "what did i finish this '
-    'week". /today lists what is open; /undo (or "scratch that") reverts your last '
-    "change."
+    '"drop 2", or follow up with "make it 4pm" / "that\'s urgent". reply to a '
+    'reminder with "done" or "snooze 20"; edit a message and i take the edit. '
+    'ask: "what\'s on today", "what\'s overdue", "what did i finish this week". '
+    '/today lists what is open; /undo (or "scratch that") reverts your last change.'
 )
 
 # meta key for the single user's chat id, learned from inbound messages.
@@ -62,6 +63,13 @@ CONFIRM_KEY = "pending_confirm"
 # meta key holding the user-set wake time (HH:MM), overriding the configured
 # default at runtime so "send the digest at 8" takes effect without a restart.
 WAKE_KEY = "wake_time"
+# meta key for the user-set evening recap time; same contract as WAKE_KEY.
+EOD_KEY = "eod_time"
+# meta key holding the conversational focus: the items the last message touched
+# (JSON {ts, items: [{id, label}]}), so a bare follow-up ("make it 4pm") can
+# resolve. Stale focus is ignored after this many minutes.
+FOCUS_KEY = "focus"
+FOCUS_TTL_MINUTES = 15
 
 _AFFIRMATIONS = {
     "yes", "y", "yeah", "yep", "yup", "sure", "ok", "okay", "confirm",
@@ -131,6 +139,8 @@ class MessageService:
     def handle(self, msg: InboundMessage) -> str:
         # Learn where to send the unsolicited morning digest.
         self._store.set_meta(CHAT_ID_KEY, str(msg.chat_id))
+        if msg.edited:
+            return self._handle_edit(msg)
         text = msg.text.strip()
         low = text.lower()
         if low == "/start":
@@ -155,9 +165,22 @@ class MessageService:
         # narrow window between applying and advancing it.
         if self._store.has_actions_for_message(message_id):
             return ""
-        return self._interpret_and_apply(text, message_id)
+        return self._interpret_and_apply(text, message_id, reply_to=msg.reply_to)
 
-    def _context(self, text: str) -> InterpreterContext:
+    def _replied_item(self, reply_to: int | None) -> dict | None:
+        """The item a replied-to Hob message (e.g. a reminder) was about, so bare
+        words in the reply ('done', 'snooze 20') anchor to it deterministically."""
+        if reply_to is None:
+            return None
+        item_id = self._store.ref_for(reply_to)
+        if item_id is None:
+            return None
+        item = self._store.get_item(item_id)
+        if item is None or item.status != STATUS_OPEN:
+            return None
+        return {"id": item.id, "label": item.task}
+
+    def _context(self, text: str, reply_to: int | None = None) -> InterpreterContext:
         # Canonical order so the position numbers the model sees match what the
         # user sees in /today and the digest.
         ordered = ordered_open(self._store.open_items(), self._clock.today().isoformat())
@@ -177,10 +200,45 @@ class MessageService:
             active_items=active,
             last_digest=last_items,
             pending=json.loads(raw_pending) if raw_pending else [],
+            focus=self._load_focus(),
+            replied=self._replied_item(reply_to),
         )
 
-    def _interpret_and_apply(self, text: str, message_id: str) -> str:
-        ctx = self._context(text)
+    def _load_focus(self) -> list[dict]:
+        """The items the last message touched, if recent enough to still be the
+        conversational subject; otherwise nothing."""
+        raw = self._store.get_meta(FOCUS_KEY)
+        if not raw:
+            return []
+        data = json.loads(raw)
+        try:
+            ts = datetime.fromisoformat(data.get("ts", ""))
+        except ValueError:
+            return []
+        age = self._clock.now() - ts
+        if age > timedelta(minutes=FOCUS_TTL_MINUTES):
+            return []
+        return data.get("items", [])
+
+    def _save_focus(self, applied: list[tuple[str, Item]]) -> None:
+        """Remember what this message touched (drops excluded: a dropped item is
+        gone, not the new subject). Empty applied leaves the prior focus alone so
+        a question or chitchat does not wipe the anchor."""
+        items = [
+            {"id": it.id, "label": it.task}
+            for kind, it in reversed(applied)  # most recent action first
+            if kind != "drop"
+        ][:3]
+        if items:
+            self._store.set_meta(
+                FOCUS_KEY,
+                json.dumps({"ts": self._clock.now().isoformat(), "items": items}),
+            )
+
+    def _interpret_and_apply(
+        self, text: str, message_id: str, reply_to: int | None = None
+    ) -> str:
+        ctx = self._context(text, reply_to)
         actions = interpret(self._llm, ctx)
         # A model outage degrades to a single Unknown with this note. Don't treat
         # it as a confusing message: say so, change nothing, and leave any pending
@@ -196,6 +254,7 @@ class MessageService:
         if plan.undo:  # "scratch that" / "undo that"
             return self._undo()
         applied = self._apply(plan.mutations, message_id)
+        self._save_focus(applied)
         answers = [self._answer_query(q) for q in plan.queries]
         answers += [self._apply_setting(s) for s in plan.settings]
         # Persist this turn's clarifications for the next message; "" clears any
@@ -221,12 +280,16 @@ class MessageService:
         if s.key == "wake_time":
             self._store.set_meta(WAKE_KEY, s.value)
             return f"ok, morning digest at {s.value} from now on."
+        if s.key == "eod_time":
+            self._store.set_meta(EOD_KEY, s.value)
+            return f"ok, evening recap at {s.value} from now on."
         return "ok"
 
     def _apply_confirmed(self, data: list, message_id: str) -> str:
         """Apply the mutations that were held back, now that the user confirmed."""
         mutations = [Mutation(**d) for d in data]
         applied = self._apply(mutations, message_id)
+        self._save_focus(applied)
         return self._reply(applied, [], [])
 
     def _apply(
@@ -291,12 +354,22 @@ class MessageService:
             elif m.kind == "drop":
                 item.status = STATUS_DROPPED
             elif m.kind == "reschedule":
-                item.due_date = m.due_date
+                if m.due_date is not None:
+                    item.due_date = m.due_date
+                if m.due_time is not None:
+                    item.due_time = m.due_time
+                    if item.due_date is None:
+                        # A bare "make it 4pm" on an undated task means today.
+                        item.due_date = self._clock.today().isoformat()
                 item.reminded = False  # re-arm the reminder for the new time
             elif m.kind == "amend":
                 item.task = m.task  # the model supplied the full new label
             elif m.kind == "prioritize":
                 item.priority = m.priority or "normal"
+            elif m.kind == "snooze":
+                until = self._clock.now() + timedelta(minutes=m.minutes or 10)
+                item.snooze_until = until.strftime("%Y-%m-%dT%H:%M")
+                item.reminded = False  # re-arm so the ping fires again
             item.updated_at = ts
             self._store.update_item(item)
             entries.append(
@@ -318,13 +391,28 @@ class MessageService:
         batch = self._store.last_batch()
         if not batch:
             return "nothing to undo"
+        self._revert(batch)
+        return f"undid {len(batch)} change(s)"
+
+    def _revert(self, batch) -> None:
         for op in plan_undo(batch):
             if op.kind == "delete":
                 self._store.delete_item(op.item_id)
             else:
                 self._store.update_item(op.item)
         self._store.mark_batch_undone(batch[0].batch_id)
-        return f"undid {len(batch)} change(s)"
+
+    def _handle_edit(self, msg: InboundMessage) -> str:
+        """The user edited an earlier message (their natural typo fix): revert
+        what the original produced, then interpret the corrected text fresh."""
+        message_id = str(msg.message_id)
+        batch = self._store.batch_for_message(message_id)
+        if batch:
+            self._revert(batch)
+        out = self._interpret_and_apply(
+            msg.text.strip(), message_id, reply_to=msg.reply_to
+        )
+        return ("took the edit. " + out) if out else "took the edit."
 
     def _answer_query(self, q: QueryIntent) -> str:
         today = self._clock.today().isoformat()
@@ -409,7 +497,11 @@ class MessageService:
             elif kind == "reschedule":
                 rel = _relative(item.due_date, today)
                 line = f'moved "{item.task}" to {item.due_date}'
-                parts.append(line + (f" ({rel})" if rel else ""))
+                if rel:
+                    line += f" ({rel})"
+                if item.due_time:
+                    line += f" at {item.due_time}"
+                parts.append(line)
             elif kind == "amend":
                 parts.append(f'updated: "{item.task}"')
             elif kind == "prioritize":
@@ -417,6 +509,9 @@ class MessageService:
                     item.priority, "normal priority"
                 )
                 parts.append(f'marked "{item.task}" {label}')
+            elif kind == "snooze":
+                at = (item.snooze_until or "")[-5:]  # HH:MM tail of the ISO stamp
+                parts.append(f'snoozed "{item.task}", will ping again at {at}')
         parts.extend(questions)
         parts.extend(answers)
         return "\n".join(parts) if parts else "ok"
@@ -462,6 +557,33 @@ class DigestService:
         return True
 
 
+class EODService:
+    """The evening close of the loop the morning digest opens: ask what got
+    done. The user's free-text answer flows through the normal interpreter
+    (completes / bulk complete), so this needs no machinery of its own."""
+
+    def __init__(self, store: Store, clock: Clock, send) -> None:
+        self._store = store
+        self._clock = clock
+        self._send = send
+
+    async def fire(self) -> bool:
+        chat = self._store.get_meta(CHAT_ID_KEY)
+        if chat is None:
+            return False
+        today = self._clock.today().isoformat()
+        on_deck = select_digest_items(self._store.open_items(), today)
+        if not on_deck:
+            return True  # nothing was on deck; nothing to recap, day is done
+        lines = "\n".join(f"{n}: {i.task}" for n, i in enumerate(on_deck, start=1))
+        await self._send(
+            int(chat),
+            "evening. what got done today? tell me and i'll check them off.\n"
+            + lines,
+        )
+        return True
+
+
 class ReminderService:
     """Pings the user a lead time before a timed item's due moment, so "call at
     3pm" is a heads-up (say, 2:50) rather than only a digest line and not only a
@@ -478,10 +600,19 @@ class ReminderService:
         if chat is None:
             return
         # Fire when now reaches (due - lead): compare due moments to now + lead.
+        # A snoozed item instead fires at its snooze_until (compared to now).
+        now = self._clock.now().strftime("%Y-%m-%dT%H:%M")
         threshold = (self._clock.now() + self._lead).strftime("%Y-%m-%dT%H:%M")
-        for item in self._store.due_reminders(threshold):
-            await self._send(int(chat), f'reminder: "{item.task}" at {item.due_time}')
+        for item in self._store.due_reminders(threshold, now):
+            text = f'reminder: "{item.task}" at {item.due_time}'
+            if item.snooze_until:
+                text = f'reminder (snoozed): "{item.task}" at {item.due_time}'
+            sent_id = await self._send(int(chat), text)
             self._store.mark_reminded(item.id)
+            # Remember which item this ping was about, so a Telegram reply to it
+            # ("done", "snooze 20") anchors to the item with no guessing.
+            if isinstance(sent_id, int):
+                self._store.record_sent_ref(sent_id, item.id)
 
 
 def _model_ready(llm: OllamaLlm, model: str) -> bool:
@@ -507,8 +638,10 @@ async def _run_daemon(cfg: Config, store: SqliteStore) -> None:
     telegram = TelegramAdapter(store, service.handle, token=cfg.telegram_token)
     digest = DigestService(store, clock, telegram.send)
     reminder = ReminderService(store, clock, telegram.send, cfg.reminder_lead)
+    eod = EODService(store, clock, telegram.send)
     scheduler = DigestScheduler(
-        clock, store, digest.fire, cfg.wake_time, remind=reminder.check
+        clock, store, digest.fire, cfg.wake_time, remind=reminder.check,
+        eod_fire=eod.fire, eod_time=cfg.eod_time,
     )
 
     def stop_all() -> None:

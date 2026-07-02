@@ -36,6 +36,8 @@ class Case:
     check: Callable[[Plan], bool]
     desc: str
     active: list | None = None
+    focus: list | None = None  # conversational focus, for follow-up cases
+    replied: dict | None = None  # replied-to anchor, for reply cases
 
 
 def kinds(p: Plan) -> list[str]:
@@ -154,6 +156,32 @@ CASES = [
     Case("thanks bud, you're the best",
          lambda p: p.chitchat is not None and not p.mutations and not p.queries,
          "pleasantry gets a warm reply, not a task nag"),
+    Case("make it 4pm",
+         lambda p: kinds(p) == ["reschedule"] and p.mutations[0].target == "a2"
+         and p.mutations[0].due_time == "16:00" and p.mutations[0].due_date is None,
+         "bare follow-up changes the time, not the day",
+         focus=[{"id": "a2", "label": "call the pool guy"}]),
+    Case("that's urgent",
+         lambda p: kinds(p) == ["prioritize"] and p.mutations[0].target == "a2"
+         and p.mutations[0].priority == "high",
+         "follow-up prioritize via focus",
+         focus=[{"id": "a2", "label": "call the pool guy"}]),
+    Case("buy milk tomorrow",
+         lambda p: kinds(p) == ["capture"] and cap_due(p) == "2026-06-30",
+         "own-subject message is not hijacked by focus",
+         focus=[{"id": "a2", "label": "call the pool guy"}]),
+    Case("done",
+         lambda p: kinds(p) == ["complete"] and p.mutations[0].target == "a2",
+         "reply 'done' to a reminder completes that item",
+         replied={"id": "a2", "label": "call the pool guy"}),
+    Case("snooze 20",
+         lambda p: kinds(p) == ["snooze"] and p.mutations[0].target == "a2"
+         and p.mutations[0].minutes == 20,
+         "reply 'snooze 20' snoozes that reminder",
+         replied={"id": "a2", "label": "call the pool guy"}),
+    Case("make it 4pm",
+         lambda p: not p.mutations,
+         "bare follow-up with no focus does not guess"),
 ]
 
 
@@ -166,6 +194,7 @@ def main() -> int:
         ctx = InterpreterContext(
             message=c.msg, today=TODAY, now=f"{TODAY}T09:00:00", timezone=TZ,
             active_items=c.active or ACTIVE, last_digest=[],
+            focus=c.focus or [], replied=c.replied,
         )
         try:
             plan = reconcile(interpret(llm, ctx), ctx)

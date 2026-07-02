@@ -61,6 +61,8 @@ class InboundMessage:
     chat_id: int
     message_id: int
     update_id: int
+    reply_to: int | None = None  # message id this one replies to, if any
+    edited: bool = False  # True when the user edited an earlier message
 
 
 class TelegramAdapter:
@@ -110,13 +112,21 @@ class TelegramAdapter:
 
     async def _handle_update(self, update: object) -> None:
         message = getattr(update, "message", None)
+        edited = False
+        if message is None:
+            # An edit to an earlier message: same shape, re-handled as an edit.
+            message = getattr(update, "edited_message", None)
+            edited = message is not None
         text = getattr(message, "text", None) if message is not None else None
         if message is not None and text is not None:
+            replied = getattr(message, "reply_to_message", None)
             msg = InboundMessage(
                 text=text,
                 chat_id=message.chat.id,
                 message_id=message.message_id,
                 update_id=update.update_id,
+                reply_to=getattr(replied, "message_id", None),
+                edited=edited,
             )
             await self._dispatch(msg)
         # Advance past this update only after it is fully handled, so a crash
@@ -129,7 +139,7 @@ class TelegramAdapter:
         updates = await self._bot.get_updates(
             offset=offset,
             timeout=self._poll_timeout,
-            allowed_updates=["message"],
+            allowed_updates=["message", "edited_message"],
         )
         for update in updates:
             await self._handle_update(update)
@@ -147,5 +157,8 @@ class TelegramAdapter:
                 log.exception("telegram: poll error, backing off")
                 await asyncio.sleep(self._error_backoff)
 
-    async def send(self, chat_id: int, text: str) -> None:
-        await self._ensure_bot().send_message(chat_id=chat_id, text=present(text))
+    async def send(self, chat_id: int, text: str) -> int | None:
+        """Send a message; returns its Telegram message id so the caller can
+        associate a later reply with what this message was about."""
+        sent = await self._ensure_bot().send_message(chat_id=chat_id, text=present(text))
+        return getattr(sent, "message_id", None)

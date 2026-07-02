@@ -21,7 +21,7 @@ from core.models import (
     Item,
 )
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS items (
@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS meta (
 
 _ITEM_COLS = (
     "id, raw_text, task, due_date, due_time, status, source, created_at, "
-    "updated_at, reminded, repeat, priority, tag"
+    "updated_at, reminded, repeat, priority, tag, snooze_until"
 )
 
 
@@ -108,6 +108,15 @@ class SqliteStore:
         if version < 5:
             # tags: the project / list a task belongs to (NULL = none).
             self._conn.execute("ALTER TABLE items ADD COLUMN tag TEXT")
+        if version < 6:
+            # snooze: put off a reminder ping without moving the task itself;
+            # sent_refs: which item an outbound message (a reminder) was about,
+            # so a Telegram reply to it can be anchored deterministically.
+            self._conn.execute("ALTER TABLE items ADD COLUMN snooze_until TEXT")
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS sent_refs ("
+                "tg_message_id INTEGER PRIMARY KEY, item_id TEXT NOT NULL)"
+            )
         self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self._conn.commit()
 
@@ -129,7 +138,7 @@ class SqliteStore:
     def add_item(self, item: Item) -> None:
         with self._lock:
             self._conn.execute(
-                f"INSERT INTO items ({_ITEM_COLS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                f"INSERT INTO items ({_ITEM_COLS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     item.id,
                     item.raw_text,
@@ -144,6 +153,7 @@ class SqliteStore:
                     item.repeat,
                     item.priority,
                     item.tag,
+                    item.snooze_until,
                 ),
             )
             self._conn.commit()
@@ -159,7 +169,7 @@ class SqliteStore:
             self._conn.execute(
                 "UPDATE items SET raw_text=?, task=?, due_date=?, due_time=?, "
                 "status=?, source=?, created_at=?, updated_at=?, reminded=?, "
-                "repeat=?, priority=?, tag=? WHERE id=?",
+                "repeat=?, priority=?, tag=?, snooze_until=? WHERE id=?",
                 (
                     item.raw_text,
                     item.task,
@@ -173,6 +183,7 @@ class SqliteStore:
                     item.repeat,
                     item.priority,
                     item.tag,
+                    item.snooze_until,
                     item.id,
                 ),
             )
@@ -191,17 +202,37 @@ class SqliteStore:
         ).fetchall()
         return [self._row_to_item(r) for r in rows]
 
-    def due_reminders(self, now_iso: str) -> list[Item]:
-        """Open, timed items whose due moment has arrived and not yet reminded.
-        now_iso is 'YYYY-MM-DDTHH:MM'; due is compared as the same ISO string."""
+    def due_reminders(self, threshold_iso: str, now_iso: str | None = None) -> list[Item]:
+        """Open, timed items owed a ping and not yet reminded. threshold_iso is
+        now + the reminder lead ('YYYY-MM-DDTHH:MM'); a snoozed item ignores its
+        due moment and instead fires once now_iso reaches its snooze_until."""
+        now_iso = now_iso or threshold_iso
         rows = self._conn.execute(
             f"SELECT {_ITEM_COLS} FROM items WHERE status = ? "
-            "AND due_date IS NOT NULL AND due_time IS NOT NULL "
-            "AND (due_date || 'T' || due_time) <= ? AND reminded = 0 "
+            "AND due_date IS NOT NULL AND due_time IS NOT NULL AND reminded = 0 "
+            "AND ((snooze_until IS NULL AND (due_date || 'T' || due_time) <= ?) "
+            "     OR (snooze_until IS NOT NULL AND snooze_until <= ?)) "
             "ORDER BY due_date, due_time",
-            (STATUS_OPEN, now_iso),
+            (STATUS_OPEN, threshold_iso, now_iso),
         ).fetchall()
         return [self._row_to_item(r) for r in rows]
+
+    def record_sent_ref(self, tg_message_id: int, item_id: str) -> None:
+        """Remember which item an outbound message (a reminder) was about, so a
+        Telegram reply to it can be anchored to that item."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO sent_refs (tg_message_id, item_id) VALUES (?, ?)",
+                (tg_message_id, item_id),
+            )
+            self._conn.commit()
+
+    def ref_for(self, tg_message_id: int) -> str | None:
+        row = self._conn.execute(
+            "SELECT item_id FROM sent_refs WHERE tg_message_id = ?",
+            (tg_message_id,),
+        ).fetchone()
+        return row["item_id"] if row else None
 
     def done_since(self, start_iso: str) -> list[Item]:
         """Completed items finished on or after start_iso (a date or datetime),
@@ -266,11 +297,29 @@ class SqliteStore:
             self._conn.commit()
 
     def has_actions_for_message(self, inbound_message_id: str) -> bool:
-        row = self._conn.execute(
-            "SELECT 1 FROM action_log WHERE inbound_message_id = ? LIMIT 1",
+        """Whether this message's mutations are applied and still standing.
+        Undone batches do not count: an edited message's old batch is undone
+        first, and the edit must then be allowed to re-apply."""
+        undone = self._undone_batches()
+        rows = self._conn.execute(
+            "SELECT DISTINCT batch_id FROM action_log WHERE inbound_message_id = ?",
             (inbound_message_id,),
-        ).fetchone()
-        return row is not None
+        ).fetchall()
+        return any(r["batch_id"] not in undone for r in rows)
+
+    def batch_for_message(self, inbound_message_id: str) -> list[ActionLogEntry]:
+        """The latest still-standing batch this inbound message produced, for
+        edited-message re-interpretation. Empty if none or all undone."""
+        undone = self._undone_batches()
+        rows = self._conn.execute(
+            "SELECT batch_id, MAX(id) AS mx FROM action_log "
+            "WHERE inbound_message_id = ? GROUP BY batch_id ORDER BY mx DESC",
+            (inbound_message_id,),
+        ).fetchall()
+        for row in rows:
+            if row["batch_id"] not in undone:
+                return self._batch(row["batch_id"])
+        return []
 
     def _batch(self, batch_id: str) -> list[ActionLogEntry]:
         rows = self._conn.execute(
@@ -340,6 +389,7 @@ class SqliteStore:
             repeat=row["repeat"],
             priority=row["priority"],
             tag=row["tag"],
+            snooze_until=row["snooze_until"],
         )
 
     @staticmethod

@@ -4,6 +4,7 @@
 Every inbound message (captures, EOD reports, corrections, queries) takes the
 same path: interpret -> reconcile -> apply.
 """
+import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -271,6 +272,91 @@ def test_setting_wake_time_persists_and_scheduler_reads_it():
     # the scheduler reads the override, not the configured default
     sched = DigestScheduler(clock, store, fire=lambda: True, wake_time="07:00")
     assert sched._wake_time() == "06:30"
+
+
+def test_followup_resolves_via_focus():
+    # Turn 1 captures; turn 2's bare "make it 4pm" sees the captured item as the
+    # conversational focus and reschedules it.
+    llm = FakeLlm([
+        {"actions": [{"type": "capture", "task": "call the vet", "raw": "call the vet"}]},
+        {"actions": [{"type": "reschedule", "target": "a1", "time": "16:00"}]},
+    ])
+    store = SqliteStore(":memory:")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York")
+
+    svc.handle(msg("call the vet"))
+    out = svc.handle(msg("make it 4pm", message_id=2))
+
+    assert "Just discussed" in llm.calls[1][0]  # focus reached the prompt
+    assert "call the vet" in llm.calls[1][0]
+    item = store.get_item("a1")
+    assert item.due_time == "16:00"
+    assert item.due_date == "2026-06-29"  # undated + time-only -> today
+    assert 'moved "call the vet"' in out and "16:00" in out
+
+
+def test_focus_expires_after_ttl():
+    from app import FOCUS_KEY
+
+    llm = FakeLlm({"actions": [{"type": "unknown"}]})
+    store = SqliteStore(":memory:")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York")
+    # A focus saved 20 minutes ago is stale and must not reach the prompt.
+    store.set_meta(FOCUS_KEY, json.dumps(
+        {"ts": "2026-06-29T08:40:00-04:00", "items": [{"id": "a1", "label": "x"}]}
+    ))
+    svc.handle(msg("make it 4pm"))
+    assert "Just discussed" not in llm.calls[0][0]
+
+
+def test_reply_to_reminder_anchors_and_snoozes():
+    # Replying "snooze 20" to a reminder message anchors to that item.
+    llm = FakeLlm({"actions": [{"type": "snooze", "target": "a1", "minutes": 20}]})
+    store = SqliteStore(":memory:")
+    store.add_item(Item(id="a1", raw_text="call bob", task="call bob",
+                        due_date="2026-06-29", due_time="15:00", status="open",
+                        source="capture", created_at="2026-06-29T08:00:00",
+                        updated_at="2026-06-29T08:00:00"))
+    store.set_meta("item_seq", "1")
+    store.record_sent_ref(777, "a1")  # the reminder Hob sent
+    clock = FakeClock(datetime(2026, 6, 29, 14, 55, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York")
+
+    out = svc.handle(InboundMessage(text="snooze 20", chat_id=1, message_id=9,
+                                    update_id=9, reply_to=777))
+
+    assert "REPLYING" in llm.calls[0][0] and "call bob" in llm.calls[0][0]
+    item = store.get_item("a1")
+    assert item.snooze_until == "2026-06-29T15:15"  # 14:55 + 20
+    assert item.reminded is False
+    assert "snoozed" in out and "15:15" in out
+
+
+def test_edited_message_reinterprets():
+    # The user edits "call vet at 3" to "call vet at 4": the old batch is
+    # undone and the corrected text applied under the same message id.
+    llm = FakeLlm([
+        {"actions": [{"type": "capture", "task": "call vet", "raw": "call vet at 3pm",
+                      "time": "15:00"}]},
+        {"actions": [{"type": "capture", "task": "call vet", "raw": "call vet at 4pm",
+                      "time": "16:00"}]},
+    ])
+    store = SqliteStore(":memory:")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York")
+
+    svc.handle(msg("call vet at 3pm"))
+    assert store.open_items()[0].due_time == "15:00"
+
+    out = svc.handle(InboundMessage(text="call vet at 4pm", chat_id=1,
+                                    message_id=1, update_id=2, edited=True))
+
+    items = store.open_items()
+    assert len(items) == 1  # replaced, not duplicated
+    assert items[0].due_time == "16:00"
+    assert out.startswith("took the edit")
 
 
 def test_pleasantry_gets_warm_reply_not_nag():

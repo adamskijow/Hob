@@ -3,7 +3,12 @@ import asyncio
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from adapters.scheduler import LAST_DIGEST_KEY, DigestScheduler
+from adapters.scheduler import (
+    EOD_TIME_KEY,
+    LAST_DIGEST_KEY,
+    LAST_EOD_KEY,
+    DigestScheduler,
+)
 from adapters.store_sqlite import SqliteStore
 from tests.fakes import FakeClock
 
@@ -76,6 +81,28 @@ def test_fire_returning_false_does_not_mark_the_day():
     assert asyncio.run(sched.tick()) is True
     assert store.get_meta(LAST_DIGEST_KEY) == "2026-06-29"
     assert len(calls) == 2
+
+
+def test_eod_fires_once_and_respects_meta_override():
+    store = SqliteStore(":memory:")
+    fired = []
+    sched = DigestScheduler(
+        FakeClock(at(20, 30)), store, lambda: True, "07:00",
+        eod_fire=lambda: fired.append(1), eod_time="20:30",
+    )
+    assert asyncio.run(sched.tick_eod()) is True
+    assert store.get_meta(LAST_EOD_KEY) == "2026-06-29"
+    assert asyncio.run(sched.tick_eod()) is False  # once per day
+    assert len(fired) == 1
+
+    # empty config time = disabled, unless set in chat (meta override)
+    off = DigestScheduler(
+        FakeClock(at(21, 0)), SqliteStore(":memory:"), lambda: True, "07:00",
+        eod_fire=lambda: fired.append(1), eod_time="",
+    )
+    assert asyncio.run(off.tick_eod()) is False
+    off._store.set_meta(EOD_TIME_KEY, "20:00")
+    assert asyncio.run(off.tick_eod()) is True
 
 
 def test_remind_callback_invoked_and_isolated():

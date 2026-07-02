@@ -52,7 +52,21 @@ items at once in plain language ("did everything today", "clear my whole list",
 A task with a time ("call the vet at 3pm") also gets a one-off reminder ping a
 short lead before it (10 minutes by default, set with `HOB_REMINDER_LEAD`), so
 it is a heads-up rather than a line in the morning digest or a ping at the exact
-moment. Rescheduling it re-arms the reminder for the new time.
+moment. Rescheduling it re-arms the reminder for the new time. You can reply
+directly to a reminder: "done" completes that task, "snooze 20" puts the ping
+off, "push it to friday" moves it, all anchored to the message you replied to.
+
+Hob also keeps a short conversational focus: right after "got it: call the vet
+tomorrow", a bare follow-up like "make it 4pm", "actually thursday", or "that's
+urgent" applies to that task. Editing an earlier Telegram message works the way
+you'd hope too: Hob reverts what the original said and applies the corrected
+text, so fixing a typo fixes the task.
+
+The loop closes in the evening: at `HOB_EOD_TIME` (20:30 by default, or "do the
+evening check-in at 9" in chat; empty disables it) Hob asks "what got done
+today?" and your free-text answer checks items off. And a task that keeps
+rolling over is marked in the digest ("day 4") with a gentle question about
+whether it is still real, so the list does not silently rot.
 
 A recurring task ("take out the trash every monday", "water the plants daily",
 "standup every weekday") reappears each occurrence: completing it advances to the
@@ -131,6 +145,7 @@ All configuration is environment variables:
 | `HOB_OLLAMA_HOST` | Ollama endpoint | `http://localhost:11434` |
 | `HOB_KEEP_ALIVE` | How long Ollama keeps the model loaded: `-1` resident, seconds, or a duration like `30m` | `-1` |
 | `HOB_REMINDER_LEAD` | Minutes before a timed task to send its reminder | `10` |
+| `HOB_EOD_TIME` | Evening "what got done?" recap time, `HH:MM` (empty disables) | `20:30` |
 
 Wake time and timezone are validated at startup; a bad value exits with a clear
 message and a non-zero code. The wake time can also be set in chat ("send the

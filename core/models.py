@@ -33,6 +33,7 @@ class Item:
     repeat: str | None = None  # recurrence rule (core.recurrence); None = one-off
     priority: str = "normal"  # high | normal | low; floats up/down the digest
     tag: str | None = None  # project / list this task belongs to, e.g. "wedding"
+    snooze_until: str | None = None  # ISO datetime; the reminder re-fires then
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -139,6 +140,7 @@ class Drop:
 class Reschedule:
     target: str
     when: When | None = None  # typed date intent for the new date
+    time: str | None = None  # new clock time ("make it 4pm" -> 16:00)
     raw: str = ""  # echo of the phrasing, for the record
     confidence: float = 1.0
 
@@ -167,6 +169,15 @@ class Bulk:
     op: str  # complete | drop | reschedule
     scope: str  # today | all | date
     when: When | None = None  # destination (op=reschedule) or scope day (scope=date)
+    confidence: float = 1.0
+
+
+@dataclass
+class Snooze:
+    """Put off an item's reminder ping without moving the task itself."""
+
+    target: str  # item id / position from the active list
+    minutes: int = 10
     confidence: float = 1.0
 
 
@@ -201,3 +212,9 @@ class InterpreterContext:
     # Clarifications from the previous turn, persisted so a short reply resolves
     # against the question it answers. [{kind, question, task?/target?/label?}].
     pending: list[dict] = field(default_factory=list)
+    # Conversational focus: items touched in the last few minutes, most recent
+    # first ([{id, label}]), so a bare follow-up ("make it 4pm") resolves.
+    focus: list[dict] = field(default_factory=list)
+    # The item a replied-to Hob message (e.g. a reminder) was about ({id, label});
+    # bare words in the reply ("done", "snooze 20") refer to it.
+    replied: dict | None = None

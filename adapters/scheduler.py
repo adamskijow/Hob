@@ -27,6 +27,9 @@ LAST_DIGEST_KEY = "last_digest_date"
 # so an in-chat "send the digest at 8" takes effect without a restart. Must match
 # app.WAKE_KEY.
 WAKE_TIME_KEY = "wake_time"
+# Same pair for the evening "what got done?" recap.
+LAST_EOD_KEY = "last_eod_date"
+EOD_TIME_KEY = "eod_time"
 
 
 class DigestScheduler:
@@ -38,6 +41,8 @@ class DigestScheduler:
         wake_time: str,
         poll_interval: float = 60.0,
         remind=None,
+        eod_fire=None,
+        eod_time: str = "",
     ) -> None:
         self._clock = clock
         self._store = store
@@ -45,12 +50,17 @@ class DigestScheduler:
         self._default_wake = wake_time  # config fallback; meta override wins
         self._poll_interval = poll_interval
         self._remind = remind  # optional callable, checked every tick
+        self._eod_fire = eod_fire  # optional evening recap callable
+        self._default_eod = eod_time  # "" disables unless set in chat
         self._stop = asyncio.Event()
 
     def _wake_time(self) -> str:
         """The live wake time: the user's in-chat setting if any, else the
         configured default. Read each tick so a change takes effect at once."""
         return self._store.get_meta(WAKE_TIME_KEY) or self._default_wake
+
+    def _eod_time(self) -> str:
+        return self._store.get_meta(EOD_TIME_KEY) or self._default_eod
 
     def stop(self) -> None:
         self._stop.set()
@@ -90,11 +100,32 @@ class DigestScheduler:
         self._store.set_meta(LAST_DIGEST_KEY, self._clock.today().isoformat())
         return True
 
+    async def tick_eod(self) -> bool:
+        """Same owed-once-a-day logic as the digest, for the evening recap."""
+        eod_time = self._eod_time()
+        if self._eod_fire is None or not eod_time:
+            return False
+        last = self._store.get_meta(LAST_EOD_KEY)
+        if not digest_owed(self._clock.now(), eod_time, last):
+            return False
+        try:
+            result = self._eod_fire()
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception:
+            log.exception("eod fire failed; will retry on next tick")
+            return False
+        if result is False:
+            return False
+        self._store.set_meta(LAST_EOD_KEY, self._clock.today().isoformat())
+        return True
+
     async def run(self) -> None:
         log.info("scheduler: wake_time=%s poll=%ss", self._wake_time(), self._poll_interval)
         while not self._stop.is_set():
             await self._check_reminders()
             await self.tick()
+            await self.tick_eod()
             try:
                 # Sleep, but wake immediately on stop. Re-checking every poll
                 # interval is what makes catch-up-on-wake work: after the Mac

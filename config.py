@@ -32,6 +32,7 @@ class Config:
     ollama_host: str
     keep_alive: str  # how long ollama keeps the model loaded; "-1" = resident
     reminder_lead: int  # minutes before a timed item's due moment to ping
+    eod_time: str  # HH:MM for the evening "what got done?" recap; "" = off
 
     @property
     def telegram_enabled(self) -> bool:
@@ -56,6 +57,7 @@ class Config:
             ollama_host=src.get("HOB_OLLAMA_HOST", "http://localhost:11434").strip(),
             keep_alive=src.get("HOB_KEEP_ALIVE", "-1").strip(),
             reminder_lead=reminder_lead,
+            eod_time=src.get("HOB_EOD_TIME", "20:30").strip(),
         )
         cfg.validate()
         return cfg
@@ -81,4 +83,9 @@ class Config:
         if self.reminder_lead < 0:
             raise ConfigError(
                 f"HOB_REMINDER_LEAD must be 0 or more minutes, got {self.reminder_lead}"
+            )
+        if self.eod_time and not _WAKE_RE.match(self.eod_time):
+            raise ConfigError(
+                f"HOB_EOD_TIME must be HH:MM 24h (or empty to disable), "
+                f"got {self.eod_time!r}"
             )

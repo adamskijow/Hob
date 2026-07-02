@@ -117,8 +117,36 @@ def test_render_markers():
         item("a2", "y", due="2026-06-29", time="09:00"),
     ]
     out = render_digest(ordered, "2026-06-29")
-    assert "1: x (overdue, 2026-06-27)" in out
+    assert "1: x (day 3)" in out  # due 06-27, today 06-29: third day on the list
     assert "2: y (09:00)" in out
+
+
+def test_eod_service_lists_on_deck_or_skips():
+    from app import EODService
+
+    store = SqliteStore(":memory:")
+    store.set_meta("chat_id", "42")
+    store.add_item(item("a1", "call pool"))
+    send = FakeSend()
+    svc = EODService(store, FakeClock(at(20, 30)), send)
+    assert asyncio.run(svc.fire()) is True
+    assert "what got done today" in send.calls[0][1]
+    assert "1: call pool" in send.calls[0][1]
+
+    empty = SqliteStore(":memory:")
+    empty.set_meta("chat_id", "42")
+    quiet = FakeSend()
+    assert asyncio.run(EODService(empty, FakeClock(at(20, 30)), quiet).fire()) is True
+    assert quiet.calls == []  # nothing on deck: no message, day still marked
+
+
+def test_render_stale_nudge():
+    out = render_digest([item("a1", "x", due="2026-06-26")], "2026-06-29")
+    assert "(day 4)" in out
+    assert 'has rolled over 4 days' in out  # the worst offender gets a question
+    # under the threshold: marked but not nagged
+    quiet = render_digest([item("a1", "x", due="2026-06-28")], "2026-06-29")
+    assert "(day 2)" in quiet and "rolled over" not in quiet
 
 
 def test_digest_service_sends_and_persists_order():
@@ -139,7 +167,7 @@ def test_digest_service_sends_and_persists_order():
     assert len(send.calls) == 1
     chat, text = send.calls[0]
     assert chat == 42
-    assert "1: review audit (overdue, 2026-06-27)" in text
+    assert "1: review audit (day 3)" in text
     assert "future thing" not in text
     # persisted in presented order, so ordinals resolve later
     assert [d.id for d in store.last_digest().items] == ["a1", "a2", "a3"]

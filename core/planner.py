@@ -32,6 +32,7 @@ from core.models import (
     Query,
     Reschedule,
     Setting,
+    Snooze,
     Undo,
     Unknown,
 )
@@ -57,6 +58,7 @@ class Mutation:
     repeat: str | None = None  # recurrence rule for a capture
     priority: str | None = None  # high|normal|low, for capture and prioritize
     tag: str | None = None  # project/list for a capture
+    minutes: int | None = None  # snooze length
 
 
 @dataclass
@@ -249,14 +251,15 @@ def _reconcile_amend(action: Amend, active: dict, by_pos: dict, plan: Plan) -> N
 
 
 def _reconcile_setting(action: Setting, plan: Plan) -> None:
-    if action.key == "wake_time":
+    if action.key in ("wake_time", "eod_time"):
         value = dates.parse_time(action.raw)
         if value is None:
-            plan.questions.append("what time should i send the morning digest?")
+            what = "morning digest" if action.key == "wake_time" else "evening recap"
+            plan.questions.append(f"what time should i send the {what}?")
             return
-        plan.settings.append(SettingChange(key="wake_time", value=value))
+        plan.settings.append(SettingChange(key=action.key, value=value))
     else:
-        plan.questions.append("i can only change the wake time right now.")
+        plan.questions.append("i can only change the digest and recap times right now.")
 
 
 def _reconcile_prioritize(
@@ -269,8 +272,11 @@ def _reconcile_prioritize(
     plan.mutations.append(Mutation(kind="prioritize", target=target, priority=level))
 
 
+_TODAY_WORDS = ("today", "tonight", "this morning", "this afternoon", "this evening", "now")
+
+
 def _reconcile_reschedule(
-    action: Reschedule, today: date, active: dict, by_pos: dict, plan: Plan
+    action: Reschedule, today: date, active: dict, by_pos: dict, ctx, plan: Plan
 ) -> None:
     target = _check_target(action.target, action.confidence, active, by_pos, plan)
     if target is None:
@@ -278,6 +284,27 @@ def _reconcile_reschedule(
     label = active[target]
 
     resolution = dates.resolve_intent(action.when, today)
+    new_time = dates.parse_time(action.time)
+    low = ctx.message.lower()
+
+    # The model pads a time-only change ("make it 4pm") with kind "today". If the
+    # user never said a today-word, the day is NOT changing: keep the item's date.
+    if (
+        new_time is not None
+        and action.when is not None
+        and action.when.kind == "today"
+        and not any(w in low for w in _TODAY_WORDS)
+    ):
+        resolution = dates.DateResolution()
+
+    # A time-only reschedule with no conversational anchor and no overlap with
+    # the item's own words is a guess ("make it 4pm" out of nowhere): ask.
+    if new_time is not None and resolution.date is None:
+        anchored = bool(ctx.focus) or bool(ctx.replied)
+        overlap = set(label.lower().split()) & set(low.split())
+        if not anchored and not overlap:
+            plan.questions.append(f'did you want to move "{label}"? if so, say which task.')
+            return
 
     if resolution.ambiguous:
         question = f'when should i move "{label}" to? the date was not clear.'
@@ -286,7 +313,7 @@ def _reconcile_reschedule(
             Pending(kind="reschedule", question=question, target=target, label=label)
         )
         return
-    if resolution.date is None:
+    if resolution.date is None and new_time is None:
         question = f'to when should i move "{label}"?'
         plan.questions.append(question)
         plan.pending.append(
@@ -294,11 +321,14 @@ def _reconcile_reschedule(
         )
         return
 
-    mutation = Mutation(kind="reschedule", target=target, due_date=resolution.date)
-    years = _too_far(resolution.date, today)
-    if years is not None:
-        _hold(plan, mutation, f'move "{label}" to {resolution.date}, about {years} years out. reply yes to keep it.')
-        return
+    mutation = Mutation(
+        kind="reschedule", target=target, due_date=resolution.date, due_time=new_time
+    )
+    if resolution.date is not None:
+        years = _too_far(resolution.date, today)
+        if years is not None:
+            _hold(plan, mutation, f'move "{label}" to {resolution.date}, about {years} years out. reply yes to keep it.')
+            return
     plan.mutations.append(mutation)
 
 
@@ -441,11 +471,17 @@ def reconcile(actions: list, ctx) -> Plan:
                     Mutation(kind="drop", target=target, reason=action.reason)
                 )
         elif isinstance(action, Reschedule):
-            _reconcile_reschedule(action, today, active, by_pos, plan)
+            _reconcile_reschedule(action, today, active, by_pos, ctx, plan)
         elif isinstance(action, Query):
             _reconcile_query(action, today, ctx, plan)
         elif isinstance(action, Bulk):
             _reconcile_bulk(action, today, ctx, plan)
+        elif isinstance(action, Snooze):
+            target = _check_target(action.target, action.confidence, active, by_pos, plan)
+            if target is not None:
+                plan.mutations.append(
+                    Mutation(kind="snooze", target=target, minutes=max(1, action.minutes))
+                )
         elif isinstance(action, Undo):
             plan.undo = True
         elif isinstance(action, Chitchat):

@@ -10,7 +10,7 @@ and today's digest has not yet gone out.
 """
 from __future__ import annotations
 
-from datetime import datetime, time
+from datetime import date, datetime, time
 
 from core.models import Item
 
@@ -88,17 +88,37 @@ def ordered_open(items: list[Item], today: str) -> list[Item]:
     return on_deck + future
 
 
+STALE_DAYS = 3  # rolled over this many days -> worth asking about
+
+
+def _days_over(item: Item, today: str) -> int:
+    """How many days this item has rolled past its due date (0 = not overdue)."""
+    if not item.due_date or item.due_date >= today:
+        return 0
+    return (date.fromisoformat(today) - date.fromisoformat(item.due_date)).days
+
+
 def render_digest(ordered: list[Item], today: str) -> str:
-    """The morning message. Terse, one line per item."""
+    """The morning message. Terse, one line per item. An item that keeps rolling
+    over is marked with its day count, and the worst repeat offender gets one
+    gentle question at the end so the list does not silently rot."""
     if not ordered:
         return "morning. nothing on deck today."
     lines = ["morning. here is today:"]
     for n, item in enumerate(ordered, start=1):
-        if item.due_date and item.due_date < today:
-            suffix = f" (overdue, {item.due_date})"
+        over = _days_over(item, today)
+        if over:
+            suffix = f" (day {over + 1})"
         elif item.due_time:
             suffix = f" ({item.due_time})"
         else:
             suffix = ""
         lines.append(f"{n}: {item.task}{suffix}{marks(item)}")
+    stale = max(ordered, key=lambda i: _days_over(i, today))
+    worst = _days_over(stale, today)
+    if worst >= STALE_DAYS:
+        lines.append(
+            f'"{stale.task}" has rolled over {worst + 1} days now. '
+            "still on, or should i push or drop it?"
+        )
     return "\n".join(lines)

@@ -89,6 +89,38 @@ def test_reminder_does_nothing_without_chat():
     assert send.calls == []
 
 
+def test_snoozed_item_fires_at_snooze_until_not_due():
+    it = item("a1", "call bob", "2026-06-30", "15:00")
+    it.reminded = False
+    it.snooze_until = "2026-06-30T15:20"
+    s = store_with([it])
+    # Past due but before snooze_until: quiet.
+    assert s.due_reminders("2026-06-30T15:10", "2026-06-30T15:10") == []
+    # snooze_until reached: fires.
+    assert [i.id for i in s.due_reminders("2026-06-30T15:20", "2026-06-30T15:20")] == ["a1"]
+
+
+def test_sent_refs_round_trip():
+    s = store_with([])
+    s.record_sent_ref(555, "a1")
+    assert s.ref_for(555) == "a1"
+    assert s.ref_for(556) is None
+
+
+def test_reminder_records_ref_for_reply_anchoring():
+    s = store_with([item("a1", "call bob", "2026-06-30", "15:00")])
+
+    class SendWithId(FakeSend):
+        async def __call__(self, chat, text):
+            await super().__call__(chat, text)
+            return 777  # telegram message id of the sent reminder
+
+    send = SendWithId()
+    svc = ReminderService(s, FakeClock(datetime(2026, 6, 30, 15, 1, tzinfo=TZ)), send)
+    asyncio.run(svc.check())
+    assert s.ref_for(777) == "a1"
+
+
 def test_done_since():
     s = store_with([
         item("a1", "finished", "2026-06-30", None, status="done"),
