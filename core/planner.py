@@ -209,6 +209,7 @@ def _reconcile_capture(
     action: Capture,
     today: date,
     message: str,
+    solo: bool,
     shared_date: str | None,
     active_due: dict,
     by_pos: dict,
@@ -240,10 +241,12 @@ def _reconcile_capture(
         first = recurrence.next_due(repeat, today, inclusive=True)
         if first is not None:
             due_date = first.isoformat()
-    else:
-        # Deterministic backstop: a weekday named in the message wins over a
-        # misclassified intent ("taxes monday" read as tomorrow).
-        corrected = dates.weekday_correction(message, due_date, today)
+    elif solo:
+        # Deterministic backstop: a day word in the message wins over a
+        # misclassified intent ("taxes monday" read as tomorrow). Lone captures
+        # only: with several, a trailing day must not smear across them (the
+        # leading-date share above handles the "Tomorrow: A, B, C" shape).
+        corrected = dates.named_day_correction(message, due_date, today)
         if corrected is not None:
             due_date = corrected
 
@@ -326,8 +329,8 @@ def _reconcile_reschedule(
     ):
         resolution = dates.DateResolution()
 
-    # A weekday named in the message wins over a misclassified intent.
-    corrected = dates.weekday_correction(ctx.message, resolution.date, today)
+    # A day word named in the message wins over a misclassified intent.
+    corrected = dates.named_day_correction(ctx.message, resolution.date, today)
     if corrected is not None:
         resolution = dates.DateResolution(date=corrected)
 
@@ -468,6 +471,11 @@ def _reconcile_query(action: Query, today: date, ctx, plan: Plan) -> None:
     if resolution.ambiguous:
         plan.questions.append("which day did you mean?")
         return
+    # Backstop: a day word in the question wins over a dropped or misfiled
+    # intent ("what about tomorrow" read as a today query).
+    corrected = dates.named_day_correction(ctx.message, resolution.date, today)
+    if corrected is not None:
+        resolution = dates.DateResolution(date=corrected)
     if resolution.date is not None:
         if resolution.date == today.isoformat():
             plan.queries.append(QueryIntent(kind="today"))
@@ -561,7 +569,8 @@ def reconcile(actions: list, ctx) -> Plan:
     for action in actions:
         if isinstance(action, Capture):
             _reconcile_capture(
-                action, today, ctx.message, shared_date, active_due, by_pos, plan
+                action, today, ctx.message, n_captures == 1, shared_date,
+                active_due, by_pos, plan,
             )
         elif isinstance(action, Amend):
             _reconcile_amend(action, active, by_pos, plan)

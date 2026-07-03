@@ -132,6 +132,32 @@ _WEEKDAY_WORDS = {
 }
 
 
+def named_day_correction(message: str, resolved_iso: str | None, today: date) -> str | None:
+    """Backstop for simple day words the model sometimes drops or misfiles:
+    'tomorrow' / 'yesterday' / 'today' / a weekday named in the message wins
+    over a mismatched (or missing) resolved date. Skips messages naming more
+    than one day (those are genuinely multi-part). None = nothing to correct."""
+    low = message.lower()
+    candidates = []
+    if "day after tomorrow" in low:
+        candidates.append(today + timedelta(days=2))
+    elif re.search(r"\btomorrow\b", low):
+        candidates.append(today + timedelta(days=1))
+    if re.search(r"\byesterday\b", low):
+        candidates.append(today - timedelta(days=1))
+    if re.search(r"\b(today|tonight)\b", low):
+        candidates.append(today)
+    if len(candidates) > 1:
+        return None
+    if candidates:
+        words = re.findall(r"[a-z]+", low)
+        if any(w in _WEEKDAY_WORDS for w in words):
+            return None  # "tomorrow or monday": ambiguous, do not pick
+        iso = candidates[0].isoformat()
+        return None if resolved_iso == iso else iso
+    return weekday_correction(message, resolved_iso, today)
+
+
 def weekday_correction(message: str, resolved_iso: str | None, today: date) -> str | None:
     """A deterministic backstop for a misclassified weekday: if the message
     names exactly one weekday and the resolved date does not fall on it (or

@@ -530,6 +530,15 @@ def test_query_today_intent_is_today_query():
     assert plan.queries[0].kind == "today"
 
 
+def test_query_dropped_tomorrow_corrected():
+    # "What about tomorrow" came back as a bare today query; the day word wins.
+    plan = reconcile(
+        [Query(kind="today", when=None)], ctx(ACTIVE, message="What about tomorrow")
+    )
+    assert plan.queries[0].kind == "date"
+    assert plan.queries[0].date == "2026-06-30"
+
+
 def test_capture_dated_from_intent():
     # A lone capture's date comes straight from its typed intent.
     plan = reconcile(

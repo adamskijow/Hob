@@ -58,6 +58,21 @@ def test_ambiguous_and_none():
     assert resolve_intent(When(kind="weekday", day="bogus"), TODAY).date is None
 
 
+def test_named_day_correction():
+    from core.dates import named_day_correction as ndc
+
+    # tomorrow dropped by the model: corrected
+    assert ndc("what about tomorrow", None, TODAY) == "2026-06-30"
+    assert ndc("what about tomorrow", "2026-06-29", TODAY) == "2026-06-30"
+    # already right: no correction
+    assert ndc("what about tomorrow", "2026-06-30", TODAY) is None
+    assert ndc("what's on today", "2026-06-29", TODAY) is None
+    # weekday fallback still works; multiple day words are left alone
+    assert ndc("taxes monday", "2026-06-30", TODAY) == "2026-07-06"
+    assert ndc("tomorrow or monday", None, TODAY) is None
+    assert ndc("what's up", None, TODAY) is None
+
+
 def test_leading_date_vs_trailing():
     assert leading_date("Tomorrow I need to do A, B, and C", TODAY) == "2026-06-30"
     assert leading_date("on monday do A and B", TODAY) == "2026-07-06"

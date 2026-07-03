@@ -196,6 +196,9 @@ CASES = [
          lambda p: kinds(p) == ["capture"] and cap_due(p) == "2026-07-06"
          and "remind me" not in (p.mutations[0].task or "").lower(),
          "named weekday wins; reminder prefix stripped"),
+    Case("What about tomorrow",
+         lambda p: any(q.kind == "date" and q.date == "2026-06-30" for q in p.queries),
+         "bare follow-up query day is honored"),
     Case("I did everything today but the prez deck",
          lambda p: kinds(p) and all(k == "complete" for k in kinds(p))
          and "a1" not in {m.target for m in p.mutations}
