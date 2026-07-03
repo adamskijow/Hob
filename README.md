@@ -13,137 +13,58 @@
   <img src="https://img.shields.io/badge/LLM-local%20(Ollama)-ff9a3c" alt="Local LLM via Ollama">
 </p>
 
-Hob is a personal, single-user morning-digest agent that runs as a long-lived
-daemon on macOS. It is named for the ledge at the side of a hearth where a kettle
-is kept warm and ready. Hob does not supervise itself, and it is built to survive
-being killed and restarted at any moment. Two supervisors keep the setup alive:
-`launchd` keeps Hob running (restart on crash, resume on login), and
-[Hearth](https://github.com/adamskijow/Hearth), a separate macOS supervisor,
-keeps the local model runner (Ollama) that Hob depends on alive and serving. See
-[Deployment](#deployment-launchd-and-hearth).
+**Text tasks to a Telegram bot all day; wake to one organized morning digest.**
 
-## The loop
+Hob is a personal task agent that understands plain language, powered by a
+local LLM (Ollama) and run as a long-lived daemon on macOS. It is named for the
+ledge at the side of a hearth where a kettle is kept warm and ready.
 
-1. **Capture.** Throughout the day you send short messages to a Telegram bot
-   ("call the pool guy", "review the SR audit before standup"). Tasks too small
-   to put on a calendar.
-2. **EOD report.** At end of day you message what you got done. This closes items.
-3. **Morning digest.** Each morning the bot sends one organized message: today's
-   items plus anything undone that rolled forward from prior days.
-4. **Reply to correct.** The morning digest will often be wrong, because the EOD
-   report is easy to forget. You fix it in plain language ("already did the prez
-   one", "drop the pool call, not happening", "push the audit to Wednesday",
-   "what's on for tomorrow?") and Hob updates the list. Every inbound message
-   flows through one interpreter that decides what you meant and turns it into
-   concrete actions.
+## Why
 
-Feature 4 is the reason Hob exists rather than a standard to-do app. The
-interpreter is the load-bearing component; everything else is plumbing.
+Some tasks are too small for a calendar and too fleeting to survive until you
+open a to-do app. With Hob you just text them ("call the pool guy", "dentist
+next friday at 2pm") and each morning one digest lays out your day. Corrections
+are the point: "already did the prez one", "push the audit to wednesday",
+"that's urgent", "scratch that" all work, because every message flows through
+one natural-language interpreter. When a message is ambiguous, Hob asks instead
+of guessing, and every change is undoable. The model and your data stay on your
+machine; only the Telegram transport leaves it.
 
-When a message is ambiguous (two possible dates, an unclear reference) Hob asks
-instead of guessing, and it remembers the question: your next message is read as
-the answer. So "lunch with sam thursday or friday" followed by "thursday"
-captures it for Thursday, rather than the reply being misread on its own. The
-context Hob keeps is deliberately small (the one open question), not a running
-chat transcript; the task list itself carries the rest. You can also act on many
-items at once in plain language ("did everything today", "clear my whole list",
-"drop all of friday").
-
-A task with a time ("call the vet at 3pm") also gets a one-off reminder ping a
-short lead before it (10 minutes by default, set with `HOB_REMINDER_LEAD`), so
-it is a heads-up rather than a line in the morning digest or a ping at the exact
-moment. Rescheduling it re-arms the reminder for the new time. You can reply
-directly to a reminder: "done" completes that task, "snooze 20" puts the ping
-off, "push it to friday" moves it, all anchored to the message you replied to.
-
-Hob also keeps a short conversational focus: right after "got it: call the vet
-tomorrow", a bare follow-up like "make it 4pm", "actually thursday", or "that's
-urgent" applies to that task. Editing an earlier Telegram message works the way
-you'd hope too: Hob reverts what the original said and applies the corrected
-text, so fixing a typo fixes the task.
-
-The loop closes in the evening: at `HOB_EOD_TIME` (20:30 by default, or "do the
-evening check-in at 9" in chat; empty disables it) Hob asks "what got done
-today?" and your free-text answer checks items off. And a task that keeps
-rolling over is marked in the digest ("day 4") with a gentle question about
-whether it is still real, so the list does not silently rot.
-
-More Telegram-native moves: forward any message to Hob (a "grab milk?" text
-from someone) and it becomes a task credited to the sender; react to a reminder
-with a thumbs-up to complete it (thumbs-down drops it); and each morning's
-digest is pinned in the chat, replacing yesterday's pin.
-
-Tasks can carry notes ("add a note to the vet one: gate code is 4412"), which
-show up on the reminder when it fires. A task blocked on someone else ("the
-contract is waiting on jerry") parks as waiting: it leaves the daily list and
-reminders, stays visible as [waiting], answers "what am I waiting on", and
-resurfaces in the digest after a few days ("still waiting: ... (4d). worth a
-nudge?"). "jerry got back to me" puts it back on deck.
-
-A recurring task ("take out the trash every monday", "water the plants daily",
-"standup every weekday") reappears each occurrence: completing it advances to the
-next one and stays on the list rather than closing. Dropping it ends the series.
-
-Dates can be vague: "this weekend", "next week", "end of the month", "in a couple
-days" all resolve to concrete days (the core owns the math, never the model). A
-task can carry a priority ("call the plumber, it's urgent", "the audit can wait")
-that floats it up or down the digest, and a project tag ("for the wedding: book
-the caterer, order flowers") you can later query ("what's left for the wedding").
-You can change settings by chat too ("send the morning digest at 6:30").
-
-## Commands
-
-- `/today` lists what is open.
-- `/undo` reverts your last change (one inbound message is one undoable batch;
-  repeat to walk further back).
-- `/help` shows a one-liner.
-
-Everything else is just plain language. You can ask ("what's on today", "what's
-overdue", "what do I have this week", "anything about the audit", "what did I
-finish today"), move many at once ("push everything to tomorrow"), and undo
-conversationally ("scratch that") as well as with `/undo`.
-
-## Setup
+## Getting started
 
 Requires [uv](https://docs.astral.sh/uv/) and a local
-[Ollama](https://ollama.com/).
+[Ollama](https://ollama.com/) with a JSON-capable instruct model:
 
 ```
-uv sync                       # create the venv, fetch Python 3.12, install deps
-uv run pytest                 # run the test suite
-uv run python app.py doctor   # preflight: token, ollama, model, config, db
-uv run python app.py          # start hob
+ollama pull qwen2.5:7b-instruct   # or 14b-instruct if you have headroom
+uv sync                           # venv, Python 3.12, deps
+uv run python app.py doctor       # preflight: token, ollama, model, config, db
+uv run python app.py              # start hob
 ```
 
-`doctor` checks everything a first run needs and prints what to fix, so a missing
-token or an un-pulled model is caught before your first message instead of after.
+Create the bot: message [@BotFather](https://t.me/BotFather), send `/newbot`,
+then in the bot's settings restrict usage to just yourself (Hob has no per-user
+gate of its own). Put the token in `HOB_TELEGRAM_TOKEN` and message the bot once
+(`/start`); that first message tells Hob where to send the digest.
 
-### Create the Telegram bot
+## Usage
 
-1. In Telegram, message [@BotFather](https://t.me/BotFather) and send
-   `/newbot`. Follow the prompts to name the bot.
-2. BotFather replies with an HTTP API token like `123456:ABC-DEF...`.
-3. **Lock it to yourself.** In BotFather, open your bot's settings and set
-   *Bot Settings → Allowed Users / Restrict bot usage* to just you. Telegram
-   then blocks anyone else from messaging it; Hob has no per-user gate of its
-   own, so without this anyone who finds the bot can drive your list.
-4. Put the token in the environment as `HOB_TELEGRAM_TOKEN` (see config below).
-   Hob learns which chat to send the morning digest to from the first message you
-   send it, so message the bot once (try `/start`) after starting it.
+Talk to it like a person:
 
-### Pull the model
+- "call the vet at 3pm" gets a reminder ping before the time; reply "done" or
+  "snooze 20" to the ping, or just react with a thumbs-up to complete it.
+- "take out the trash every monday" recurs; "in a couple days", "end of the
+  month", "this weekend" all resolve to real dates.
+- "did everything today but the slides", "push everything to tomorrow", "what's
+  overdue", "what did i finish this week", "what am i waiting on".
+- "for the wedding: book the caterer, order flowers" files a tagged project;
+  "add a note to the vet one: gate code is 4412" sticks a note.
+- Forward someone's message to capture it, edit a message to correct it, or use
+  `/today`, `/undo`, `/help`.
 
-```
-ollama pull qwen2.5:7b-instruct
-```
+The full tour lives in [everything Hob understands](docs/features.md).
 
-Any JSON-capable 7-8B instruct model works (a current Llama or Qwen instruct
-build). Set the name with `HOB_MODEL`. Hob uses Ollama's structured-output mode,
-so the model is forced to return valid JSON. A larger model (e.g.
-`qwen2.5:14b-instruct`) handles dense, multi-task messages more reliably if you
-have the headroom; the eval runs against it by default.
-
-### Configuration
+## Configure
 
 All configuration is environment variables:
 
@@ -155,166 +76,23 @@ All configuration is environment variables:
 | `HOB_TIMEZONE` | IANA timezone, e.g. `America/New_York` | `UTC` |
 | `HOB_DB_PATH` | SQLite file path | `hob.db` |
 | `HOB_OLLAMA_HOST` | Ollama endpoint | `http://localhost:11434` |
-| `HOB_KEEP_ALIVE` | How long Ollama keeps the model loaded: `-1` resident, seconds, or a duration like `30m` | `-1` |
-| `HOB_REMINDER_LEAD` | Minutes before a timed task to send its reminder | `10` |
-| `HOB_EOD_TIME` | Evening "what got done?" recap time, `HH:MM` (empty disables) | `20:30` |
+| `HOB_KEEP_ALIVE` | How long Ollama keeps the model loaded | `-1` (resident) |
+| `HOB_REMINDER_LEAD` | Minutes of heads-up before a timed task | `10` |
+| `HOB_EOD_TIME` | Evening recap time (empty disables) | `20:30` |
 
-Wake time and timezone are validated at startup; a bad value exits with a clear
-message and a non-zero code. The wake time can also be set in chat ("send the
-morning digest at 8"); that is stored and overrides `HOB_WAKE_TIME` from then on,
-no restart needed.
+The digest and recap times can also be changed in chat ("send the morning
+digest at 8"), no restart needed.
 
-## Architecture
+## Docs
 
-Pure core, adapters at the edges. All logic lives in `core/` with zero I/O: no
-network, no `sqlite3`, no Telegram library, no wall-clock reads. The LLM call,
-the clock, and the store are injected as protocols (`core/ports.py`). This makes
-the core fully unit-testable headless with a fake clock, an in-memory store, and
-a fake LLM that returns canned JSON, and it makes the design portable: the
-capture channel and the storage are swappable without touching the logic.
-
-```
-core/         pure, zero I/O, fully tested, time injected
-  models.py       Item, Action variants, Digest, etc.
-  ports.py        Protocols: Store, Llm, Clock
-  interpreter.py  builds the prompt; parses + validates JSON into Actions
-  dates.py        deterministic date resolution + ambiguity detection
-  planner.py      Actions + context -> concrete mutations (no I/O)
-  digest.py       owed-decision, digest selection + rollover, rendering
-  recurrence.py   recurring-rule parsing + next-occurrence math
-  undo.py         action-log replay / revert (operates on snapshots)
-adapters/     all I/O lives here
-  store_sqlite.py SQLite Store
-  llm_ollama.py   Ollama structured-output client
-  telegram_bot.py long-poll loop, offset persistence
-  clock.py        real clock
-  scheduler.py    morning-digest timer + catch-up-on-wake
-app.py        composition root: wire adapters into core, run the daemon
-config.py     env config + validation
-```
-
-Two correctness rules the core never breaks:
-
-- **The model never does date math.** It proposes a date phrase, copied verbatim
-  from your words; a deterministic parser (`dates.py`, over `dateparser`)
-  resolves it. On ambiguity (more than one date in the phrase) or a phrase that
-  resolves to nothing where a date was meant, Hob asks rather than guesses.
-- **Fuzzy language never silently mutates state.** An unresolved reference or a
-  low-confidence guess produces a clarifying question, not an edit, and Hob
-  remembers that question so your next message can answer it. A reschedule whose
-  date words are not actually in your message is treated as a misread and asked
-  about. The action log plus `/undo` backs everything that does get applied.
-
-## Deployment (launchd and Hearth)
-
-Hob has two supervisors: `launchd` keeps Hob alive, and
-[Hearth](https://github.com/adamskijow/Hearth) keeps the Ollama model runner Hob
-depends on alive (readiness checks, restart on crash or wedge, sleep prevention).
-Ready-to-edit `LaunchAgent` templates for both are in [`deploy/`](deploy/).
-
-Hob is one process started by `launchd`. The run command is:
-
-```
-uv run --directory /path/to/hob python app.py
-```
-
-`launchd` sets the environment, runs that command, and restarts it on exit. Copy
-[`deploy/com.local.hob.plist`](deploy/com.local.hob.plist) to
-`~/Library/LaunchAgents/`, edit the paths and fill `HOB_TELEGRAM_TOKEN`, then
-`chmod 600` it (it holds the token) and load it with
-`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.local.hob.plist`.
-That template expands the minimal plist below with `WorkingDirectory`, `PATH`,
-and `HOB_KEEP_ALIVE`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>            <string>com.local.hob</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/Users/you/.local/bin/uv</string>
-    <string>run</string>
-    <string>--directory</string>
-    <string>/Users/you/hob</string>
-    <string>python</string>
-    <string>app.py</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>HOB_TELEGRAM_TOKEN</key> <string>123456:ABC-DEF...</string>
-    <key>HOB_MODEL</key>          <string>qwen2.5:7b-instruct</string>
-    <key>HOB_WAKE_TIME</key>      <string>07:00</string>
-    <key>HOB_TIMEZONE</key>       <string>America/New_York</string>
-    <key>HOB_DB_PATH</key>        <string>/Users/you/hob/hob.db</string>
-  </dict>
-  <key>KeepAlive</key>          <true/>
-  <key>StandardOutPath</key>    <string>/Users/you/hob/hob.log</string>
-  <key>StandardErrorPath</key>  <string>/Users/you/hob/hob.log</string>
-</dict>
-</plist>
-```
-
-Keep the plist readable only by your user; it holds the bot token.
-
-Ollama is kept alive separately by Hearth. Install Hearth, then run it headless
-under `launchd` with
-[`deploy/com.hearth.headless.plist`](deploy/com.hearth.headless.plist) (it points
-at the Hearth app binary and your Hearth config). The menubar app also works, but
-the `LaunchAgent` survives logout and restarts on crash. Hob degrades gracefully
-when the model is briefly unreachable; Hearth keeps those windows short.
-
-**Logging.** Hob logs to stderr (and stdout). Under `launchd`, point
-`StandardErrorPath` at a file as above. The bot token is kept out of the log.
-Hob does not manage its own log files.
-
-**Restart behavior and recovery.** Hob is safe to kill at any moment.
-
-- Telegram polling resumes from the update offset saved in the database, so the
-  backlog is not reprocessed on restart. A hard kill mid long-poll causes a brief
-  `Conflict` while Telegram releases the old connection; Hob backs off and
-  resumes, and queued messages are delivered, not lost.
-- If a crash redelivers a message whose changes were already applied, Hob
-  recognizes it by its message id and does not apply or reply twice.
-- The morning digest fires once per day. macOS sleep does not eat it: an
-  in-process timer cannot fire while asleep, so on startup and on every tick Hob
-  checks the last sent date and fires the digest if today's is still owed and the
-  time is past wake time. The day is marked done only once the digest is actually
-  sent, so a digest owed before the chat is known is not lost.
-- Model timeouts or malformed output degrade to a clarifying question rather than
-  a crash.
-
-## Caveat: not fully local
-
-The model and the store run locally, but Telegram messages transit Telegram's
-servers, so this is not an end-to-end local pipeline. The capture channel is the
-swappable part: anyone who needs fully local can replace the Telegram adapter
-(`adapters/telegram_bot.py`) without touching the core.
-
-## Development
-
-```
-uv run pytest
-```
-
-Core modules are near-fully covered with a fake clock, an in-memory store, and a
-fake LLM returning canned JSON. Adapters get thin smoke tests.
-
-The unit suite uses a fake LLM. To check the interpreter against the *real*
-model (after tuning the prompt or changing `HOB_MODEL`), run the eval, which
-feeds representative messages through Ollama and asserts the resulting plan:
-
-```
-HOB_MODEL=qwen2.5:14b-instruct uv run python evals/interpreter_eval.py
-```
- On Windows, a
-`tzdata` package is installed under a platform marker so the standard-library
-`zoneinfo` has a timezone database; on the macOS target the OS provides it and
-the marker keeps it off that environment.
+- [Everything Hob understands](docs/features.md): the full feature tour.
+- [Architecture](docs/architecture.md): pure core, adapters at the edges, and
+  the two correctness rules (the model never does date math; fuzzy language
+  never silently mutates state).
+- [Deployment](docs/deployment.md): run it durably under `launchd`, with
+  [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive.
+- [Development](docs/development.md): the test suite and the real-model eval.
 
 ## License
 
-MIT. Every source file starts with an SPDX header:
-`# SPDX-License-Identifier: MIT`.
+MIT. Every source file starts with `# SPDX-License-Identifier: MIT`.
