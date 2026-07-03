@@ -388,6 +388,65 @@ def test_resume_retargets_to_the_only_waiting_item():
     assert not plan2.mutations and plan2.questions
 
 
+def test_weekday_in_message_beats_misclassified_intent():
+    # The model read "monday" as tomorrow; the named weekday wins.
+    plan = reconcile(
+        [Capture(task="pay my taxes", raw="pay my taxes Monday", when=When(kind="tomorrow"))],
+        ctx(message="Remind me to pay my taxes Monday"),
+    )
+    assert plan.mutations[0].due_date == "2026-07-06"  # next Monday, not 06-30
+
+
+def test_reminder_prefix_stripped_from_label():
+    plan = reconcile(
+        [Capture(task="Remind me to pay my taxes", raw="remind me to pay my taxes")],
+        ctx(message="Remind me to pay my taxes"),
+    )
+    assert plan.mutations[0].task == "pay my taxes"
+
+
+def test_bulk_complete_with_exclusions():
+    plan = reconcile(
+        [Bulk(op="complete", scope="today", exclude=["a3"])],
+        ctx(ACTIVE, message="did everything today but the audit"),
+    )
+    assert {m.target for m in plan.mutations} == {"a1", "a2"}  # a3 spared
+    # excluding everything applies nothing and says so
+    plan2 = reconcile(
+        [Bulk(op="complete", scope="all", exclude=["a1", "a2", "a3"])], ctx(ACTIVE)
+    )
+    assert not plan2.mutations and plan2.questions
+
+
+def test_everything_but_inverts_a_lone_complete():
+    # The model completed exactly the item the user excluded; the backstop
+    # inverts it into a bulk over the rest.
+    plan = reconcile(
+        [Complete(target="a3", confidence=1.0)],
+        ctx(ACTIVE, message="I did everything today but the SR audit"),
+    )
+    assert {m.target for m in plan.mutations} == {"a1", "a2"}
+    assert all(m.kind == "complete" for m in plan.mutations)
+
+
+def test_everything_but_fills_empty_bulk_exclude():
+    plan = reconcile(
+        [Bulk(op="complete", scope="today", exclude=[])],
+        ctx(ACTIVE, message="did everything except the audit"),
+    )
+    assert {m.target for m in plan.mutations} == {"a1", "a2"}
+
+
+def test_everything_but_leaves_a_normal_complete_alone():
+    # A complete that does NOT target the excluded item is not inverted.
+    plan = reconcile(
+        [Complete(target="a1", confidence=1.0)],
+        ctx(ACTIVE, message="I did everything today but the SR audit"),
+    )
+    # a1 (prez) does not match the tail ("audit"), so the action stands as-is.
+    assert {m.target for m in plan.mutations} == {"a1"}
+
+
 def test_bulk_today_excludes_waiting():
     active = [
         {"id": "a1", "label": "x", "due_date": None, "waiting": False},

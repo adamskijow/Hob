@@ -192,6 +192,15 @@ CASES = [
     Case("what am i waiting on",
          lambda p: p.queries and p.queries[0].kind == "waiting",
          "waiting query"),
+    Case("Remind me to pay my taxes Monday",
+         lambda p: kinds(p) == ["capture"] and cap_due(p) == "2026-07-06"
+         and "remind me" not in (p.mutations[0].task or "").lower(),
+         "named weekday wins; reminder prefix stripped"),
+    Case("I did everything today but the prez deck",
+         lambda p: kinds(p) and all(k == "complete" for k in kinds(p))
+         and "a1" not in {m.target for m in p.mutations}
+         and len(p.mutations) >= 2,
+         "bulk complete spares the excluded item"),
 ]
 
 

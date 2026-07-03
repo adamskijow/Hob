@@ -146,8 +146,10 @@ ACTION_SCHEMA = {
                     ),
                     _variant(
                         "bulk",
-                        {"op": _STR, "scope": _STR, "when": _WHEN, "confidence": _NUM},
-                        ["type", "op", "scope"],
+                        {"op": _STR, "scope": _STR, "when": _WHEN,
+                         "except": {"type": "array", "items": {"type": "string"}},
+                         "confidence": _NUM},
+                        ["type", "op", "scope", "except"],
                     ),
                     _variant(
                         "snooze",
@@ -242,7 +244,10 @@ left for the wedding" -> kind tag, tag "wedding"), "waiting" (what is parked on 
 other people; "what am i waiting on").
 - bulk: act on MANY items at once with ONE action; never list them individually. \
 Fields: type "bulk", op ("complete", "drop", or "reschedule"), scope, when (op \
-reschedule only: a date intent for the destination), confidence. Use bulk when \
+reschedule only: a date intent for the destination), except (ids to LEAVE OUT \
+when the user excludes some: "did everything today but the MOR slides" -> bulk \
+complete scope today, except [that item's id]; never also emit an action for an \
+excluded item), confidence. Use bulk when \
 the user means many items ("everything", "today's stuff", "push everything to \
 tomorrow"). Pick scope:
   - "all": every open item. Use for "everything", "my whole list", "delete it all".
@@ -300,7 +305,10 @@ tomorrow" -> capture (even though an "SR audit" item exists); only "push the SR 
 audit to friday" is a reschedule.
 - When the user refers to many items, use one bulk action, never one per item. \
 "delete everything"/"clear my list" -> bulk drop (scope all); "did everything \
-today" -> bulk complete (scope today). "did" is a completion, not a question.
+today" -> bulk complete (scope today, except []). "did" is a completion, not a \
+question. "everything BUT/EXCEPT X" means X is NOT included: put X's id in \
+except ("did everything but the prez deck" -> bulk complete, except [the prez \
+item's id]).
 - A message that just names a task, with no instruction word, is a NEW task: \
 capture. "dentist next Friday" -> capture. "call the pool guy" -> capture.
 
@@ -563,6 +571,7 @@ def _parse_one(action: object):
             op=op,
             scope=_str(action.get("scope")) or "today",
             when=_when(action.get("when")),
+            exclude=[e for e in map(_str, action.get("except") or []) if e],
             confidence=conf,
         )
     if kind == "snooze":

@@ -17,6 +17,7 @@ allocate ids or read the clock. The edge (MessageService) materializes them.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
@@ -190,9 +191,24 @@ def _check_target(
     return key
 
 
+_REMINDER_PREFIXES = ("remind me to ", "remember to ", "dont forget to ", "don't forget to ")
+
+
+def _clean_label(task: str | None) -> str | None:
+    """Strip capture-phrasing the model echoes into labels ("remind me to X")."""
+    if not task:
+        return task
+    low = task.lower()
+    for prefix in _REMINDER_PREFIXES:
+        if low.startswith(prefix):
+            return task[len(prefix):]
+    return task
+
+
 def _reconcile_capture(
     action: Capture,
     today: date,
+    message: str,
     shared_date: str | None,
     active_due: dict,
     by_pos: dict,
@@ -224,13 +240,19 @@ def _reconcile_capture(
         first = recurrence.next_due(repeat, today, inclusive=True)
         if first is not None:
             due_date = first.isoformat()
+    else:
+        # Deterministic backstop: a weekday named in the message wins over a
+        # misclassified intent ("taxes monday" read as tomorrow).
+        corrected = dates.weekday_correction(message, due_date, today)
+        if corrected is not None:
+            due_date = corrected
 
     # The model classifies dates (when); a clock time it parses directly (time).
     due_time = dates.parse_time(action.time)
 
     mutation = Mutation(
         kind="capture",
-        task=action.task,
+        task=_clean_label(action.task),
         raw=action.raw,
         due_date=due_date,
         due_time=due_time,
@@ -304,6 +326,11 @@ def _reconcile_reschedule(
     ):
         resolution = dates.DateResolution()
 
+    # A weekday named in the message wins over a misclassified intent.
+    corrected = dates.weekday_correction(ctx.message, resolution.date, today)
+    if corrected is not None:
+        resolution = dates.DateResolution(date=corrected)
+
     # A time-only reschedule with no conversational anchor and no overlap with
     # the item's own words is a guess ("make it 4pm" out of nowhere): ask.
     if new_time is not None and resolution.date is None:
@@ -371,7 +398,18 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
     if not matching:
         plan.questions.append("nothing matched, so i changed nothing.")
         return
-    ids = [i["id"] for i in matching]
+    active_all = {i["id"]: i.get("label", "") for i in ctx.active_items}
+    positions = {str(n): i["id"] for n, i in enumerate(ctx.active_items, start=1)}
+    excluded = {
+        r for r in (
+            _resolve_ref(e, active_all, positions) for e in action.exclude
+        )
+        if r is not None
+    }
+    ids = [i["id"] for i in matching if i["id"] not in excluded]
+    if not ids:
+        plan.questions.append("that excluded everything, so i changed nothing.")
+        return
     if action.op == "reschedule":
         # Move them all to one destination date (non-destructive, so no confirm).
         if when.ambiguous or when.date is None:
@@ -443,8 +481,67 @@ def _reconcile_query(action: Query, today: date, ctx, plan: Plan) -> None:
     plan.queries.append(QueryIntent(kind=model_kind))
 
 
+_EVERYTHING_BUT = re.compile(
+    r"\b(everything|all of (it|them)|all my \w+)\b.{0,40}?\b(but|except|besides|aside from)\b(?P<tail>.*)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+# Words too generic to identify an item when matching an exclusion tail.
+_TAIL_STOP = {"the", "and", "one", "ones", "thing", "things", "stuff", "task", "tasks", "that", "this"}
+
+
+def _tail_words(text: str) -> set[str]:
+    return {
+        w for w in re.findall(r"[a-z]+", text.lower())
+        if len(w) > 2 and w not in _TAIL_STOP
+    }
+
+
+def _tail_matches(label: str, tail_words: set[str]) -> bool:
+    return any(
+        w in tail_words
+        for w in label.lower().split()
+        if len(w) > 2 and w not in _TAIL_STOP
+    )
+
+
+def _fix_everything_but(actions: list, ctx) -> list:
+    """Deterministic backstop for "did everything BUT X": the model sometimes
+    emits a lone complete of X (the one item the user spared) or a bulk with an
+    empty except list. When the message clearly excludes items, make the plan
+    match: a bulk over the rest, with the named items excluded."""
+    match = _EVERYTHING_BUT.search(ctx.message)
+    if not match:
+        return actions
+    tail_words = _tail_words(match.group("tail"))
+    if not tail_words:
+        return actions
+    labels = {i["id"]: i.get("label", "") for i in ctx.active_items}
+    excluded = [i for i, lab in labels.items() if _tail_matches(lab, tail_words)]
+    if not excluded:
+        return actions
+    bulks = [a for a in actions if isinstance(a, Bulk)]
+    if bulks:
+        # The model got the shape right; guarantee the exclusions are filled.
+        for b in bulks:
+            if not b.exclude:
+                b.exclude = list(excluded)
+        return actions
+    singles = [a for a in actions if isinstance(a, (Complete, Drop))]
+    if singles and all(
+        _tail_matches(labels.get(a.target, ""), tail_words) for a in singles
+    ):
+        # Every explicit action targets an item the user EXCLUDED: inverted.
+        op = "drop" if all(isinstance(a, Drop) for a in singles) else "complete"
+        others = [a for a in actions if not isinstance(a, (Complete, Drop))]
+        return others + [Bulk(op=op, scope="today", exclude=list(excluded))]
+    return actions
+
+
 def reconcile(actions: list, ctx) -> Plan:
     today = date.fromisoformat(ctx.today)
+    actions = _fix_everything_but(actions, ctx)
     active = {i["id"]: i.get("label", "") for i in ctx.active_items}
     plan = Plan()
     captures = [a for a in actions if isinstance(a, Capture)]
@@ -463,7 +560,9 @@ def reconcile(actions: list, ctx) -> Plan:
         shared_date = first.date or dates.leading_date(ctx.message, today)
     for action in actions:
         if isinstance(action, Capture):
-            _reconcile_capture(action, today, shared_date, active_due, by_pos, plan)
+            _reconcile_capture(
+                action, today, ctx.message, shared_date, active_due, by_pos, plan
+            )
         elif isinstance(action, Amend):
             _reconcile_amend(action, active, by_pos, plan)
         elif isinstance(action, Prioritize):

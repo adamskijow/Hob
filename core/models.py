@@ -198,6 +198,7 @@ class Bulk:
     op: str  # complete | drop | reschedule
     scope: str  # today | all | date
     when: When | None = None  # destination (op=reschedule) or scope day (scope=date)
+    exclude: list[str] = field(default_factory=list)  # "everything BUT these"
     confidence: float = 1.0
 
 

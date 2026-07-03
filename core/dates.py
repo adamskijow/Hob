@@ -126,6 +126,28 @@ def _resolve_kind(when, today: date) -> date | None:
     return None  # unknown kind: treat as no date
 
 
+_WEEKDAY_WORDS = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+
+
+def weekday_correction(message: str, resolved_iso: str | None, today: date) -> str | None:
+    """A deterministic backstop for a misclassified weekday: if the message
+    names exactly one weekday and the resolved date does not fall on it (or
+    there is no date at all), return the next occurrence of the named day.
+    Weekday words are unambiguous; the model saying "monday" is "tomorrow" on a
+    Thursday is a hallucination the core can catch. None = nothing to correct."""
+    words = re.findall(r"[a-z]+", message.lower())
+    named = {_WEEKDAY_WORDS[w] for w in words if w in _WEEKDAY_WORDS}
+    if len(named) != 1:
+        return None  # none, or several (ambiguity handled elsewhere)
+    wd = named.pop()
+    if resolved_iso is not None and date.fromisoformat(resolved_iso).weekday() == wd:
+        return None
+    return (today + timedelta(days=((wd - today.weekday()) % 7) or 7)).isoformat()
+
+
 # --- time parsing ------------------------------------------------------------
 
 _TIME_RE = re.compile(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.IGNORECASE)
