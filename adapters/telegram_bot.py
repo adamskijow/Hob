@@ -213,16 +213,14 @@ class TelegramAdapter:
     async def set_profile_photo(self, photo_path: str) -> bool:
         """Set the bot's own avatar (Bot API set_my_profile_photo). Returns
         whether it succeeded; a failure is non-fatal to the caller."""
-        from pathlib import Path
-
         import telegram
 
         try:
             bot = self._ensure_bot()
-            photo = telegram.InputFile(
-                Path(photo_path).read_bytes(), filename=Path(photo_path).name
-            )
-            await bot.set_my_profile_photo(telegram.InputProfilePhotoStatic(photo=photo))
+            # Pass a file object so ptb wires the multipart attach:// upload; a
+            # pre-built InputFile or a Path does not survive that path.
+            with open(photo_path, "rb") as f:
+                await bot.set_my_profile_photo(telegram.InputProfilePhotoStatic(photo=f))
             return True
         except Exception:
             log.exception("could not set bot profile photo")

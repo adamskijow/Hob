@@ -709,7 +709,7 @@ class ReminderService:
 # The bot's kettle avatar: set once (a version bump re-applies), tracked in meta.
 AVATAR_KEY = "profile_photo"
 AVATAR_VERSION = "kettle-1"
-AVATAR_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "hob-avatar.png")
+AVATAR_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "hob-avatar.jpg")
 
 
 async def _set_profile_photo_once(telegram, store, path=AVATAR_PATH, version=AVATAR_VERSION) -> bool:
