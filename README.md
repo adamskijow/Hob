@@ -32,8 +32,15 @@ machine; only the Telegram transport leaves it.
 
 ## Getting started
 
-Requires [uv](https://docs.astral.sh/uv/) and a local
-[Ollama](https://ollama.com/) with a JSON-capable instruct model:
+One command installs [uv](https://docs.astral.sh/uv/) and
+[Ollama](https://ollama.com/) if missing, syncs deps, pulls the model, and runs
+the preflight:
+
+```
+scripts/setup.sh                  # honors HOB_MODEL; safe to re-run
+```
+
+Or do it by hand (needs uv and a local Ollama with a JSON-capable instruct model):
 
 ```
 ollama pull qwen2.5:7b-instruct   # or 14b-instruct if you have headroom
