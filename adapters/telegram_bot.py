@@ -219,9 +219,10 @@ class TelegramAdapter:
 
         try:
             bot = self._ensure_bot()
-            await bot.set_my_profile_photo(
-                telegram.InputProfilePhotoStatic(photo=telegram.InputFile(Path(photo_path)))
+            photo = telegram.InputFile(
+                Path(photo_path).read_bytes(), filename=Path(photo_path).name
             )
+            await bot.set_my_profile_photo(telegram.InputProfilePhotoStatic(photo=photo))
             return True
         except Exception:
             log.exception("could not set bot profile photo")
