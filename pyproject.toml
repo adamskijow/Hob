@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 [project]
 name = "hob"
-version = "0.0.0"
+version = "0.1.0"
 description = "Personal morning-digest agent that keeps the day's small tasks warm."
 readme = "README.md"
 requires-python = ">=3.12"
