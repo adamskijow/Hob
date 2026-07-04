@@ -415,6 +415,29 @@ def test_reaction_completes_and_ignores_unmapped():
     assert svc.handle_reaction(777, ["\U0001F44D"]) == ""  # idempotent
 
 
+def test_set_profile_photo_once():
+    import asyncio
+
+    from app import AVATAR_KEY, AVATAR_PATH, AVATAR_VERSION, _set_profile_photo_once
+
+    class FakeTG:
+        def __init__(self):
+            self.calls = []
+
+        async def set_profile_photo(self, path):
+            self.calls.append(path)
+            return True
+
+    store = SqliteStore(":memory:")
+    tg = FakeTG()
+    assert asyncio.run(_set_profile_photo_once(tg, store)) is True
+    assert tg.calls == [AVATAR_PATH]
+    assert store.get_meta(AVATAR_KEY) == AVATAR_VERSION
+    # already set: a no-op, no second API call
+    assert asyncio.run(_set_profile_photo_once(tg, store)) is False
+    assert len(tg.calls) == 1
+
+
 def test_pleasantry_gets_warm_reply_not_nag():
     llm = FakeLlm({"actions": [{"type": "chitchat", "reply": "anytime!"}]})
     store = SqliteStore(":memory:")

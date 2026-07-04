@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import signal
 import sys
 from dataclasses import asdict
@@ -705,6 +706,24 @@ class ReminderService:
                 self._store.record_sent_ref(sent_id, item.id)
 
 
+# The bot's kettle avatar: set once (a version bump re-applies), tracked in meta.
+AVATAR_KEY = "profile_photo"
+AVATAR_VERSION = "kettle-1"
+AVATAR_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "hob-avatar.png")
+
+
+async def _set_profile_photo_once(telegram, store, path=AVATAR_PATH, version=AVATAR_VERSION) -> bool:
+    """Give the bot its kettle avatar on startup, once. Idempotent via a meta
+    flag; failures are non-fatal (retried on the next start)."""
+    if store.get_meta(AVATAR_KEY) == version or not os.path.exists(path):
+        return False
+    if await telegram.set_profile_photo(path):
+        store.set_meta(AVATAR_KEY, version)
+        logging.getLogger("hob").info("set bot profile photo (%s)", version)
+        return True
+    return False
+
+
 def _model_ready(llm: OllamaLlm, model: str) -> bool:
     return any(model == m or model in m for m in llm.installed_models())
 
@@ -740,6 +759,8 @@ async def _run_daemon(cfg: Config, store: SqliteStore) -> None:
     def stop_all() -> None:
         telegram.stop()
         scheduler.stop()
+
+    await _set_profile_photo_once(telegram, store)
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, getattr(signal, "SIGTERM", None)):

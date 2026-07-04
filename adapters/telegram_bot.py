@@ -210,6 +210,23 @@ class TelegramAdapter:
         sent = await self._ensure_bot().send_message(chat_id=chat_id, text=present(text))
         return getattr(sent, "message_id", None)
 
+    async def set_profile_photo(self, photo_path: str) -> bool:
+        """Set the bot's own avatar (Bot API set_my_profile_photo). Returns
+        whether it succeeded; a failure is non-fatal to the caller."""
+        from pathlib import Path
+
+        import telegram
+
+        try:
+            bot = self._ensure_bot()
+            await bot.set_my_profile_photo(
+                telegram.InputProfilePhotoStatic(photo=telegram.InputFile(Path(photo_path)))
+            )
+            return True
+        except Exception:
+            log.exception("could not set bot profile photo")
+            return False
+
     async def pin(self, chat_id: int, message_id: int, unpin_message_id: int | None) -> None:
         """Pin today's digest (quietly) and unpin yesterday's. Pin failures are
         cosmetic: log and move on, never break the digest."""
