@@ -193,15 +193,40 @@ def _check_target(
 
 _REMINDER_PREFIXES = ("remind me to ", "remember to ", "dont forget to ", "don't forget to ")
 
+# Trailing date/time phrases the model sometimes leaves in a label ("update gdp
+# tomorrow night"). We strip ONLY the unambiguous ones: "tomorrow"/"tonight"/
+# "today"/"yesterday" (with an optional part-of-day) and a trailing "at <time>".
+# Bare "day"/"night"/weekday names are left alone because they are also real
+# label words ("plan my day tomorrow" -> "plan my day"), so this never
+# over-strips. Genuinely ambiguous tails ("during day", "monday") stay as-is.
+_LABEL_DAY_TAIL = re.compile(
+    r"\s+(tomorrow|tonight|today|yesterday)"
+    r"(\s+(morning|afternoon|evening|night))?$",
+    re.IGNORECASE,
+)
+_LABEL_TIME_TAIL = re.compile(
+    r"\s+at\s+(\d{1,2}(:\d{2})?\s*(am|pm)?|noon|midnight)$",
+    re.IGNORECASE,
+)
+
 
 def _clean_label(task: str | None) -> str | None:
-    """Strip capture-phrasing the model echoes into labels ("remind me to X")."""
+    """Strip capture-phrasing the model echoes into labels: a "remind me to"
+    prefix and an unambiguous trailing date/time phrase."""
     if not task:
         return task
     low = task.lower()
     for prefix in _REMINDER_PREFIXES:
         if low.startswith(prefix):
-            return task[len(prefix):]
+            task = task[len(prefix):]
+            break
+    prev = None
+    while task != prev:
+        prev = task
+        for pat in (_LABEL_TIME_TAIL, _LABEL_DAY_TAIL):
+            stripped = pat.sub("", task).strip()
+            if stripped:  # never strip a label down to nothing
+                task = stripped
     return task
 
 

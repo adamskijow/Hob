@@ -405,6 +405,34 @@ def test_reminder_prefix_stripped_from_label():
     assert plan.mutations[0].task == "pay my taxes"
 
 
+def test_clean_label_strips_only_unambiguous_date_tails():
+    from core.planner import _clean_label as c
+
+    # stripped: unambiguous day/time tails the model left in the label
+    assert c("update gdp tomorrow night") == "update gdp"
+    assert c("call the vet at 3pm") == "call the vet"
+    assert c("gdp tomorrow night at 9") == "gdp"
+    assert c("meeting today") == "meeting"
+    # kept: bare day/night/weekday words that are also real content
+    assert c("plan my day tomorrow") == "plan my day"  # only "tomorrow" goes
+    assert c("work the night shift") == "work the night shift"
+    assert c("visit mystic aquarium during day") == "visit mystic aquarium during day"
+    assert c("pay my taxes monday") == "pay my taxes monday"
+    assert c("meet at gate 3") == "meet at gate 3"
+
+
+def test_capture_label_and_date_from_intent_tail():
+    # The screenshot case end to end: date is right, label is clean.
+    plan = reconcile(
+        [Capture(task="update gdp tomorrow night", raw="update gdp tomorrow night",
+                 when=When(kind="tomorrow"), time="21:00")],
+        ctx(message="update gdp tomorrow night"),
+    )
+    assert plan.mutations[0].task == "update gdp"
+    assert plan.mutations[0].due_date == "2026-06-30"  # tomorrow
+    assert plan.mutations[0].due_time == "21:00"
+
+
 def test_bulk_complete_with_exclusions():
     plan = reconcile(
         [Bulk(op="complete", scope="today", exclude=["a3"])],
