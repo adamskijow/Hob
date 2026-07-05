@@ -210,6 +210,14 @@ _LABEL_TIME_TAIL = re.compile(
 )
 
 
+def _is_typo_correction(message: str) -> bool:
+    """A short message ending in '*' is the texting convention for correcting a
+    typo in the previous message ("Hobbie*"), not a task. Kept short so a real
+    sentence that happens to end in '*' is not swallowed."""
+    m = message.strip()
+    return len(m) > 1 and m.endswith("*") and len(m.split()) <= 4
+
+
 def _clean_label(task: str | None) -> str | None:
     """Strip capture-phrasing the model echoes into labels: a "remind me to"
     prefix and an unambiguous trailing date/time phrase."""
@@ -659,5 +667,9 @@ def reconcile(actions: list, ctx) -> Plan:
         elif isinstance(action, Chitchat):
             plan.chitchat = (action.reply or "sure thing").strip()
         elif isinstance(action, Unknown):
-            plan.questions.append("i did not catch a task there. can you rephrase?")
+            if _is_typo_correction(ctx.message):
+                # "Hobbie*": a texting typo-fix of a prior message, not a task.
+                plan.chitchat = "no worries"
+            else:
+                plan.questions.append("i did not catch a task there. can you rephrase?")
     return plan

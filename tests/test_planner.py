@@ -495,6 +495,20 @@ def test_chitchat_sets_reply():
     assert not plan.mutations and not plan.questions
 
 
+def test_typo_correction_acked_not_nagged():
+    from core.planner import _is_typo_correction as f
+
+    assert f("Hobbie*") and f("friday not thursday*")
+    assert not f("*") and not f("call bob")
+    assert not f("send the whole quarterly report by end of friday*")  # too long
+
+    plan = reconcile([Unknown(note="?")], ctx(message="Hobbie*"))
+    assert plan.chitchat is not None and not plan.questions
+    # a genuinely unclear message still asks
+    plain = reconcile([Unknown(note="?")], ctx(message="asdfghjkl"))
+    assert plain.questions and plain.chitchat is None
+
+
 def test_prioritize_resolves_target_and_level():
     plan = reconcile([Prioritize(target="a3", level="high")], ctx(ACTIVE))
     assert [m.kind for m in plan.mutations] == ["prioritize"]

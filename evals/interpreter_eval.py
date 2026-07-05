@@ -199,6 +199,9 @@ CASES = [
     Case("What about tomorrow",
          lambda p: any(q.kind == "date" and q.date == "2026-06-30" for q in p.queries),
          "bare follow-up query day is honored"),
+    Case("Hobbie*",
+         lambda p: p.chitchat is not None and not p.questions and not p.mutations,
+         "asterisk typo-correction is acked, not nagged"),
     Case("I did everything today but the prez deck",
          lambda p: kinds(p) and all(k == "complete" for k in kinds(p))
          and "a1" not in {m.target for m in p.mutations}
