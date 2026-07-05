@@ -26,9 +26,12 @@ class Clock(Protocol):
 
 @runtime_checkable
 class Llm(Protocol):
-    """Local model. Returns parsed structured JSON; the core validates it."""
+    """Local model. Returns parsed structured JSON; the core validates it.
 
-    def complete_json(self, prompt: str, schema: dict) -> dict:
+    temperature defaults to 0 for deterministic classification; the edge raises
+    it only for creative text like a chitchat reply."""
+
+    def complete_json(self, prompt: str, schema: dict, temperature: float = 0.0) -> dict:
         ...
 
 

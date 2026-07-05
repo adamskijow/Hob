@@ -50,13 +50,13 @@ class OllamaLlm:
                 names.append(name)
         return names
 
-    def complete_json(self, prompt: str, schema: dict) -> dict:
+    def complete_json(self, prompt: str, schema: dict, temperature: float = 0.0) -> dict:
         try:
             response = self._client.chat(
                 model=self._model,
                 messages=[{"role": "user", "content": prompt}],
                 format=schema,  # structured output: response conforms to the schema
-                options={"temperature": 0},  # deterministic
+                options={"temperature": temperature},  # 0 = deterministic
                 keep_alive=self._keep_alive,
             )
         except Exception:

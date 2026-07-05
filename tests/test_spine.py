@@ -438,6 +438,25 @@ def test_set_profile_photo_once():
     assert len(tg.calls) == 1
 
 
+def test_chitchat_reply_generated_hot_classification_cold():
+    # Pass 1 classifies chitchat at temp 0; pass 2 writes the reply hot, so
+    # repeats vary. The pass-2 reply is used; on the fallback path the classified
+    # reply stands.
+    llm = FakeLlm([
+        {"actions": [{"type": "chitchat", "reply": "anytime!"}]},
+        {"reply": "aw shucks, happy to help"},
+    ])
+    store = SqliteStore(":memory:")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York")
+
+    out = svc.handle(msg("thanks hob"))
+    assert out == "aw shucks, happy to help"
+    assert len(llm.calls) == 2
+    assert llm.calls[0][2] == 0.0  # classification is deterministic
+    assert llm.calls[1][2] > 0.0   # reply is generated hot
+
+
 def test_pleasantry_gets_warm_reply_not_nag():
     llm = FakeLlm({"actions": [{"type": "chitchat", "reply": "anytime!"}]})
     store = SqliteStore(":memory:")

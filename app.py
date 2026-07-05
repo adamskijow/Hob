@@ -44,6 +44,20 @@ from adapters.telegram_bot import InboundMessage, TelegramAdapter
 
 log = logging.getLogger("hob.message")
 
+# Second-pass chitchat reply: classification stays deterministic (temp 0); this
+# runs hot so a repeated "thanks" does not get the same line every time.
+CHITCHAT_SCHEMA = {
+    "type": "object",
+    "properties": {"reply": {"type": "string"}},
+    "required": ["reply"],
+}
+CHITCHAT_PROMPT = (
+    "You are Hob, a warm, upbeat personal task-assistant bot with a light "
+    "sense of humor. The user sent a friendly, non-task message: \"{message}\". "
+    "Reply in one short, casual sentence in your own voice. Do not mention their "
+    "tasks or schedule, and do not ask a question back unless it is natural."
+)
+
 HELP = (
     'send tasks in plain language: "call the vet at 3pm", "take out the trash '
     'every monday". correct the same way: "did the prez one", "push it to friday", '
@@ -316,10 +330,24 @@ class MessageService:
             )
             questions.append(plan.confirm.question)
         reply = self._reply(applied, questions, answers)
-        # A bare pleasantry ("thanks bud") gets a warm reply, not a task nag.
+        # A pleasantry gets a warm reply, not a task nag. A second, higher-temp
+        # call writes it so the same message ("thanks") varies between turns;
+        # classification stayed at temp 0. Falls back to the classified reply.
         if plan.chitchat and reply == "ok":
-            return plan.chitchat
+            return self._varied_reply(text) or plan.chitchat
         return reply
+
+    def _varied_reply(self, message: str) -> str | None:
+        """One short, warm reply, generated fresh at high temperature so chitchat
+        does not repeat itself. None on any failure so the caller falls back."""
+        try:
+            out = self._llm.complete_json(
+                CHITCHAT_PROMPT.format(message=message), CHITCHAT_SCHEMA, temperature=0.9
+            )
+        except Exception:
+            return None
+        reply = out.get("reply") if isinstance(out, dict) else None
+        return reply.strip() if isinstance(reply, str) and reply.strip() else None
 
     def _apply_setting(self, s: SettingChange) -> str:
         if s.key == "wake_time":

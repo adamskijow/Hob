@@ -28,10 +28,10 @@ class FakeLlm:
 
     def __init__(self, responses: list[dict] | dict) -> None:
         self._responses = responses if isinstance(responses, list) else [responses]
-        self.calls: list[tuple[str, dict]] = []
+        self.calls: list[tuple] = []
 
-    def complete_json(self, prompt: str, schema: dict) -> dict:
-        self.calls.append((prompt, schema))
+    def complete_json(self, prompt: str, schema: dict, temperature: float = 0.0) -> dict:
+        self.calls.append((prompt, schema, temperature))
         if len(self._responses) == 1:
             return self._responses[0]
         return self._responses[len(self.calls) - 1]
