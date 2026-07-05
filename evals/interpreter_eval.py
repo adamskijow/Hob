@@ -202,6 +202,12 @@ CASES = [
     Case("Hobbie*",
          lambda p: p.chitchat is not None and not p.questions and not p.mutations,
          "asterisk typo-correction is acked, not nagged"),
+    Case("Hob I love you",
+         lambda p: p.chitchat is not None and not p.questions and not p.mutations,
+         "affection gets a warm reply, not a task nag"),
+    Case("how are you",
+         lambda p: p.chitchat is not None and not p.questions,
+         "small-talk question is chitchat, not a nag"),
     Case("I did everything today but the prez deck",
          lambda p: kinds(p) and all(k == "complete" for k in kinds(p))
          and "a1" not in {m.target for m in p.mutations}

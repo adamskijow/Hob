@@ -260,11 +260,15 @@ reminder with snooze/"not now"/"remind me again in N"; a new date or time for \
 the task itself is a reschedule instead.
 - undo: the user wants to reverse their last change ("scratch that", "undo \
 that"). Fields: type "undo".
-- chitchat: a social pleasantry with NO task and NO question - a greeting, \
-thanks, or an acknowledgment ("thanks", "thanks bud", "ok cool", "good morning", \
-"nice", "lol", "you're the best"). Fields: type "chitchat", reply (a short, warm \
-acknowledgment, a few words at most, e.g. "anytime!", "you got it"). Do NOT use \
-chitchat for a question or a request.
+- chitchat: a social remark to hob with NO task - a greeting, thanks, an \
+acknowledgment, a compliment, a bit of affection, or light small talk ("thanks \
+bud", "good morning", "nice", "lol", "you're the best", "hob I love you", "good \
+bot", "how are you", "you crack me up"). Fields: type "chitchat", reply (a \
+short, warm reply that fits what they said, hob's friendly voice, a sentence at \
+most: "anytime!", "aw, love you too", "doing great, thanks for asking", "glad i \
+could help"). Use chitchat for these even though they are not tasks. Do NOT use \
+it for a task, a question about the user's own tasks or schedule (that is a \
+query), or a general-knowledge question (that is unknown).
 - unknown: you cannot tell what task they want, or it is some other message you \
 cannot act on (a non-task question, small talk that is not a pleasantry). \
 Fields: type "unknown", note (short).
