@@ -213,6 +213,26 @@ CASES = [
          and "a1" not in {m.target for m in p.mutations}
          and len(p.mutations) >= 2,
          "bulk complete spares the excluded item"),
+    Case("did the slides but not the taxes",
+         lambda p: {m.target for m in p.mutations if m.kind == "complete"} == {"t2"}
+         and not any(m.kind == "complete" and m.target == "t1" for m in p.mutations)
+         and not any(m.kind == "capture" for m in p.mutations),
+         "negated half is neither completed nor re-captured",
+         active=[
+             {"id": "t1", "label": "pay my taxes", "due_date": "2026-07-06"},
+             {"id": "t2", "label": "finish the MOR slides", "due_date": None},
+         ]),
+    Case("nope, did not pay the taxes",
+         lambda p: not p.mutations,
+         "a bare negation touches nothing",
+         active=[{"id": "t1", "label": "pay my taxes", "due_date": "2026-07-06"}]),
+    Case("finished the fabel thing",
+         lambda p: (p.confirm is not None
+                    and p.confirm.mutations[0].target == "t1")
+         or any(m.kind == "complete" and m.target == "t1" for m in p.mutations)
+         or bool(p.questions),
+         "misspelled target is confirmed or asked, never silently dropped",
+         active=[{"id": "t1", "label": "on Tuesday fable goes away", "due_date": None}]),
 ]
 
 

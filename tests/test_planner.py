@@ -727,3 +727,70 @@ def test_multi_action_batch():
     kinds = [m.kind for m in plan.mutations]
     assert kinds == ["complete", "drop", "reschedule"]
     assert not plan.questions
+
+
+# --- reference-verification guards: the model can name the wrong target on a
+# terse completion, or read a negation as an action. The core checks the target
+# against the literal words before mutating.
+
+TAXES = [
+    {"id": "a1", "label": "pay my taxes Monday", "due_date": "2026-07-06", "waiting": False},
+    {"id": "a2", "label": "finish the MOR slides", "due_date": None, "waiting": False},
+    {"id": "a3", "label": "send Jerry the message", "due_date": None, "waiting": False},
+]
+
+
+def test_negation_suppresses_completion_of_the_negated_item():
+    # "did not pay taxes" must not mark the taxes task done.
+    plan = reconcile([Complete(target="a1")], ctx(TAXES, message="did not pay taxes"))
+    assert not plan.mutations
+    assert not plan.questions
+
+
+def test_negation_keeps_the_positive_half_of_a_compound():
+    # "did the slides but not the taxes" -> slides done, taxes untouched.
+    plan = reconcile(
+        [Complete(target="a2"), Complete(target="a1")],
+        ctx(TAXES, message="did the slides but not the taxes"),
+    )
+    assert [(m.kind, m.target) for m in plan.mutations] == [("complete", "a2")]
+
+
+def test_negation_drops_a_recaptured_negated_task():
+    # The model sometimes re-captures the thing you said you did NOT do.
+    plan = reconcile(
+        [Complete(target="a2"),
+         Capture(task="pay my taxes Monday", raw="pay my taxes Monday")],
+        ctx(TAXES, message="did the slides but not the taxes"),
+    )
+    assert [(m.kind, m.target) for m in plan.mutations] == [("complete", "a2")]
+
+
+def test_negation_drops_a_capture_that_is_only_the_negation():
+    plan = reconcile(
+        [Capture(task="did not pay taxes", raw="did not pay taxes")],
+        ctx(TAXES, message="did not pay taxes"),
+    )
+    assert not plan.mutations
+
+
+def test_legit_capture_survives_alongside_a_negation():
+    # A genuinely new task in a message that also negates something is kept.
+    plan = reconcile(
+        [Capture(task="buy milk", raw="buy milk")],
+        ctx(TAXES, message="buy milk, did not pay the taxes"),
+    )
+    assert [m.kind for m in plan.mutations] == ["capture"]
+
+
+def test_wrong_target_completion_asks_did_you_mean():
+    # An Unknown where the words fuzzy-match an item -> confirm, not silence.
+    plan = reconcile(
+        [Unknown()],
+        ctx([{"id": "a1", "label": "on Tuesday fable goes away", "due_date": None,
+              "waiting": False}],
+            message="finished the fabel thing"),
+    )
+    assert plan.confirm is not None
+    assert plan.confirm.mutations[0].kind == "complete"
+    assert plan.confirm.mutations[0].target == "a1"

@@ -11,10 +11,10 @@ snapshot.
 - **Live and in daily use.** Runs as a `launchd` daemon on macOS, with
   [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive. Model:
   `qwen2.5:14b-instruct` (7b works; 14b is more reliable on dense messages).
-- **Released:** v0.1.0. Schema version 7.
-- **Green:** `uv run pytest` (227 passing) and the real-model eval
+- **Released:** v0.2.0. Schema version 7.
+- **Green:** `uv run pytest` (233 passing) and the real-model eval
   (`HOB_MODEL=qwen2.5:14b-instruct uv run python evals/interpreter_eval.py`,
-  48/48).
+  51/51).
 
 ## What is built
 

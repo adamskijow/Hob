@@ -17,6 +17,7 @@ allocate ids or read the clock. The edge (MessageService) materializes them.
 """
 from __future__ import annotations
 
+import difflib
 import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -208,6 +209,124 @@ _LABEL_TIME_TAIL = re.compile(
     r"\s+at\s+(\d{1,2}(:\d{2})?\s*(am|pm)?|noon|midnight)$",
     re.IGNORECASE,
 )
+
+
+# Reference / negation guards: the model resolves a description or a "did/didn't"
+# report to an item, but on a typo it grabs the wrong item, and it inverts
+# negations. These deterministic passes verify the model's target against the
+# literal words: a mismatched target with a strong typo elsewhere becomes a "did
+# you mean" confirm, and a target named in a negated clause is dropped. Favor
+# asking over acting; never silently complete the wrong thing.
+_REF_STOP = {
+    "the", "a", "an", "my", "that", "this", "it", "one", "ones", "thing",
+    "things", "task", "tasks", "did", "do", "done", "finish", "finished",
+    "complete", "completed", "drop", "dropped", "cancel", "cancelled", "delete",
+    "deleted", "remove", "removed", "already", "just", "please", "and", "but",
+    "also", "for", "to", "of", "in", "on", "at", "is", "was", "i", "we", "you",
+    "hob", "today", "yesterday", "tonight", "off", "out", "up",
+    "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth",
+    "ninth", "tenth", "two", "three", "four", "five", "six", "seven", "eight",
+    "nine", "ten",
+}
+_NEG_TOKENS = {
+    "not", "never", "skip", "skipped", "no", "cant", "couldnt", "wasnt", "wont",
+    "dont", "doesnt", "didnt", "havent", "wouldnt",
+}
+_MATCH = 0.8  # SequenceMatcher ratio for "this word is that word, typo aside"
+
+
+def _words(text: str) -> list[str]:
+    return [w for w in re.findall(r"[a-z]+", (text or "").lower())
+            if len(w) >= 3 and w not in _REF_STOP]
+
+
+def _word_hits(word: str, label_words: list[str]) -> bool:
+    for lw in label_words:
+        if word == lw or (len(word) >= 4 and len(lw) >= 4 and (word in lw or lw in word)):
+            return True
+        if difflib.SequenceMatcher(None, word, lw).ratio() >= _MATCH:
+            return True
+    return False
+
+
+def _label_supports(words: list[str], label: str) -> bool:
+    lw = _words(label)
+    return any(_word_hits(w, lw) for w in words)
+
+
+def _best_item(words: list[str], active_items: list[dict]) -> tuple[dict | None, float]:
+    best, best_score = None, 0.0
+    for item in active_items:
+        lw = _words(item.get("label", ""))
+        score = max((difflib.SequenceMatcher(None, w, l).ratio()
+                     for w in words for l in lw), default=0.0)
+        if score > best_score:
+            best, best_score = item, score
+    return best, best_score
+
+
+def _negated_words(message: str) -> set[str]:
+    """Content words that sit in a negated clause. 'did A, did not B' negates
+    only B; 'but' resets polarity ('didnt do A but did B')."""
+    msg = message.lower().replace("n't", " not").replace("’", "'")
+    negated: set[str] = set()
+    for clause in re.split(r"[,;]| and | but ", msg):
+        toks = re.findall(r"[a-z]+", clause)
+        if any(t in _NEG_TOKENS for t in toks):
+            negated.update(w for w in toks if len(w) >= 3 and w not in _REF_STOP)
+    return negated
+
+
+def _confirm_did_you_mean(item: dict, kind: str) -> ConfirmIntent:
+    verb = "mark it done" if kind == "complete" else "drop it"
+    return ConfirmIntent(
+        mutations=[Mutation(kind=kind, target=item["id"])],
+        question=f'did you mean "{item["label"]}"? reply yes to {verb}.',
+    )
+
+
+def _apply_reference_guards(plan: Plan, ctx) -> None:
+    labels = {i["id"]: i.get("label", "") for i in ctx.active_items}
+
+    # 1. Suppress mutations whose target sits in a negated clause: the user said
+    # they did NOT do it, so completing/parking/noting it is an inversion.
+    negated = _negated_words(ctx.message)
+    if negated:
+        kept = []
+        for m in plan.mutations:
+            if m.kind in ("complete", "drop", "wait", "note") and m.target and any(
+                _word_hits(w, _words(labels.get(m.target, ""))) for w in negated
+            ):
+                continue  # target sits in a negated clause: user did NOT do it
+            if m.kind == "capture":
+                content = _words(m.task or m.raw or "")
+                best, score = _best_item(content, ctx.active_items) if content else (None, 0.0)
+                is_negation = bool(content) and all(w in negated for w in content)
+                dupes_negated = best is not None and score >= _MATCH and any(
+                    _word_hits(w, _words(best.get("label", ""))) for w in negated
+                )
+                if is_negation or dupes_negated:
+                    continue  # the model captured the negation, or re-captured a
+                    #            task the user said they did NOT do
+            kept.append(m)
+        plan.mutations = kept
+
+    # 2. A lone complete/drop whose target the words do not support, when a
+    # different item is a strong typo match ("table thing" -> "fable"): confirm
+    # the right item instead of silently completing the wrong one. Skipped when
+    # the message excludes or negates an item, since then a strongly-matched word
+    # ("everything but the audit") is the item left OUT, not the target.
+    if len(plan.mutations) == 1 and plan.mutations[0].kind in ("complete", "drop") \
+            and plan.confirm is None and not negated \
+            and _EVERYTHING_BUT.search(ctx.message) is None:
+        mut = plan.mutations[0]
+        words = _words(ctx.message)
+        target_label = labels.get(mut.target, "")
+        if words and target_label and not _label_supports(words, target_label):
+            best, score = _best_item(words, ctx.active_items)
+            if best is not None and best["id"] != mut.target and score >= _MATCH:
+                plan.mutations = []
+                plan.confirm = _confirm_did_you_mean(best, mut.kind)
 
 
 def _is_typo_correction(message: str) -> bool:
@@ -671,5 +790,20 @@ def reconcile(actions: list, ctx) -> Plan:
                 # "Hobbie*": a texting typo-fix of a prior message, not a task.
                 plan.chitchat = "no worries"
             else:
-                plan.questions.append("i did not catch a task there. can you rephrase?")
+                _reconcile_unknown(ctx, plan)
+    _apply_reference_guards(plan, ctx)
     return plan
+
+
+def _reconcile_unknown(ctx, plan: Plan) -> None:
+    """The model caught nothing. If a strong typo match to an item exists ("the
+    table thing" -> "fable"), suggest it rather than nagging to rephrase."""
+    words = _words(ctx.message)
+    best, score = _best_item(words, ctx.active_items) if words else (None, 0.0)
+    if best is not None and score >= _MATCH and plan.confirm is None:
+        if re.search(r"\b(did|done|finish|finished|complete|completed)\b", ctx.message.lower()):
+            plan.confirm = _confirm_did_you_mean(best, "complete")
+        else:
+            plan.questions.append(f'did you mean "{best["label"]}"?')
+        return
+    plan.questions.append("i did not catch a task there. can you rephrase?")
