@@ -17,13 +17,14 @@ def test_valid_config():
     assert c.wake_time == "07:00"
     assert c.timezone == "UTC"
     assert c.telegram_enabled
+    assert c.telegram_token_source == "environment"
 
 
 def test_defaults_applied():
-    c = Config.from_env({})
+    c = Config.from_env({"HOME": "/Users/tester"})
     assert c.model == "qwen2.5:7b-instruct"
     assert c.wake_time == "07:00"
-    assert c.db_path == "hob.db"
+    assert c.db_path == "/Users/tester/Library/Application Support/Hob/hob.db"
     assert c.keep_alive == "-1"  # resident by default
     assert c.reminder_lead == 10  # a heads-up 10 min before, by default
     assert not c.telegram_enabled
@@ -59,6 +60,16 @@ def test_missing_token_disables_telegram():
     env = {k: v for k, v in BASE.items() if k != "HOB_TELEGRAM_TOKEN"}
     c = Config.from_env(env)
     assert not c.telegram_enabled
+    assert c.telegram_token_source == "none"
+
+
+def test_runtime_config_falls_back_to_keychain(monkeypatch, tmp_path):
+    monkeypatch.delenv("HOB_TELEGRAM_TOKEN", raising=False)
+    monkeypatch.setenv("HOB_DB_PATH", str(tmp_path / "hob.db"))
+    monkeypatch.setattr("config.get_telegram_token", lambda: "keychain-token")
+    c = Config.from_env()
+    assert c.telegram_token == "keychain-token"
+    assert c.telegram_token_source == "keychain"
 
 
 def test_bad_wake_time():

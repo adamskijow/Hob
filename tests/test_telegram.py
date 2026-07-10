@@ -6,10 +6,14 @@ offset persistence. Async coroutines are driven with asyncio.run so no
 pytest-asyncio dependency is needed.
 """
 import asyncio
+from datetime import datetime
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
+from app import MessageService
 from adapters.store_sqlite import SqliteStore
 from adapters.telegram_bot import OFFSET_KEY, TelegramAdapter, present
+from tests.fakes import FakeClock, FakeLlm
 
 
 def update(update_id, text, chat_id=42, message_id=None):
@@ -137,3 +141,71 @@ def test_chunks_prefer_line_boundaries():
     chunks = TelegramAdapter._chunks(text, limit=2500)
     assert len(chunks) == 3
     assert all(len(chunk) <= 2500 for chunk in chunks)
+
+
+class FailOnceBot(FakeBot):
+    def __init__(self, batches):
+        super().__init__(batches)
+        self.failures = 1
+
+    async def send_message(self, chat_id, text, **kwargs):
+        if self.failures:
+            self.failures -= 1
+            raise OSError("offline")
+        self.sent.append((chat_id, text))
+        return SimpleNamespace(message_id=77)
+
+
+def _capture_service(store, llm, *, retry=True):
+    return MessageService(
+        store,
+        FakeClock(datetime(2026, 7, 10, 9, 0, tzinfo=ZoneInfo("America/New_York"))),
+        llm,
+        "America/New_York",
+        retry_model_outages=retry,
+    )
+
+
+def test_model_outage_keeps_inbound_message_until_automatic_retry():
+    class Down:
+        def complete_json(self, prompt, schema, temperature=0.0):
+            raise OSError("model down")
+
+    store = SqliteStore(":memory:")
+    service = _capture_service(store, Down())
+    bot = FakeBot([[update(20, "buy milk")], []])
+    adapter = TelegramAdapter(store, service.handle, bot=bot)
+
+    asyncio.run(adapter.poll_once())
+    assert store.get_meta(OFFSET_KEY) == "21"
+    assert store.queue_counts() == (1, 0, 1)
+    assert store.open_items() == []
+    assert bot.sent == []
+
+    service._llm = FakeLlm(
+        {"actions": [{"type": "capture", "task": "buy milk", "raw": "buy milk"}]}
+    )
+    asyncio.run(adapter.poll_once())
+    assert store.queue_counts() == (0, 0, 0)
+    assert [item.task for item in store.open_items()] == ["buy milk"]
+    assert bot.sent == [(42, 'Got it: "Buy milk"')]
+
+
+def test_outbox_retries_reply_without_reapplying_state():
+    store = SqliteStore(":memory:")
+    service = _capture_service(
+        store,
+        FakeLlm({"actions": [{"type": "capture", "task": "call vet", "raw": "call vet"}]}),
+    )
+    bot = FailOnceBot([[update(30, "call vet")], []])
+    adapter = TelegramAdapter(store, service.handle, bot=bot)
+
+    asyncio.run(adapter.poll_once())
+    assert len(store.open_items()) == 1
+    assert store.queue_counts() == (0, 1, 0)
+    assert bot.sent == []
+
+    asyncio.run(adapter.poll_once())
+    assert len(store.open_items()) == 1
+    assert store.queue_counts() == (0, 0, 0)
+    assert bot.sent == [(42, 'Got it: "Call vet"')]

@@ -19,9 +19,11 @@ core/         pure, zero I/O, fully tested, time injected
   recurrence.py   recurring-rule parsing + next-occurrence math
   undo.py         action-log replay / revert (operates on snapshots)
 adapters/     all I/O lives here
-  store_sqlite.py SQLite Store
+  store_sqlite.py SQLite Store, transactions, durable inbox/outbox
+  data_files.py   verified backup restore and JSON import
+  keychain.py     macOS Keychain credential storage
   llm_ollama.py   Ollama structured-output client
-  telegram_bot.py long-poll loop, offset persistence
+  telegram_bot.py long-poll loop, durable ingestion and delivery
   clock.py        real clock
   scheduler.py    morning-digest timer + catch-up-on-wake
 app.py        composition root: wire adapters into core, run the daemon
@@ -56,3 +58,22 @@ to a search phrase. The edge validates every id against the current store and
 falls back deterministically on malformed output or an outage. The model cannot
 create, complete, move, or delete through these read-only passes; requested
 changes still use the interpreter, planner, action log, and undo path above.
+
+## Transaction and delivery boundary
+
+Telegram updates first become normalized rows in `inbox`; only after that
+commit does Hob advance the polling offset. Processing a row nests the entire
+message service inside one SQLite transaction. Item mutations, setting changes,
+the action log, pending clarification/confirmation, focus, and the reply's
+`outbox` row therefore commit or roll back together.
+
+Outbox delivery happens after commit. A failed send remains pending and is
+retried in order. Stable keys deduplicate digests, recaps, reminders, and
+message replies. Like every system built on a remote API without an idempotency
+key, there is one unavoidable at-least-once edge: a process killed after
+Telegram accepts a send but before Hob records Telegram's response can produce
+a duplicate message. It cannot duplicate the underlying task mutation.
+
+A process-lifetime advisory lease prevents two Hob daemons from opening the
+same data path and makes restore/import refuse to replace a database while its
+daemon is live. Backup and export remain safe against a running database.

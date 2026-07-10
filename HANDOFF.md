@@ -11,8 +11,9 @@ snapshot.
 - **Live and in daily use.** Runs as a `launchd` daemon on macOS, with
   [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive. Model:
   `qwen2.5:14b-instruct` (7b works; 14b is more reliable on dense messages).
-- **Released:** v0.2.0. The next release is version 0.3.0; schema remains 7.
-- **Green:** `uv run pytest` (250 passing) and the real-model eval
+- **Released:** v0.4.0. Schema 8 adds a durable Telegram inbox and outbox; an
+  automatic verified backup is made before migrating a v7 database.
+- **Green:** `uv run pytest` (260 passing) and the real-model eval
   (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m evals.interpreter_eval`,
   53/53).
 
@@ -30,6 +31,13 @@ splitting; portable export and backup; semantic recall; read-only constraint-
 aware daily planning; broader recurrence; the kettle bot avatar; a `doctor`
 preflight and `scripts/setup.sh`. Details in
 [docs/features.md](docs/features.md).
+
+The v0.4 reliability layer commits one user turn atomically, persists Telegram
+updates before offset advancement, retries model outages without asking the
+user to resend, and delivers replies/digests/reminders through a deduplicated
+outbox. `status`, verified `restore`/`import`, macOS Keychain token management,
+app-data defaults outside the checkout, and released-schema migration fixtures
+complete the operational surface.
 
 ## How development goes here
 

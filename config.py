@@ -9,7 +9,10 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from adapters.keychain import get_telegram_token
 
 _WAKE_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 # ollama keep_alive: "-1" (forever), integer seconds ("0", "300"), or a duration
@@ -25,6 +28,7 @@ class ConfigError(Exception):
 @dataclass(frozen=True)
 class Config:
     telegram_token: str
+    telegram_token_source: str  # environment | keychain | none
     allowed_telegram_user_id: int | None  # explicit owner; first /start pairs if unset
     model: str
     wake_time: str  # HH:MM 24h, interpreted in timezone
@@ -42,6 +46,17 @@ class Config:
     @classmethod
     def from_env(cls, env: dict | None = None) -> "Config":
         src = os.environ if env is None else env
+        environment_token = src.get("HOB_TELEGRAM_TOKEN", "").strip()
+        keychain_token = (
+            get_telegram_token() if env is None and not environment_token else None
+        )
+        telegram_token = environment_token or keychain_token or ""
+        if environment_token:
+            token_source = "environment"
+        elif keychain_token:
+            token_source = "keychain"
+        else:
+            token_source = "none"
         owner_raw = src.get("HOB_ALLOWED_TELEGRAM_USER_ID", "").strip()
         try:
             allowed_user = int(owner_raw) if owner_raw else None
@@ -57,12 +72,13 @@ class Config:
                 f"HOB_REMINDER_LEAD must be a whole number of minutes, got {lead_raw!r}"
             ) from exc
         cfg = cls(
-            telegram_token=src.get("HOB_TELEGRAM_TOKEN", "").strip(),
+            telegram_token=telegram_token,
+            telegram_token_source=token_source,
             allowed_telegram_user_id=allowed_user,
             model=src.get("HOB_MODEL", "qwen2.5:7b-instruct").strip(),
             wake_time=src.get("HOB_WAKE_TIME", "07:00").strip(),
             timezone=src.get("HOB_TIMEZONE", "UTC").strip(),
-            db_path=src.get("HOB_DB_PATH", "hob.db").strip(),
+            db_path=_db_path(src, preserve_legacy=env is None),
             ollama_host=src.get("HOB_OLLAMA_HOST", "http://localhost:11434").strip(),
             keep_alive=src.get("HOB_KEEP_ALIVE", "-1").strip(),
             reminder_lead=reminder_lead,
@@ -100,3 +116,15 @@ class Config:
                 f"HOB_EOD_TIME must be HH:MM 24h (or empty to disable), "
                 f"got {self.eod_time!r}"
             )
+
+
+def _db_path(src: dict, *, preserve_legacy: bool) -> str:
+    """Prefer app data outside the checkout without abandoning legacy installs."""
+    explicit = src.get("HOB_DB_PATH", "").strip()
+    if explicit:
+        return explicit
+    legacy = Path.cwd() / "hob.db"
+    if preserve_legacy and legacy.exists():
+        return "hob.db"
+    home = Path(src.get("HOME") or Path.home())
+    return str(home / "Library" / "Application Support" / "Hob" / "hob.db")

@@ -8,9 +8,9 @@ phases land; protocols are structural, so adapters need only match what is used.
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Protocol, runtime_checkable
+from typing import ContextManager, Protocol, runtime_checkable
 
-from core.models import ActionLogEntry, Digest, Item
+from core.models import ActionLogEntry, Digest, InboxEntry, Item, OutboxEntry
 
 
 @runtime_checkable
@@ -92,4 +92,49 @@ class Store(Protocol):
         ...
 
     def set_meta(self, key: str, value: str) -> None:
+        ...
+
+    # one inbound turn is committed or rolled back as a unit
+    def transaction(self) -> ContextManager[None]:
+        ...
+
+    # durable Telegram delivery pipeline
+    def enqueue_inbound(
+        self, key: str, update_id: int, kind: str, payload: dict, created_at: str
+    ) -> None:
+        ...
+
+    def pending_inbound(self, limit: int = 100) -> list[InboxEntry]:
+        ...
+
+    def mark_inbound_attempt(self, key: str, error: str | None = None) -> None:
+        ...
+
+    def mark_inbound_done(self, key: str, completed_at: str) -> None:
+        ...
+
+    def enqueue_outbound(
+        self,
+        dedupe_key: str,
+        chat_id: int,
+        kind: str,
+        text: str,
+        created_at: str,
+        item_id: str | None = None,
+        markup: dict | None = None,
+    ) -> OutboxEntry:
+        ...
+
+    def pending_outbound(self, limit: int = 100) -> list[OutboxEntry]:
+        ...
+
+    def outbound_for_key(self, dedupe_key: str) -> OutboxEntry | None:
+        ...
+
+    def mark_outbound_attempt(self, entry_id: int, error: str | None = None) -> None:
+        ...
+
+    def mark_outbound_sent(
+        self, entry_id: int, sent_at: str, telegram_message_id: int | None
+    ) -> None:
         ...

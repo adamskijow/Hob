@@ -8,7 +8,10 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
 
@@ -17,8 +20,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Verify lockfile
+        run: uv lock --check
+
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --locked
+
+      - name: Verify runtime syntax
+        run: uv run python -m compileall -q app.py config.py core adapters
 
       - name: Test
         run: uv run pytest

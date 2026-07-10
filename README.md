@@ -58,9 +58,16 @@ uv run python app.py              # start hob
 ```
 
 Create the bot: message [@BotFather](https://t.me/BotFather), send `/newbot`,
-put the token in `HOB_TELEGRAM_TOKEN`, and message the bot privately with
-`/start`. The first `/start` pairs Hob to that Telegram user; every other user
-and all group chats are rejected. For explicit deployment-time ownership, set
+then store the token in macOS Keychain and message the bot privately with
+`/start`:
+
+```
+uv run python app.py token set
+```
+
+`HOB_TELEGRAM_TOKEN` remains an environment-variable override for development.
+The first `/start` pairs Hob to that Telegram user; every other user and all
+group chats are rejected. For explicit deployment-time ownership, set
 `HOB_ALLOWED_TELEGRAM_USER_ID` before starting.
 
 ## Usage
@@ -89,12 +96,12 @@ All configuration is environment variables:
 
 | Variable | Meaning | Default |
 | --- | --- | --- |
-| `HOB_TELEGRAM_TOKEN` | Bot token from BotFather | (none; bot disabled) |
+| `HOB_TELEGRAM_TOKEN` | Development override for the Keychain token | (Keychain) |
 | `HOB_ALLOWED_TELEGRAM_USER_ID` | Optional explicit owner id; otherwise first private `/start` pairs | (pair on first start) |
 | `HOB_MODEL` | Ollama model name | `qwen2.5:7b-instruct` |
 | `HOB_WAKE_TIME` | Morning digest time, `HH:MM` 24h | `07:00` |
 | `HOB_TIMEZONE` | IANA timezone, e.g. `America/New_York` | `UTC` |
-| `HOB_DB_PATH` | SQLite file path | `hob.db` |
+| `HOB_DB_PATH` | SQLite file path | `~/Library/Application Support/Hob/hob.db`¹ |
 | `HOB_OLLAMA_HOST` | Ollama endpoint | `http://localhost:11434` |
 | `HOB_KEEP_ALIVE` | How long Ollama keeps the model loaded | `-1` (resident) |
 | `HOB_REMINDER_LEAD` | Minutes of heads-up before a timed task | `10` |
@@ -103,12 +110,32 @@ All configuration is environment variables:
 The digest and recap times can also be changed in chat ("send the morning
 digest at 8"), no restart needed.
 
-Back up or export everything:
+¹ Existing installs with `hob.db` in their working directory keep using it
+until `HOB_DB_PATH` is changed, so upgrading does not strand prior data.
+
+Inspect health, back up, export, or recover everything:
 
 ```
+uv run python app.py status
 uv run python app.py backup /safe/place/hob-backup.db
 uv run python app.py export /safe/place/hob-export.json
+uv run python app.py restore /safe/place/hob-backup.db
+uv run python app.py import /safe/place/hob-export.json
 ```
+
+Backup files are integrity-checked after writing. Restore and import validate a
+candidate in isolation, save the current database beside it, and only then swap
+the data file atomically.
+
+## Reliability
+
+Hob persists each Telegram update before advancing the polling offset. The
+task mutations, settings, undo history, conversational state, and reply for one
+message commit as a single transaction. If Ollama is temporarily unavailable,
+the original message stays in the inbox and is retried automatically; the user
+does not need to resend it. Replies, reminders, digests, and recaps use a
+deduplicated outbox, so a network failure after applying a task does not lose
+the acknowledgement or apply the task twice.
 
 ## Docs
 

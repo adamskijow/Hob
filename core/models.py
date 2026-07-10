@@ -73,6 +73,40 @@ class ActionLogEntry:
     id: int | None = None
 
 
+@dataclass
+class InboxEntry:
+    """A normalized Telegram update waiting for durable processing."""
+
+    key: str
+    update_id: int
+    kind: str
+    payload: dict
+    status: str = "pending"
+    attempts: int = 0
+    last_error: str | None = None
+    created_at: str = ""
+    completed_at: str | None = None
+
+
+@dataclass
+class OutboxEntry:
+    """A Telegram delivery committed alongside the state that produced it."""
+
+    id: int
+    dedupe_key: str
+    chat_id: int
+    kind: str
+    text: str
+    item_id: str | None = None
+    markup: dict | None = None
+    status: str = "pending"
+    attempts: int = 0
+    last_error: str | None = None
+    created_at: str = ""
+    sent_at: str | None = None
+    telegram_message_id: int | None = None
+
+
 # Actions: the model's proposal, parsed from forced JSON. The core validates and
 # reconciles these before anything touches the store. Capture and Unknown are
 # used from Phase 5; the rest come online in Phase 7.

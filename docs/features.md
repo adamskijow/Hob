@@ -127,3 +127,14 @@ The first private `/start` pairs Hob to one Telegram user unless
 chats cannot read or mutate the shared task store or redirect its digest.
 `python app.py backup` creates a consistent SQLite backup; `python app.py export`
 writes portable JSON containing tasks, history, digests, and settings.
+
+The Telegram token can live in macOS Keychain (`python app.py token set`) rather
+than plaintext deployment configuration. `python app.py status` reports local
+database, queue, pairing, digest, and model health without exposing task text or
+secrets. Verified `restore` and `import` commands safety-backup current data
+before an atomic replacement.
+
+Every Telegram update is durable before its polling offset advances. One user
+turn—including mutations, settings, undo history, clarification state, and its
+reply—commits atomically. Temporary model failures retry the original inbox row;
+delivery failures retry a deduplicated outbox without applying the task twice.

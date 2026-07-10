@@ -72,3 +72,23 @@ def test_digest_not_double_fired_same_day_after_restart():
     )
     assert asyncio.run(sched.tick()) is False
     assert fired == []
+
+
+def test_atomic_message_rolls_back_partial_capture_on_store_failure():
+    store = SqliteStore(":memory:")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, capture_llm("buy milk"), "America/New_York")
+    original = store.append_actions
+
+    def fail_once(entries):
+        store.append_actions = original
+        raise RuntimeError("simulated kill point")
+
+    store.append_actions = fail_once
+    try:
+        svc.handle(msg("buy milk", 300))
+    except RuntimeError:
+        pass
+    assert store.open_items() == []
+    assert store.get_meta("chat_id") is None
+    assert store.next_item_id() == "a1"

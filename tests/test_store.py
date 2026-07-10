@@ -7,7 +7,7 @@ from core.models import (
     DigestItem,
     Item,
 )
-from adapters.store_sqlite import SqliteStore
+from adapters.store_sqlite import SCHEMA_VERSION, SqliteStore
 
 
 def make_item(id, task="t", status=STATUS_OPEN, created_at="2026-06-29T09:00:00"):
@@ -145,3 +145,56 @@ def test_export_and_backup_include_user_data(tmp_path):
     assert copied.get_item("a1").task == "portable task"
     copied.close()
     s.close()
+
+
+def test_transaction_rolls_back_every_store_change():
+    s = mem()
+    try:
+        with s.transaction():
+            item_id = s.next_item_id()
+            s.add_item(make_item(item_id, "do not keep"))
+            s.set_meta("pending", "question")
+            raise RuntimeError("kill point")
+    except RuntimeError:
+        pass
+    assert s.open_items() == []
+    assert s.get_meta("pending") is None
+    assert s.next_item_id() == "a1"
+
+
+def test_released_v7_fixture_migrates_with_backup_and_data(tmp_path):
+    import sqlite3
+    from pathlib import Path
+
+    db = tmp_path / "hob.db"
+    fixture = Path(__file__).parent / "fixtures" / "schema_v7.sql"
+    conn = sqlite3.connect(db)
+    conn.executescript(fixture.read_text(encoding="utf-8"))
+    conn.close()
+
+    with SqliteStore(str(db)) as migrated:
+        assert migrated.schema_version == SCHEMA_VERSION
+        assert migrated.get_item("a1").note == "ask about trip"
+        migrated.enqueue_inbound("telegram:1", 1, "noop", {}, "now")
+        assert len(migrated.pending_inbound()) == 1
+
+    backups = list(tmp_path.glob("hob.db.pre-v7-to-v8-*.bak"))
+    assert len(backups) == 1
+    old = sqlite3.connect(backups[0])
+    assert old.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert old.execute("SELECT task FROM items WHERE id='a1'").fetchone()[0] == "call mum"
+    old.close()
+
+
+def test_outbox_dedupe_and_delivery_state():
+    s = mem()
+    first = s.enqueue_outbound("digest:today", 1, "digest", "hello", "now")
+    again = s.enqueue_outbound("digest:today", 1, "digest", "changed", "later")
+    assert again.id == first.id
+    assert len(s.pending_outbound()) == 1
+    s.mark_outbound_attempt(first.id, "offline")
+    assert s.pending_outbound()[0].attempts == 1
+    s.mark_outbound_sent(first.id, "later", 99)
+    sent = s.outbound_for_key("digest:today")
+    assert sent.status == "sent"
+    assert sent.telegram_message_id == 99

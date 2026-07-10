@@ -9,10 +9,12 @@ fake clock, and a fake LLM; the daemon wiring lives in _run_daemon.
 from __future__ import annotations
 
 import asyncio
+import getpass
 import json
 import logging
 import os
 import signal
+import sqlite3
 import sys
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
@@ -28,6 +30,7 @@ from core.digest import (
     select_digest_items,
 )
 from core.interpreter import MODEL_UNREACHABLE, interpret
+from core.errors import RetryableMessageError
 from core.models import (
     SOURCE_CAPTURE,
     STATUS_DONE,
@@ -43,7 +46,20 @@ from core.models import (
 from core.planner import Mutation, QueryIntent, SettingChange, reconcile
 from core.ports import Clock, Llm, Store
 from core.undo import plan_undo
+from core.version import __version__
 from adapters.clock import SystemClock
+from adapters.data_files import (
+    DatabaseBusyError,
+    database_lease,
+    import_export,
+    restore_database,
+)
+from adapters.keychain import (
+    KeychainError,
+    delete_telegram_token,
+    get_telegram_token,
+    set_telegram_token,
+)
 from adapters.llm_ollama import OllamaLlm
 from adapters.scheduler import DigestScheduler
 from adapters.store_sqlite import SqliteStore
@@ -153,6 +169,29 @@ Search phrase: {term}
 Open tasks: {items}
 """
 
+LOG_FORMAT = "%(asctime)s %(name)s %(levelname)s %(message)s"
+
+
+class _RedactingFormatter(logging.Formatter):
+    """Last-line defense against a transport exception rendering a bot token."""
+
+    def __init__(self, secret: str) -> None:
+        super().__init__(LOG_FORMAT)
+        self._secret = secret
+
+    def format(self, record: logging.LogRecord) -> str:
+        rendered = super().format(record)
+        return (
+            rendered.replace(self._secret, "[REDACTED]")
+            if self._secret
+            else rendered
+        )
+
+
+def _redact_logging(secret: str) -> None:
+    for handler in logging.getLogger().handlers:
+        handler.setFormatter(_RedactingFormatter(secret))
+
 
 def _is_affirmation(text: str) -> bool:
     return text in _AFFIRMATIONS or text.startswith("yes")
@@ -218,6 +257,7 @@ class MessageService:
         wake_time: str = "07:00",
         allowed_user_id: int | None = None,
         eod_time: str = "20:30",
+        retry_model_outages: bool = False,
     ) -> None:
         self._store = store
         self._clock = clock
@@ -226,6 +266,7 @@ class MessageService:
         self._wake_time = wake_time
         self._allowed_user_id = allowed_user_id
         self._eod_time = eod_time
+        self._retry_model_outages = retry_model_outages
 
     def _welcome(self) -> str:
         return (
@@ -266,6 +307,11 @@ class MessageService:
         return f"{msg.chat_id}:{msg.message_id}"
 
     def handle(self, msg: InboundMessage) -> str:
+        """Apply one user turn atomically, including settings and conversation state."""
+        with self._store.transaction():
+            return self._handle(msg)
+
+    def _handle(self, msg: InboundMessage) -> str:
         text = msg.text.strip()
         low = text.lower()
         authorized, denial = self._authorize(msg, low)
@@ -397,6 +443,12 @@ class MessageService:
     def handle_reaction(
         self, message_id: int, emojis: list[str], user_id: int | None = None
     ) -> str:
+        with self._store.transaction():
+            return self._handle_reaction(message_id, emojis, user_id)
+
+    def _handle_reaction(
+        self, message_id: int, emojis: list[str], user_id: int | None = None
+    ) -> str:
         """A reaction on a Hob message that maps to an item: a thumbs-up family
         emoji completes it, a thumbs-down drops it. Reactions on anything else
         (hearts on chit-chat) are appreciation, not instructions: ignored."""
@@ -429,6 +481,16 @@ class MessageService:
         return self._reply(applied, [], [])
 
     def handle_callback(
+        self,
+        callback_id: str,
+        data: str,
+        user_id: int | None,
+        chat_id: int | None,
+    ) -> str:
+        with self._store.transaction():
+            return self._handle_callback(callback_id, data, user_id, chat_id)
+
+    def _handle_callback(
         self,
         callback_id: str,
         data: str,
@@ -502,6 +564,8 @@ class MessageService:
             log.warning("model unreachable; not applying message %s", message_id)
             if restore_on_outage:
                 self._restore_batch(restore_on_outage)
+            if self._retry_model_outages:
+                raise RetryableMessageError("local model unavailable")
             return "i can't reach the model right now. give it a few seconds and resend."
         plan = reconcile(actions, ctx)
         if plan.undo:  # "scratch that" / "undo that"
@@ -1043,7 +1107,12 @@ class DigestService:
             return False
         # Send first; only record the digest once it is actually delivered, so a
         # send failure retries cleanly without leaving orphan digest rows.
-        sent_id = await self._send(int(chat), text)
+        try:
+            sent_id = await self._send(
+                int(chat), text, dedupe_key=f"digest:{today}"
+            )
+        except TypeError:
+            sent_id = await self._send(int(chat), text)
         self._store.save_digest(digest)
         nudge = digest_nudge_item(ordered, today, waiting)
         if nudge is not None and isinstance(sent_id, int):
@@ -1074,11 +1143,14 @@ class EODService:
         if not on_deck:
             return True  # nothing was on deck; nothing to recap, day is done
         lines = "\n".join(f"{n}: {i.task}" for n, i in enumerate(on_deck, start=1))
-        await self._send(
-            int(chat),
+        text = (
             "evening. what got done today? tell me and i'll check them off.\n"
-            + lines,
+            + lines
         )
+        try:
+            await self._send(int(chat), text, dedupe_key=f"eod:{today}")
+        except TypeError:
+            await self._send(int(chat), text)
         return True
 
 
@@ -1116,7 +1188,15 @@ class ReminderService:
             if item.note:
                 text += f" ({item.note})"
             try:
-                sent_id = await self._send(int(chat), text, item.id)
+                sent_id = await self._send(
+                    int(chat),
+                    text,
+                    item.id,
+                    dedupe_key=(
+                        f"reminder:{item.id}:"
+                        f"{item.snooze_until or due_at}:{item.updated_at}"
+                    ),
+                )
             except TypeError:
                 # Small fake/custom adapters may still implement send(chat, text).
                 sent_id = await self._send(int(chat), text)
@@ -1172,6 +1252,7 @@ async def _run_daemon(cfg: Config, store: SqliteStore) -> None:
         cfg.wake_time,
         cfg.allowed_telegram_user_id,
         cfg.eod_time,
+        retry_model_outages=True,
     )
     telegram = TelegramAdapter(
         store, service.handle, token=cfg.telegram_token,
@@ -1218,10 +1299,10 @@ def _doctor() -> int:
 
     ok = True
     if cfg.telegram_enabled:
-        print("  OK   HOB_TELEGRAM_TOKEN is set")
+        print(f"  OK   Telegram token loaded from {cfg.telegram_token_source}")
     else:
-        print("  WARN HOB_TELEGRAM_TOKEN not set: create a bot with @BotFather and "
-              "set it (the bot will not run without it)")
+        print("  WARN Telegram token not found: create a bot with @BotFather and "
+              "run `python app.py token set`")
         ok = False
     try:
         SqliteStore(cfg.db_path).close()
@@ -1245,6 +1326,81 @@ def _doctor() -> int:
     return 0 if ok else 1
 
 
+def _status(cfg: Config) -> int:
+    """Local operational snapshot; never prints secrets or message content."""
+    print(f"hob {__version__} status")
+    ok = True
+    try:
+        with SqliteStore(cfg.db_path) as store:
+            healthy, detail = store.integrity_check()
+            pending_in, pending_out, failed_in = store.queue_counts()
+            print(
+                f"  {'OK  ' if healthy else 'FAIL'} database: {cfg.db_path} "
+                f"(schema {store.schema_version}, {detail})"
+            )
+            print(f"  INFO open tasks: {len(store.open_items())}")
+            print(
+                f"  {'OK  ' if not pending_in and not pending_out else 'WARN'} queues: "
+                f"inbound={pending_in} outbound={pending_out} failed={failed_in}"
+            )
+            owner = store.get_meta(OWNER_USER_KEY)
+            offset = store.get_meta("tg_offset") or "0"
+            digest_date = store.get_meta("last_digest_date") or "never"
+            eod_date = store.get_meta("last_eod_date") or "never"
+            print(
+                f"  INFO Telegram: token={cfg.telegram_token_source} "
+                f"owner={'paired' if owner or cfg.allowed_telegram_user_id else 'unpaired'} "
+                f"offset={offset}"
+            )
+            print(f"  INFO last morning digest: {digest_date}; evening recap: {eod_date}")
+            ok = ok and healthy
+    except Exception as exc:  # noqa: BLE001
+        print(f"  FAIL database: {exc}")
+        ok = False
+
+    llm = OllamaLlm(cfg.model, cfg.ollama_host)
+    try:
+        ready = _model_ready(llm, cfg.model)
+        print(
+            f"  {'OK  ' if ready else 'FAIL'} model: {cfg.model} at {cfg.ollama_host}"
+        )
+        ok = ok and ready
+    except Exception:  # noqa: BLE001
+        print(f"  FAIL model: Ollama unavailable at {cfg.ollama_host}")
+        ok = False
+    return 0 if ok else 1
+
+
+def _token_command(argv: list[str]) -> int:
+    action = argv[1] if len(argv) > 1 else "status"
+    try:
+        if action == "set":
+            token = getpass.getpass("Telegram bot token: ").strip()
+            set_telegram_token(token)
+            print("hob: Telegram token saved in macOS Keychain")
+            return 0
+        if action == "delete":
+            removed = delete_telegram_token()
+            print(
+                "hob: Keychain token deleted"
+                if removed
+                else "hob: no Keychain token found"
+            )
+            return 0
+        if action == "status":
+            print(
+                "hob: Telegram token is stored in macOS Keychain"
+                if get_telegram_token()
+                else "hob: no Telegram token in macOS Keychain"
+            )
+            return 0
+    except KeychainError as exc:
+        print(f"hob: Keychain error: {exc}", file=sys.stderr)
+        return 1
+    print("usage: python app.py token [status|set|delete]", file=sys.stderr)
+    return 2
+
+
 def _export_or_backup(cfg: Config, argv: list[str]) -> int:
     command = argv[0]
     default = (
@@ -1253,6 +1409,11 @@ def _export_or_backup(cfg: Config, argv: list[str]) -> int:
         else f"hob-backup-{datetime.now().date().isoformat()}.db"
     )
     destination = Path(argv[1] if len(argv) > 1 else default).expanduser()
+    if destination.resolve() == Path(cfg.db_path).expanduser().resolve():
+        print(
+            "hob: destination must not overwrite the live database", file=sys.stderr
+        )
+        return 2
     destination.parent.mkdir(parents=True, exist_ok=True)
     with SqliteStore(cfg.db_path) as store:
         if command == "export":
@@ -1266,15 +1427,39 @@ def _export_or_backup(cfg: Config, argv: list[str]) -> int:
     return 0
 
 
+def _restore_or_import(cfg: Config, argv: list[str]) -> int:
+    command = argv[0]
+    if len(argv) != 2:
+        print(f"usage: python app.py {command} SOURCE", file=sys.stderr)
+        return 2
+    source = str(Path(argv[1]).expanduser())
+    try:
+        with database_lease(cfg.db_path):
+            safety = (
+                restore_database(source, cfg.db_path)
+                if command == "restore"
+                else import_export(source, cfg.db_path)
+            )
+    except (DatabaseBusyError, OSError, ValueError, sqlite3.DatabaseError) as exc:
+        print(f"hob: {command} failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"hob: {command} verified and installed at {cfg.db_path}")
+    if safety:
+        print(f"hob: previous data saved at {safety}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
+        level=logging.INFO, format=LOG_FORMAT
     )
     # python-telegram-bot's httpx logs every getUpdates at INFO with the bot
     # token in the URL. Quiet it so the token never lands in the log file.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    if argv and argv[0] == "token":
+        return _token_command(argv)
     if argv and argv[0] == "doctor":
         return _doctor()
     try:
@@ -1282,9 +1467,14 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"hob: config error: {exc}", file=sys.stderr)
         return 2
+    _redact_logging(cfg.telegram_token)
 
     if argv and argv[0] in ("export", "backup"):
         return _export_or_backup(cfg, argv)
+    if argv and argv[0] in ("restore", "import"):
+        return _restore_or_import(cfg, argv)
+    if argv and argv[0] == "status":
+        return _status(cfg)
 
     log = logging.getLogger("hob")
     log.info(
@@ -1295,22 +1485,25 @@ def main(argv: list[str] | None = None) -> int:
         cfg.db_path,
     )
 
-    store = SqliteStore(cfg.db_path)
     try:
-        if not cfg.telegram_enabled:
-            print(
-                "hob: HOB_TELEGRAM_TOKEN not set, nothing to run. Create a bot "
-                "with @BotFather, set HOB_TELEGRAM_TOKEN, and check setup with "
-                "`python app.py doctor`. See README.",
-                file=sys.stderr,
-            )
-            return 0
-        try:
-            asyncio.run(_run_daemon(cfg, store))
-        except KeyboardInterrupt:
-            log.info("interrupted, shutting down")
-    finally:
-        store.close()
+        with database_lease(cfg.db_path):
+            with SqliteStore(cfg.db_path) as store:
+                if not cfg.telegram_enabled:
+                    print(
+                        "hob: Telegram token not configured, nothing to run. "
+                        "Create a bot with @BotFather, run `python app.py token set`, "
+                        "and check setup with "
+                        "`python app.py doctor`. See README.",
+                        file=sys.stderr,
+                    )
+                    return 0
+                try:
+                    asyncio.run(_run_daemon(cfg, store))
+                except KeyboardInterrupt:
+                    log.info("interrupted, shutting down")
+    except DatabaseBusyError as exc:
+        print(f"hob: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 

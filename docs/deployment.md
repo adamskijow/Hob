@@ -17,8 +17,8 @@ uv run --directory /path/to/hob python app.py
 
 `launchd` sets the environment, runs that command, and restarts it on exit. Copy
 [`deploy/com.local.hob.plist`](../deploy/com.local.hob.plist) to
-`~/Library/LaunchAgents/`, edit the paths and fill `HOB_TELEGRAM_TOKEN`, then
-`chmod 600` it (it holds the token) and load it with
+`~/Library/LaunchAgents/`, edit the paths, store the bot token with
+`uv run python app.py token set`, and load it with
 `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.local.hob.plist`.
 That template expands the minimal plist below with `WorkingDirectory`, `PATH`,
 and `HOB_KEEP_ALIVE`:
@@ -41,22 +41,21 @@ and `HOB_KEEP_ALIVE`:
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>HOB_TELEGRAM_TOKEN</key> <string>123456:ABC-DEF...</string>
     <key>HOB_ALLOWED_TELEGRAM_USER_ID</key> <string>123456789</string>
     <key>HOB_MODEL</key>          <string>qwen2.5:7b-instruct</string>
     <key>HOB_WAKE_TIME</key>      <string>07:00</string>
     <key>HOB_TIMEZONE</key>       <string>America/New_York</string>
-    <key>HOB_DB_PATH</key>        <string>/Users/you/hob/hob.db</string>
+    <key>HOB_DB_PATH</key>        <string>/Users/you/Library/Application Support/Hob/hob.db</string>
   </dict>
   <key>KeepAlive</key>          <true/>
-  <key>StandardOutPath</key>    <string>/Users/you/hob/hob.log</string>
-  <key>StandardErrorPath</key>  <string>/Users/you/hob/hob.log</string>
+  <key>StandardOutPath</key>    <string>/Users/you/Library/Application Support/Hob/hob.log</string>
+  <key>StandardErrorPath</key>  <string>/Users/you/Library/Application Support/Hob/hob.log</string>
 </dict>
 </plist>
 ```
 
-Keep the plist readable only by your user; it holds the bot token. The explicit
-owner id is recommended for unattended installs. If omitted, the first private
+The Telegram token lives in the user's macOS Keychain, not in the plist. The
+explicit owner id is recommended for unattended installs. If omitted, the first private
 `/start` pairs the database to that Telegram user. Group chats are always
 rejected.
 
@@ -70,16 +69,17 @@ short.
 
 **Logging.** Hob logs to stderr (and stdout). Under `launchd`, point
 `StandardErrorPath` at a file as above. The bot token is kept out of the log.
-Hob does not manage its own log files.
+Create `~/Library/Application Support/Hob` before loading the agent. Hob does
+not manage its own log files.
 
 **Restart behavior and recovery.** Hob is safe to kill at any moment.
 
-- Telegram polling resumes from the update offset saved in the database, so the
-  backlog is not reprocessed on restart. A hard kill mid long-poll causes a brief
-  `Conflict` while Telegram releases the old connection; Hob backs off and
-  resumes, and queued messages are delivered, not lost.
-- If a crash redelivers a message whose changes were already applied, Hob
-  recognizes it by its message id and does not apply or reply twice.
+- Telegram updates are normalized into a durable inbox before the polling
+  offset advances. Model outages and processing failures leave the message
+  pending for automatic retry instead of asking the user to resend it.
+- Each message's mutations, settings, undo log, conversational state, and reply
+  outbox row commit as one transaction. Delivery failures retry the outbox
+  without reapplying state. Stable keys deduplicate proactive messages too.
 - The morning digest fires once per day. macOS sleep does not eat it: an
   in-process timer cannot fire while asleep, so on startup and on every tick Hob
   checks the last sent date and fires the digest if today's is still owed and the
@@ -88,10 +88,17 @@ Hob does not manage its own log files.
 - Model timeouts or malformed output degrade to a clarifying question rather than
   a crash.
 
-**Backups and export.** Both commands open the live database consistently; the
-SQLite backup API includes committed WAL changes.
+**Backups and recovery.** Backups include committed WAL changes and are
+integrity-checked after writing. Restore/import verify a candidate in isolation,
+safety-backup current data, and replace the database atomically.
+The daemon holds an advisory database lease: restore/import will refuse to run
+until the LaunchAgent is stopped, preventing a live process from continuing on
+the replaced file. A second daemon using the same data path is rejected too.
 
 ```
 uv run --directory /path/to/hob python app.py backup /safe/hob.db
 uv run --directory /path/to/hob python app.py export /safe/hob.json
+uv run --directory /path/to/hob python app.py restore /safe/hob.db
+uv run --directory /path/to/hob python app.py import /safe/hob.json
+uv run --directory /path/to/hob python app.py status
 ```

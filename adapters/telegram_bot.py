@@ -14,11 +14,16 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 import re
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
+from core.errors import RetryableMessageError
+from core.models import InboxEntry
 from core.ports import Store
 
 log = logging.getLogger("hob.telegram")
@@ -52,6 +57,10 @@ def present(text: str) -> str:
 
 # meta key holding the next update offset to request.
 OFFSET_KEY = "tg_offset"
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 # Handler: given an inbound message, optionally returns a reply string.
 Handler = Callable[["InboundMessage"], "str | None | Awaitable[str | None]"]
@@ -130,9 +139,8 @@ class TelegramAdapter:
     def stop(self) -> None:
         self._stop.set()
 
-    async def _dispatch(self, msg: InboundMessage) -> None:
-        # Local models can take a few seconds. Give immediate feedback instead of
-        # leaving the user staring at a silent chat while interpretation runs.
+    async def _dispatch(self, msg: InboundMessage, inbox_key: str) -> None:
+        """Process a normalized message and commit its reply to the outbox."""
         send_action = getattr(self._bot, "send_chat_action", None)
         if send_action is not None:
             try:
@@ -144,21 +152,31 @@ class TelegramAdapter:
             reply = await reply
         if reply:
             raw_confirm = self._store.get_meta("pending_confirm")
-            markup = self._confirm_markup(raw_confirm) if raw_confirm else None
-            await self._send_text(msg.chat_id, present(reply), reply_markup=markup)
+            markup = self._confirm_markup_data(raw_confirm) if raw_confirm else None
+            self._store.enqueue_outbound(
+                f"{inbox_key}:reply",
+                msg.chat_id,
+                "reply",
+                reply,
+                _utc_now(),
+                markup=markup,
+            )
+
+    @staticmethod
+    def _confirm_markup_data(raw_confirm: str) -> dict:
+        token = ""
+        try:
+            data = json.loads(raw_confirm)
+            token = str(data.get("id", "")) if isinstance(data, dict) else ""
+        except (TypeError, ValueError):
+            pass
+        return {"type": "confirm", "token": token}
 
     @staticmethod
     def _confirm_markup(raw_confirm: str):
         import telegram
 
-        token = ""
-        try:
-            import json
-
-            data = json.loads(raw_confirm)
-            token = str(data.get("id", "")) if isinstance(data, dict) else ""
-        except (TypeError, ValueError):
-            pass
+        token = TelegramAdapter._confirm_markup_data(raw_confirm)["token"]
         suffix = f":{token}" if token else ""
 
         return telegram.InlineKeyboardMarkup(
@@ -171,6 +189,18 @@ class TelegramAdapter:
                 ),
             ]]
         )
+
+    @staticmethod
+    def _stored_markup(data: dict | None):
+        if not data:
+            return None
+        if data.get("type") == "confirm":
+            return TelegramAdapter._confirm_markup(
+                json.dumps({"id": data.get("token", "")})
+            )
+        if data.get("type") == "item" and data.get("item_id"):
+            return TelegramAdapter._item_markup(str(data["item_id"]))
+        return None
 
     @staticmethod
     def _item_markup(item_id: str):
@@ -221,52 +251,8 @@ class TelegramAdapter:
                 first_id = getattr(sent, "message_id", None)
         return first_id
 
-    async def _handle_reaction(self, reaction: object) -> None:
-        """A reaction changed on some message; pass the newly added emojis to
-        the handler, which decides whether they mean anything."""
-        if self._reaction_handler is None:
-            return
-        old = {getattr(r, "emoji", None) for r in getattr(reaction, "old_reaction", [])}
-        added = [
-            e for e in (
-                getattr(r, "emoji", None) for r in getattr(reaction, "new_reaction", [])
-            )
-            if e and e not in old
-        ]
-        if not added:
-            return
-        reply = self._reaction_handler(
-            reaction.message_id,
-            added,
-            getattr(getattr(reaction, "user", None), "id", None),
-        )
-        if inspect.isawaitable(reply):
-            reply = await reply
-        if reply:
-            await self._bot.send_message(
-                chat_id=reaction.chat.id, text=present(reply)
-            )
-
-    async def _handle_callback(self, callback: object) -> None:
-        answer = getattr(callback, "answer", None)
-        if answer is not None:
-            await answer()
-        if self._callback_handler is None:
-            return
-        message = getattr(callback, "message", None)
-        chat = getattr(message, "chat", None)
-        reply = self._callback_handler(
-            str(getattr(callback, "id", "")),
-            str(getattr(callback, "data", "")),
-            getattr(getattr(callback, "from_user", None), "id", None),
-            getattr(chat, "id", None),
-        )
-        if inspect.isawaitable(reply):
-            reply = await reply
-        if reply and chat is not None:
-            await self._send_text(chat.id, present(reply))
-
-    async def _handle_update(self, update: object) -> None:
+    async def _ingest_update(self, update: object) -> None:
+        """Persist a minimal update before advancing Telegram's polling offset."""
         message = getattr(update, "message", None)
         edited = False
         if message is None:
@@ -274,29 +260,141 @@ class TelegramAdapter:
             message = getattr(update, "edited_message", None)
             edited = message is not None
         text = getattr(message, "text", None) if message is not None else None
+        kind = "noop"
+        payload: dict = {}
         if message is not None and text is not None:
             replied = getattr(message, "reply_to_message", None)
-            msg = InboundMessage(
-                text=text,
-                chat_id=message.chat.id,
-                message_id=message.message_id,
-                update_id=update.update_id,
-                user_id=getattr(getattr(message, "from_user", None), "id", None),
-                chat_type=getattr(message.chat, "type", None),
-                reply_to=getattr(replied, "message_id", None),
-                edited=edited,
-                forwarded_from=_forward_name(message),
+            kind = "message"
+            payload = {
+                "text": text,
+                "chat_id": message.chat.id,
+                "message_id": message.message_id,
+                "update_id": update.update_id,
+                "user_id": getattr(getattr(message, "from_user", None), "id", None),
+                "chat_type": getattr(message.chat, "type", None),
+                "reply_to": getattr(replied, "message_id", None),
+                "edited": edited,
+                "forwarded_from": _forward_name(message),
+            }
+        else:
+            reaction = getattr(update, "message_reaction", None)
+            if reaction is not None:
+                old = {
+                    getattr(value, "emoji", None)
+                    for value in getattr(reaction, "old_reaction", [])
+                }
+                added = [
+                    emoji
+                    for emoji in (
+                        getattr(value, "emoji", None)
+                        for value in getattr(reaction, "new_reaction", [])
+                    )
+                    if emoji and emoji not in old
+                ]
+                if added:
+                    kind = "reaction"
+                    payload = {
+                        "message_id": reaction.message_id,
+                        "emojis": added,
+                        "user_id": getattr(getattr(reaction, "user", None), "id", None),
+                        "chat_id": reaction.chat.id,
+                    }
+            callback = getattr(update, "callback_query", None)
+            if callback is not None:
+                answer = getattr(callback, "answer", None)
+                if answer is not None:
+                    try:
+                        await answer()
+                    except Exception:
+                        log.debug("could not acknowledge callback", exc_info=True)
+                callback_message = getattr(callback, "message", None)
+                chat = getattr(callback_message, "chat", None)
+                kind = "callback"
+                payload = {
+                    "callback_id": str(getattr(callback, "id", "")),
+                    "data": str(getattr(callback, "data", "")),
+                    "user_id": getattr(getattr(callback, "from_user", None), "id", None),
+                    "chat_id": getattr(chat, "id", None),
+                }
+
+        key = f"telegram:{update.update_id}"
+        with self._store.transaction():
+            self._store.enqueue_inbound(
+                key, update.update_id, kind, payload, _utc_now()
             )
-            await self._dispatch(msg)
-        reaction = getattr(update, "message_reaction", None)
-        if reaction is not None:
-            await self._handle_reaction(reaction)
-        callback = getattr(update, "callback_query", None)
-        if callback is not None:
-            await self._handle_callback(callback)
-        # Advance past this update only after it is fully handled, so a crash
-        # mid-handling reprocesses just this one, never the whole backlog.
-        self._save_offset(update.update_id + 1)
+            # Once the normalized update is durable, Telegram may safely forget it.
+            self._save_offset(update.update_id + 1)
+
+    async def _process_entry(self, entry: InboxEntry) -> None:
+        payload = entry.payload
+        reply = None
+        chat_id = payload.get("chat_id")
+        if entry.kind == "message":
+            await self._dispatch(InboundMessage(**payload), entry.key)
+            return
+        if entry.kind == "reaction" and self._reaction_handler is not None:
+            reply = self._reaction_handler(
+                int(payload["message_id"]),
+                list(payload.get("emojis", [])),
+                payload.get("user_id"),
+            )
+        elif entry.kind == "callback" and self._callback_handler is not None:
+            reply = self._callback_handler(
+                str(payload.get("callback_id", "")),
+                str(payload.get("data", "")),
+                payload.get("user_id"),
+                chat_id,
+            )
+        if inspect.isawaitable(reply):
+            reply = await reply
+        if reply and chat_id is not None:
+            self._store.enqueue_outbound(
+                f"{entry.key}:reply",
+                int(chat_id),
+                entry.kind,
+                reply,
+                _utc_now(),
+            )
+
+    async def process_pending(self) -> int:
+        """Process durable updates in order; temporary failures remain queued."""
+        completed = 0
+        for entry in self._store.pending_inbound():
+            try:
+                with self._store.transaction():
+                    await self._process_entry(entry)
+                    self._store.mark_inbound_done(entry.key, _utc_now())
+            except RetryableMessageError as exc:
+                self._store.mark_inbound_attempt(entry.key, str(exc))
+                log.warning("telegram: deferred %s: %s", entry.key, exc)
+                break
+            except Exception as exc:
+                self._store.mark_inbound_attempt(entry.key, str(exc))
+                log.exception("telegram: failed to process %s; will retry", entry.key)
+                break
+            completed += 1
+        return completed
+
+    async def flush_outbox(self) -> int:
+        """Deliver committed replies in order; leave failures for the next loop."""
+        delivered = 0
+        for entry in self._store.pending_outbound():
+            try:
+                sent_id = await self._send_text(
+                    entry.chat_id,
+                    present(entry.text),
+                    reply_markup=self._stored_markup(entry.markup),
+                )
+            except Exception as exc:
+                self._store.mark_outbound_attempt(entry.id, str(exc))
+                log.exception("telegram: outbox delivery %s failed; will retry", entry.id)
+                break
+            with self._store.transaction():
+                self._store.mark_outbound_sent(entry.id, _utc_now(), sent_id)
+                if entry.item_id and isinstance(sent_id, int):
+                    self._store.record_sent_ref(sent_id, entry.item_id)
+            delivered += 1
+        return delivered
 
     async def poll_once(self) -> int:
         """One getUpdates round; handle every update. Returns count handled."""
@@ -309,7 +407,9 @@ class TelegramAdapter:
             ],
         )
         for update in updates:
-            await self._handle_update(update)
+            await self._ingest_update(update)
+        await self.process_pending()
+        await self.flush_outbox()
         return len(updates)
 
     async def run(self) -> None:
@@ -317,6 +417,8 @@ class TelegramAdapter:
         log.info("telegram: polling from offset %d", self._load_offset())
         while not self._stop.is_set():
             try:
+                await self.process_pending()
+                await self.flush_outbox()
                 await self.poll_once()
             except asyncio.CancelledError:
                 raise
@@ -324,17 +426,51 @@ class TelegramAdapter:
                 log.exception("telegram: poll error, backing off")
                 await asyncio.sleep(self._error_backoff)
 
-    async def send(self, chat_id: int, text: str) -> int | None:
+    async def _queue_and_send(
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        dedupe_key: str | None = None,
+        kind: str = "proactive",
+        item_id: str | None = None,
+        markup: dict | None = None,
+    ) -> int | None:
+        key = dedupe_key or f"adhoc:{uuid.uuid4()}"
+        entry = self._store.enqueue_outbound(
+            key, chat_id, kind, text, _utc_now(), item_id=item_id, markup=markup
+        )
+        await self.flush_outbox()
+        current = self._store.outbound_for_key(key)
+        if current is None or current.status != "sent":
+            raise RuntimeError(f"Telegram delivery queued but not yet sent: {entry.id}")
+        return current.telegram_message_id
+
+    async def send(
+        self, chat_id: int, text: str, *, dedupe_key: str | None = None
+    ) -> int | None:
         """Send a message; returns its Telegram message id so the caller can
         associate a later reply with what this message was about."""
         self._ensure_bot()
-        return await self._send_text(chat_id, present(text))
+        return await self._queue_and_send(chat_id, text, dedupe_key=dedupe_key)
 
-    async def send_reminder(self, chat_id: int, text: str, item_id: str) -> int | None:
+    async def send_reminder(
+        self,
+        chat_id: int,
+        text: str,
+        item_id: str,
+        *,
+        dedupe_key: str | None = None,
+    ) -> int | None:
         """Send a reminder with fast, deterministic task-action buttons."""
         self._ensure_bot()
-        return await self._send_text(
-            chat_id, present(text), reply_markup=self._item_markup(item_id)
+        return await self._queue_and_send(
+            chat_id,
+            text,
+            dedupe_key=dedupe_key,
+            kind="reminder",
+            item_id=item_id,
+            markup={"type": "item", "item_id": item_id},
         )
 
     async def set_profile_photo(self, photo_path: str) -> bool:
