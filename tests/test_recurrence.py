@@ -36,3 +36,12 @@ def test_describe():
     assert describe("daily") == "daily"
     assert describe("weekdays") == "every weekday"
     assert describe("weekly:mon") == "every monday"
+
+
+def test_multiple_weekdays_monthly_yearly_and_intervals():
+    assert normalize("weekly:monday,friday") == "weekly:mon,fri"
+    assert next_due("weekly:mon,fri", date(2026, 6, 29)) == date(2026, 7, 3)
+    assert next_due("monthly:31", date(2026, 6, 29)) == date(2026, 6, 30)
+    assert next_due("yearly:7-4", date(2026, 6, 29)) == date(2026, 7, 4)
+    assert next_due("every:2:week", date(2026, 6, 29)) == date(2026, 7, 13)
+    assert next_due("every:1:month", date(2026, 1, 31)) == date(2026, 2, 28)

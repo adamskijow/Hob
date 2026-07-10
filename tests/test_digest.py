@@ -4,7 +4,13 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app import DigestService
-from core.digest import digest_owed, priority_mark, render_digest, select_digest_items
+from core.digest import (
+    digest_nudge_item,
+    digest_owed,
+    priority_mark,
+    render_digest,
+    select_digest_items,
+)
 from core.models import Item
 from adapters.store_sqlite import SqliteStore
 from tests.fakes import FakeClock
@@ -164,12 +170,41 @@ def test_eod_service_lists_on_deck_or_skips():
 
 
 def test_render_stale_nudge():
-    out = render_digest([item("a1", "x", due="2026-06-26")], "2026-06-29")
+    out = render_digest(
+        [item("a1", "x", due="2026-06-26", created="2026-06-26T08:00:00")],
+        "2026-06-29",
+    )
     assert "(day 4)" in out
-    assert 'has rolled over 4 days' in out  # the worst offender gets a question
+    assert 'has been on deck 4 days' in out  # the worst offender gets a question
     # under the threshold: marked but not nagged
     quiet = render_digest([item("a1", "x", due="2026-06-28")], "2026-06-29")
-    assert "(day 2)" in quiet and "rolled over" not in quiet
+    assert "(day 2)" in quiet and "has been on deck" not in quiet
+
+
+def test_undated_items_age_and_keep_resets_the_nudge():
+    old = item("a1", "call pool", created="2026-06-25T08:00:00")
+    out = render_digest([old], "2026-06-29")
+    assert "(day 5)" in out and "reply keep" in out
+    assert digest_nudge_item([old], "2026-06-29") is old
+
+    old.updated_at = "2026-06-29T07:00:00"
+    quiet = render_digest([old], "2026-06-29")
+    assert "reply keep" not in quiet
+    assert digest_nudge_item([old], "2026-06-29") is None
+
+
+def test_digest_records_one_actionable_reply_anchor():
+    class SendWithId(FakeSend):
+        async def __call__(self, chat_id, text):
+            await super().__call__(chat_id, text)
+            return 777
+
+    store = SqliteStore(":memory:")
+    store.set_meta("chat_id", "42")
+    store.add_item(item("a1", "old task", created="2026-06-25T08:00:00"))
+    send = SendWithId()
+    asyncio.run(DigestService(store, FakeClock(at(7, 0)), send).fire())
+    assert store.ref_for(777) == "a1"
 
 
 def test_digest_service_sends_and_persists_order():

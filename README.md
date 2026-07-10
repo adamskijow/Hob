@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: MIT -->
 <p align="center">
-  <img src="assets/hob-banner.svg" alt="Hob: text tasks all day, wake to one organized digest" width="100%">
+  <img src="assets/hob-banner.svg" alt="Hob: a realistic day, renegotiated in chat" width="100%">
 </p>
 
 # Hob
@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/LLM-local%20(Ollama)-ff9a3c" alt="Local LLM via Ollama">
 </p>
 
-**Text tasks to a Telegram bot all day; wake to one organized morning digest.**
+**Text Hob what is on your mind; get a realistic day and renegotiate it in chat.**
 
 Hob is a personal task agent that understands plain language, powered by a
 local LLM (Ollama) and run as a long-lived daemon on macOS. It is named for the
@@ -30,6 +30,13 @@ are the point: "already did the prez one", "push the audit to wednesday",
 one natural-language interpreter. When a message is ambiguous, Hob asks instead
 of guessing, and every change is undoable. The model and your data stay on your
 machine; only the Telegram transport leaves it.
+
+Unlike a command parser, Hob can also answer "what should I do next?" or "I
+have 40 minutes and low energy" with a short plan grounded in the actual task
+list. Semantic recall finds related work across labels, notes, projects, and
+forwarded context even when the words do not match exactly. These read-only LLM
+passes validate every returned item id before showing it; mutations still go
+through the deterministic core.
 
 ## Getting started
 
@@ -51,9 +58,10 @@ uv run python app.py              # start hob
 ```
 
 Create the bot: message [@BotFather](https://t.me/BotFather), send `/newbot`,
-then in the bot's settings restrict usage to just yourself (Hob has no per-user
-gate of its own). Put the token in `HOB_TELEGRAM_TOKEN` and message the bot once
-(`/start`); that first message tells Hob where to send the digest.
+put the token in `HOB_TELEGRAM_TOKEN`, and message the bot privately with
+`/start`. The first `/start` pairs Hob to that Telegram user; every other user
+and all group chats are rejected. For explicit deployment-time ownership, set
+`HOB_ALLOWED_TELEGRAM_USER_ID` before starting.
 
 ## Usage
 
@@ -61,14 +69,17 @@ Talk to it like a person:
 
 - "call the vet at 3pm" gets a reminder ping before the time; reply "done" or
   "snooze 20" to the ping, or just react with a thumbs-up to complete it.
-- "take out the trash every monday" recurs; "in a couple days", "end of the
-  month", "this weekend" all resolve to real dates.
+- "take out the trash every monday" recurs; multiple weekdays, monthly/yearly,
+  and intervals such as "every 2 weeks" work too. "In a couple days", "end of
+  the month", and "this weekend" all resolve to real dates.
 - "did everything today but the slides", "push everything to tomorrow", "what's
   overdue", "what did i finish this week", "what am i waiting on".
 - "for the wedding: book the caterer, order flowers" files a tagged project;
   "add a note to the vet one: gate code is 4412" sticks a note.
 - Forward someone's message to capture it, edit a message to correct it, or use
-  `/today`, `/undo`, `/help`.
+  `/today`, `/list`, `/settings`, `/undo`, `/help`.
+- Ask "plan my day", "what should I do next?", or "I have 30 minutes before I
+  leave" for a short plan. Hob proposes; it does not move anything until asked.
 
 The full tour lives in [everything Hob understands](docs/features.md).
 
@@ -79,6 +90,7 @@ All configuration is environment variables:
 | Variable | Meaning | Default |
 | --- | --- | --- |
 | `HOB_TELEGRAM_TOKEN` | Bot token from BotFather | (none; bot disabled) |
+| `HOB_ALLOWED_TELEGRAM_USER_ID` | Optional explicit owner id; otherwise first private `/start` pairs | (pair on first start) |
 | `HOB_MODEL` | Ollama model name | `qwen2.5:7b-instruct` |
 | `HOB_WAKE_TIME` | Morning digest time, `HH:MM` 24h | `07:00` |
 | `HOB_TIMEZONE` | IANA timezone, e.g. `America/New_York` | `UTC` |
@@ -90,6 +102,13 @@ All configuration is environment variables:
 
 The digest and recap times can also be changed in chat ("send the morning
 digest at 8"), no restart needed.
+
+Back up or export everything:
+
+```
+uv run python app.py backup /safe/place/hob-backup.db
+uv run python app.py export /safe/place/hob-export.json
+```
 
 ## Docs
 

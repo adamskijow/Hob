@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from app import MessageService
 from adapters.store_sqlite import SqliteStore
 from adapters.telegram_bot import InboundMessage
+from core.models import Item
 from tests.fakes import FakeClock, FakeLlm
 
 TZ = ZoneInfo("America/New_York")
@@ -72,6 +73,25 @@ def test_today_lists_open_items():
 def test_today_empty():
     svc, _ = service()
     assert svc.handle(msg("/today")) == "nothing on deck"
+
+
+def test_today_excludes_future_while_list_includes_it():
+    svc, store = service()
+    store.add_item(
+        Item(
+            id="a1",
+            raw_text="future",
+            task="future",
+            due_date="2026-07-15",
+            due_time=None,
+            status="open",
+            source="capture",
+            created_at="2026-06-29T08:00:00",
+            updated_at="2026-06-29T08:00:00",
+        )
+    )
+    assert svc.handle(msg("/today")) == "nothing on deck"
+    assert "future" in svc.handle(msg("/list"))
 
 
 def test_help():

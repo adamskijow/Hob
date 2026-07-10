@@ -4,7 +4,7 @@ the resulting Plan. Unlike the unit suite (fake LLM), this exercises the live
 interpreter + planner against Ollama, so it catches prompt/model regressions and
 is the thing to run after tuning the prompt or swapping HOB_MODEL.
 
-    HOB_MODEL=qwen2.5:14b-instruct uv run python evals/interpreter_eval.py
+    HOB_MODEL=qwen2.5:14b-instruct uv run python -m evals.interpreter_eval
 
 Exit code is non-zero if any case fails.
 """
@@ -89,6 +89,10 @@ CASES = [
     Case("take out the trash every monday",
          lambda p: kinds(p) == ["capture"] and p.mutations[0].repeat == "weekly:mon",
          "recurring capture (weekly)"),
+    Case("check the smoke alarms every 2 months",
+         lambda p: kinds(p) == ["capture"]
+         and p.mutations[0].repeat == "every:2:month",
+         "recurring capture (interval)"),
     Case("did everything today",
          lambda p: kinds(p) and all(k == "complete" for k in kinds(p)),
          "bulk complete"),
@@ -111,6 +115,10 @@ CASES = [
     Case("what's overdue",
          lambda p: [q.kind for q in p.queries] == ["overdue"],
          "overdue query"),
+    Case("I have 40 minutes and low energy, what should I do next?",
+         lambda p: p.queries and p.queries[0].kind == "plan"
+         and "40" in (p.queries[0].constraint or ""),
+         "constraint-aware planning query"),
     Case("anything about the audit",
          lambda p: p.queries and p.queries[0].kind == "search"
          and "audit" in (p.queries[0].term or "").lower(),

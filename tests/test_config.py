@@ -27,6 +27,16 @@ def test_defaults_applied():
     assert c.keep_alive == "-1"  # resident by default
     assert c.reminder_lead == 10  # a heads-up 10 min before, by default
     assert not c.telegram_enabled
+    assert c.allowed_telegram_user_id is None
+
+
+def test_allowed_telegram_user_id():
+    assert Config.from_env(
+        {**BASE, "HOB_ALLOWED_TELEGRAM_USER_ID": "12345"}
+    ).allowed_telegram_user_id == 12345
+    for bad in ("abc", "0", "-2"):
+        with pytest.raises(ConfigError):
+            Config.from_env({**BASE, "HOB_ALLOWED_TELEGRAM_USER_ID": bad})
 
 
 def test_reminder_lead_override_and_validation():

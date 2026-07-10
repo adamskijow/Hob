@@ -183,11 +183,12 @@ class Amend:
 
 @dataclass
 class Query:
-    kind: str  # today | date | all | overdue | week | search | done | tag
+    kind: str  # today | date | all | overdue | week | search | done | tag | plan
     when: When | None = None  # typed date intent, for kind=date
     date: str | None = None  # ISO, resolved by the core for kind=date
     term: str | None = None  # free-text search keywords, for kind=search
     tag: str | None = None  # project / list name, for kind=tag
+    constraint: str | None = None  # time/energy/context for a planning request
 
 
 @dataclass

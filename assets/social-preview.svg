@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-labelledby="t d">
   <title id="t">Hob</title>
-  <desc id="d">A personal morning-digest task agent for macOS: text tasks all day, wake to one organized digest.</desc>
+  <desc id="d">A private personal task agent for macOS: a realistic day, renegotiated in chat.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#1b0e08"/><stop offset="1" stop-color="#0c0604"/>
@@ -60,7 +60,7 @@
   <!-- text -->
   <g transform="translate(572 0)">
     <text x="0" y="298" font-family="Georgia, 'Iowan Old Style', 'Times New Roman', serif" font-size="124" font-weight="700" fill="#f7ead8" letter-spacing="1">Hob</text>
-    <text x="4" y="352" font-family="-apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="27" fill="#d8b79b">Text tasks all day. Wake to one organized digest.</text>
+    <text x="4" y="352" font-family="-apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="27" fill="#d8b79b">A realistic day, renegotiated in chat.</text>
     <text x="4" y="398" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="19" fill="#ff9a3c" letter-spacing="0.5">Natural language &#183; Local LLM &#183; launchd &#183; macOS &#183; MIT</text>
   </g>
 </svg>

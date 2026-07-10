@@ -25,8 +25,9 @@ interpreter is the load-bearing component; everything else is plumbing.
 ## Asking instead of guessing
 
 When a message is ambiguous (two possible dates, an unclear reference) Hob asks
-instead of guessing, and it remembers the question: your next message is read as
-the answer. So "lunch with sam thursday or friday" followed by "thursday"
+instead of guessing, and it remembers the question or proposed mutation: your
+next message is read as the answer. So "lunch with sam thursday or friday"
+followed by "thursday"
 captures it for Thursday, rather than the reply being misread on its own. The
 context Hob keeps is deliberately small (the one open question), not a running
 chat transcript; the task list itself carries the rest. You can also act on many
@@ -41,6 +42,9 @@ it is a heads-up rather than a line in the morning digest or a ping at the exact
 moment. Rescheduling it re-arms the reminder for the new time. You can reply
 directly to a reminder: "done" completes that task, "snooze 20" puts the ping
 off, "push it to friday" moves it, all anchored to the message you replied to.
+Reminder messages also have Done, Snooze 10, and Drop buttons. Slow local-model
+turns show Telegram's typing state, and long lists are split safely across
+Telegram's message limit.
 
 ## Conversational focus and edits
 
@@ -56,7 +60,9 @@ The loop closes in the evening: at `HOB_EOD_TIME` (20:30 by default, or "do the
 evening check-in at 9" in chat; empty disables it) Hob asks "what got done
 today?" and your free-text answer checks items off. And a task that keeps
 rolling over is marked in the digest ("day 4") with a gentle question about
-whether it is still real, so the list does not silently rot.
+whether it is still real, so the list does not silently rot. Undated tasks age
+too; reply `keep`, `tomorrow`, or `drop` to the digest. A keep decision resets
+the nudge clock without moving the task.
 
 ## Telegram-native moves
 
@@ -79,6 +85,17 @@ nudge?"). "jerry got back to me" puts it back on deck.
 A recurring task ("take out the trash every monday", "water the plants daily",
 "standup every weekday") reappears each occurrence: completing it advances to the
 next one and stays on the list rather than closing. Dropping it ends the series.
+Multiple weekdays, a numbered day each month, month/day yearly rules, and plain
+intervals such as every 2 weeks are supported as well.
+
+## Planning and recall
+
+"Plan my day", "what should I do next?", and constraints such as "I have 40
+minutes and low energy" trigger a separate read-only planning pass. It chooses
+up to three real on-deck ids and explains why; invented ids are discarded and
+nothing moves until you explicitly request a change. Search is semantic across
+task wording, the original capture, notes, and project tags, with literal search
+as the failure fallback.
 
 ## Dates, priorities, tags, settings
 
@@ -91,7 +108,9 @@ You can change settings by chat too ("send the morning digest at 6:30").
 
 ## Commands and queries
 
-- `/today` lists what is open.
+- `/today` lists only today's on-deck items.
+- `/list` lists every open item, including future and waiting tasks.
+- `/settings` shows the configured timezone and live digest/recap times.
 - `/undo` reverts your last change (one inbound message is one undoable batch;
   repeat to walk further back).
 - `/help` shows a one-liner.
@@ -100,3 +119,11 @@ Everything else is just plain language. You can ask ("what's on today", "what's
 overdue", "what do I have this week", "anything about the audit", "what did I
 finish today"), move many at once ("push everything to tomorrow"), and undo
 conversationally ("scratch that") as well as with `/undo`.
+
+## Ownership and portability
+
+The first private `/start` pairs Hob to one Telegram user unless
+`HOB_ALLOWED_TELEGRAM_USER_ID` sets the owner explicitly. Other users and group
+chats cannot read or mutate the shared task store or redirect its digest.
+`python app.py backup` creates a consistent SQLite backup; `python app.py export`
+writes portable JSON containing tasks, history, digests, and settings.

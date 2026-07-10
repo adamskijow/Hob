@@ -26,6 +26,7 @@ class FakeBot:
         self.batches = [list(b) for b in batches]
         self.sent = []
         self.offsets_requested = []
+        self.actions = []
 
     async def get_updates(self, offset, timeout=0, allowed_updates=None):
         self.offsets_requested.append(offset)
@@ -33,6 +34,9 @@ class FakeBot:
 
     async def send_message(self, chat_id, text):
         self.sent.append((chat_id, text))
+
+    async def send_chat_action(self, chat_id, action):
+        self.actions.append((chat_id, action))
 
 
 def echo_handler(msg):
@@ -48,6 +52,7 @@ def test_echo_and_offset_advance():
 
     assert handled == 2
     assert bot.sent == [(42, "Got it"), (42, "Got it")]  # presented for display
+    assert bot.actions == [(42, "typing"), (42, "typing")]
     # offset advanced past the last update
     assert store.get_meta(OFFSET_KEY) == "12"
     # first poll requested offset 0 (nothing confirmed yet)
@@ -116,3 +121,19 @@ def test_present_capitalizes_for_display():
     assert present("send a task. /today lists what is open.") == (
         "Send a task. /today lists what is open."
     )
+
+
+def test_long_messages_split_without_losing_text():
+    text = "a" * 5000
+    chunks = TelegramAdapter._chunks(text)
+    assert len(chunks) == 2
+    assert all(len(chunk) <= 4096 for chunk in chunks)
+    assert "".join(chunks) == text
+
+
+def test_chunks_prefer_line_boundaries():
+    lines = ["x" * 1000 for _ in range(5)]
+    text = "\n".join(lines)
+    chunks = TelegramAdapter._chunks(text, limit=2500)
+    assert len(chunks) == 3
+    assert all(len(chunk) <= 2500 for chunk in chunks)

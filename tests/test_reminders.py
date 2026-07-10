@@ -80,6 +80,32 @@ def test_reminder_lead_not_yet_in_window():
     assert send.calls == []
 
 
+def test_old_missed_reminder_is_suppressed_and_recent_one_is_labeled():
+    old = store_with([item("a1", "old", "2026-06-29", "15:00")])
+    old_send = FakeSend()
+    asyncio.run(
+        ReminderService(
+            old,
+            FakeClock(datetime(2026, 6, 30, 9, 0, tzinfo=TZ)),
+            old_send,
+        ).check()
+    )
+    assert old_send.calls == []
+
+    recent = store_with([item("a1", "recent", "2026-06-30", "15:00")])
+    recent_send = FakeSend()
+    asyncio.run(
+        ReminderService(
+            recent,
+            FakeClock(datetime(2026, 6, 30, 15, 20, tzinfo=TZ)),
+            recent_send,
+        ).check()
+    )
+    assert recent_send.calls == [
+        (42, 'missed reminder: "recent" was due at 15:00')
+    ]
+
+
 def test_reminder_does_nothing_without_chat():
     s = store_with([item("a1", "x", "2026-06-30", "15:00")], chat=None)
     send = FakeSend()

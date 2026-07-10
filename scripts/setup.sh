@@ -72,8 +72,11 @@ if [ -z "${HOB_TELEGRAM_TOKEN:-}" ]; then
 
 Create your Telegram bot (about a minute):
   1. In Telegram, message @BotFather and send /newbot
-  2. In the bot's settings, restrict usage to just yourself
-  3. export HOB_TELEGRAM_TOKEN="123456:ABC-DEF..."   (Hob will not run without it)
+  2. export HOB_TELEGRAM_TOKEN="123456:ABC-DEF..."   (Hob will not run without it)
+  3. Start Hob and privately send the new bot /start. That first /start pairs
+     Hob to your Telegram user; other users and group chats are rejected.
+
+For unattended deployment, also set HOB_ALLOWED_TELEGRAM_USER_ID explicitly.
 
 EOF
 fi

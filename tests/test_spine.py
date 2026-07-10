@@ -96,8 +96,30 @@ def test_low_confidence_reference_asks():
 
     out = svc.handle(msg("maybe the prez"))
 
-    assert 'did you mean: "org prez"' in out
+    assert 'did you mean "org prez"' in out
+    assert store.get_meta("pending_confirm")
     assert store.get_item("a1").status == "open"
+
+
+def test_low_confidence_confirmation_resumes_on_yes_and_cancels_on_no():
+    llm = FakeLlm(
+        {"actions": [{"type": "complete", "target": "a1", "confidence": 0.2}]}
+    )
+    svc, store = service(llm)
+
+    first = svc.handle(msg("maybe the prez"))
+    assert "reply yes" in first
+    confirmed = svc.handle(msg("yes", message_id=2))
+    assert 'done: "org prez"' in confirmed
+    assert store.get_item("a1").status == "done"
+
+    llm2 = FakeLlm(
+        {"actions": [{"type": "drop", "target": "a2", "confidence": 0.2}]}
+    )
+    svc2, store2 = service(llm2)
+    svc2.handle(msg("maybe drop the pool one"))
+    assert svc2.handle(msg("no", message_id=2)) == "canceled. nothing changed."
+    assert store2.get_item("a2").status == "open"
 
 
 def test_eod_report_completes_multiple():
@@ -274,6 +296,45 @@ def test_setting_wake_time_persists_and_scheduler_reads_it():
     assert sched._wake_time() == "06:30"
 
 
+def test_setting_is_undoable_in_same_batch_as_task_changes():
+    llm = FakeLlm(
+        {
+            "actions": [
+                {"type": "capture", "task": "buy milk", "raw": "buy milk"},
+                {"type": "setting", "key": "wake_time", "raw": "6:30"},
+            ]
+        }
+    )
+    store = SqliteStore(":memory:")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York")
+
+    svc.handle(msg("buy milk and send my digest at 6:30"))
+    assert store.open_items()[0].task == "buy milk"
+    assert store.get_meta("wake_time") == "06:30"
+    assert "2 change" in svc.handle(msg("/undo", message_id=2))
+    assert store.open_items() == []
+    assert store.get_meta("wake_time") == ""
+
+
+def test_invalid_setting_question_is_resumable():
+    llm = FakeLlm(
+        [
+            {"actions": [{"type": "setting", "key": "wake_time", "raw": "whenever"}]},
+            {"actions": [{"type": "setting", "key": "wake_time", "raw": "8am"}]},
+        ]
+    )
+    store = SqliteStore(":memory:")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York")
+
+    assert "what time" in svc.handle(msg("change the digest time"))
+    assert store.get_meta("pending")
+    out = svc.handle(msg("8am", message_id=2))
+    assert "Pending question" in llm.calls[1][0]
+    assert "08:00" in out and store.get_meta("wake_time") == "08:00"
+
+
 def test_followup_resolves_via_focus():
     # Turn 1 captures; turn 2's bare "make it 4pm" sees the captured item as the
     # conversational focus and reschedules it.
@@ -359,6 +420,36 @@ def test_edited_message_reinterprets():
     assert out.startswith("took the edit")
 
 
+def test_edited_message_restores_original_when_model_is_down():
+    class Down:
+        def complete_json(self, prompt, schema, temperature=0.0):
+            raise RuntimeError("down")
+
+    store = SqliteStore(":memory:")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    first = MessageService(
+        store,
+        clock,
+        FakeLlm({"actions": [{"type": "capture", "task": "call vet", "raw": "call vet", "time": "15:00"}]}),
+        "America/New_York",
+    )
+    first.handle(msg("call vet at 3pm"))
+
+    down = MessageService(store, clock, Down(), "America/New_York")
+    out = down.handle(
+        InboundMessage(
+            text="call vet at 4pm",
+            chat_id=1,
+            message_id=1,
+            update_id=2,
+            edited=True,
+        )
+    )
+    assert "can't reach the model" in out
+    items = store.open_items()
+    assert len(items) == 1 and items[0].due_time == "15:00"
+
+
 def test_note_then_wait_then_resume():
     llm = FakeLlm([
         {"actions": [{"type": "note", "target": "a2", "text": "gate code 4412"}]},
@@ -415,6 +506,43 @@ def test_reaction_completes_and_ignores_unmapped():
     assert svc.handle_reaction(777, ["\U0001F44D"]) == ""  # idempotent
 
 
+def test_inline_item_and_confirmation_callbacks_are_deterministic():
+    svc, store = service(FakeLlm({"actions": []}))
+    out = svc.handle_callback("cb1", "hob:item:a1:complete", None, 1)
+    assert 'done: "org prez"' in out
+    assert store.get_item("a1").status == "done"
+    assert svc.handle_callback("cb1", "hob:item:a1:complete", None, 1) == ""
+
+    store.set_meta(
+        "pending_confirm",
+        json.dumps([{"kind": "drop", "target": "a2"}]),
+    )
+    canceled = svc.handle_callback("cb2", "hob:confirm:no", None, 1)
+    assert "canceled" in canceled and store.get_item("a2").status == "open"
+
+    store.set_meta(
+        "pending_confirm",
+        json.dumps([{"kind": "drop", "target": "a2"}]),
+    )
+    confirmed = svc.handle_callback("cb3", "hob:confirm:yes", None, 1)
+    assert 'dropped: "call the pool guy"' in confirmed
+
+    store.set_meta(
+        "pending_confirm",
+        json.dumps(
+            {
+                "id": "new-turn",
+                "mutations": [{"kind": "drop", "target": "a3"}],
+            }
+        ),
+    )
+    stale = svc.handle_callback(
+        "cb4", "hob:confirm:yes:old-turn", None, 1
+    )
+    assert "expired" in stale
+    assert store.get_meta("pending_confirm")  # current confirmation remains live
+
+
 def test_set_profile_photo_once():
     import asyncio
 
@@ -466,6 +594,88 @@ def test_pleasantry_gets_warm_reply_not_nag():
     out = svc.handle(msg("thanks bud"))
     assert out == "anytime!"
     assert "rephrase" not in out
+
+
+def test_owner_pairing_rejects_other_users_without_rebinding_digest():
+    llm = FakeLlm({"actions": [{"type": "capture", "task": "x", "raw": "x"}]})
+    store = SqliteStore(":memory:")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York")
+
+    welcome = svc.handle(
+        InboundMessage("/start", 10, 1, 1, user_id=42)
+    )
+    assert "hob" in welcome and store.get_meta("telegram_owner_user_id") == "42"
+    denied = svc.handle(
+        InboundMessage("steal the digest", 99, 1, 2, user_id=7)
+    )
+    assert "already paired" in denied
+    assert store.get_meta("chat_id") == "10"
+    assert store.open_items() == []
+
+    group = svc.handle(
+        InboundMessage(
+            "hello group",
+            77,
+            2,
+            3,
+            user_id=42,
+            chat_type="group",
+        )
+    )
+    assert "private chat" in group
+    assert store.get_meta("chat_id") == "10"
+
+
+def test_plan_my_day_is_reasoned_read_only_and_validates_ids():
+    llm = FakeLlm(
+        [
+            {"actions": [{"type": "query", "kind": "plan", "constraint": "40 minutes, low energy"}]},
+            {
+                "headline": "start small, then protect the deadline",
+                "picks": [
+                    {"id": "a2", "reason": "a quick call fits the energy available"},
+                    {"id": "made-up", "reason": "hallucinated and must be ignored"},
+                    {"id": "a3", "reason": "the audit is already overdue"},
+                ],
+            },
+        ]
+    )
+    svc, store = service(llm)
+    before = [i.to_dict() for i in store.open_items()]
+
+    out = svc.handle(msg("I have 40 minutes and low energy; what should I do?"))
+
+    assert "plan: start small" in out
+    assert "call the pool guy" in out and "review SR audit" in out
+    assert "made-up" not in out
+    assert [i.to_dict() for i in store.open_items()] == before
+
+
+def test_semantic_search_validates_model_selected_ids():
+    llm = FakeLlm(
+        [
+            {"actions": [{"type": "query", "kind": "search", "term": "doctor"}]},
+            {"matches": ["a4", "invented"]},
+        ]
+    )
+    svc, store = service(llm)
+    store.add_item(
+        Item(
+            id="a4",
+            raw_text="annual physical",
+            task="book annual physical",
+            due_date=None,
+            due_time=None,
+            status="open",
+            source="capture",
+            created_at="2026-06-29T08:30:00",
+            updated_at="2026-06-29T08:30:00",
+            note="primary care",
+        )
+    )
+    out = svc.handle(msg("anything about the doctor?"))
+    assert "book annual physical" in out and "invented" not in out
 
 
 def test_amend_edits_item_text():

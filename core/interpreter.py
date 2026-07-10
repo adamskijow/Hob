@@ -140,8 +140,9 @@ ACTION_SCHEMA = {
                         "query",
                         {"kind": {"type": "string", "enum": [
                             "today", "date", "all", "overdue", "week", "search",
-                            "done", "tag", "waiting"]},
-                         "when": _WHEN, "term": _STR, "tag": _STR},
+                            "done", "tag", "waiting", "plan"]},
+                         "when": _WHEN, "term": _STR, "tag": _STR,
+                         "constraint": _STR},
                         ["type", "kind"],
                     ),
                     _variant(
@@ -241,7 +242,10 @@ set term, e.g. "anything about the pool guy" -> term "pool guy"), "done" (things
 ALREADY finished / completed / got done / knocked out; "what did I finish today" \
 -> done; set when if a day is named), "tag" (what is in a project/list; "what's \
 left for the wedding" -> kind tag, tag "wedding"), "waiting" (what is parked on \
-other people; "what am i waiting on").
+other people; "what am i waiting on"), "plan" (the user wants help choosing or \
+replanning what to do: "plan my day", "what should I do next", "I have 40 \
+minutes and low energy"). For plan, set constraint to the user's relevant time, \
+energy, location, exclusions, or other planning words; otherwise null.
 - bulk: act on MANY items at once with ONE action; never list them individually. \
 Fields: type "bulk", op ("complete", "drop", or "reschedule"), scope, when (op \
 reschedule only: a date intent for the destination), except (ids to LEAVE OUT \
@@ -292,9 +296,12 @@ relate: if a NEW captured task is FOR or PART OF an existing open item (e.g. \
 "bring soda" for an existing birthday), set relate to that item's id so the new \
 task inherits that item's date. Otherwise leave relate null.
 
-repeat: if the task recurs, set repeat to "daily", "weekdays", or "weekly:<day>" \
-(e.g. "weekly:monday"). "take out the trash every monday" -> weekly:monday. A \
-one-off date is NOT a repeat; leave repeat null and set when instead.
+repeat: if the task recurs, set repeat to one of: "daily", "weekdays", \
+"weekly:<comma-separated days>" ("every monday and friday" -> \
+"weekly:monday,friday"), "monthly:<day-of-month>", "yearly:<month>-<day>", or \
+"every:<N>:<day|week|month|year>" ("every 2 weeks" -> "every:2:week"). \
+"take out the trash every monday" -> weekly:monday. A one-off date is NOT a \
+repeat; leave repeat null and set when instead.
 
 Choosing the action:
 - If the user adds a detail to an existing item itself, use amend. If it is a \
@@ -363,19 +370,37 @@ def _format_pending(pending: list[dict]) -> str:
         return ""
     lines = []
     for p in pending:
-        if p.get("kind") == "capture":
+        kind = p.get("kind")
+        if kind == "capture":
             lines.append(
                 f'- you asked "{p["question"]}" for a new task "{p["task"]}". to '
                 f'answer, emit a capture with task "{p["task"]}" and when set to '
                 'the date intent for the user\'s reply (e.g. {"kind":"weekday",'
                 '"day":"thu"} for thursday).'
             )
-        else:
+        elif kind == "reschedule":
             lines.append(
                 f'- you asked "{p["question"]}" about "{p["label"]}". to answer, '
                 f"emit a reschedule with target {p['target']} and when set to the "
                 'date intent for the user\'s reply (e.g. {"kind":"weekday",'
                 '"day":"fri"} for friday).'
+            )
+        elif kind == "setting":
+            lines.append(
+                f'- you asked "{p["question"]}". to answer, emit a setting with '
+                f'key "{p["key"]}" and raw equal to the time words in the reply.'
+            )
+        elif kind == "query":
+            lines.append(
+                f'- you asked "{p["question"]}" for a task query. to answer, '
+                'emit a query with kind "date" and when set to the date intent '
+                "in the user's reply."
+            )
+        elif kind == "amend":
+            lines.append(
+                f'- you asked "{p["question"]}" about "{p["label"]}". to '
+                f'answer, emit amend with target {p["target"]} and task equal '
+                "to the replacement wording in the user's reply."
             )
     return (
         "\nPending question (you asked this last turn and are waiting for the "
@@ -566,6 +591,7 @@ def _parse_one(action: object):
             when=_when(action.get("when")),
             term=_str(action.get("term")),
             tag=_str(action.get("tag")),
+            constraint=_str(action.get("constraint")),
         )
     if kind == "bulk":
         op = _str(action.get("op"))

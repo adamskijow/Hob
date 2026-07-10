@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- Hob as a user LaunchAgent. Copy to ~/Library/LaunchAgents/, edit the /Users/you
-     paths and HOB_TELEGRAM_TOKEN, then:
+     paths, HOB_TELEGRAM_TOKEN, and HOB_ALLOWED_TELEGRAM_USER_ID, then:
        chmod 600 ~/Library/LaunchAgents/com.local.hob.plist   # holds the token
        launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.local.hob.plist
        launchctl kickstart -k gui/$(id -u)/com.local.hob       # (re)start
@@ -22,6 +22,7 @@
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOB_TELEGRAM_TOKEN</key> <string>CHANGE-ME-bot-token-from-BotFather</string>
+    <key>HOB_ALLOWED_TELEGRAM_USER_ID</key> <string>123456789</string>
     <key>HOB_MODEL</key>          <string>qwen2.5:14b-instruct</string>
     <key>HOB_WAKE_TIME</key>      <string>07:00</string>
     <key>HOB_TIMEZONE</key>       <string>America/New_York</string>

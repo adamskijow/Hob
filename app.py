@@ -16,10 +16,17 @@ import signal
 import sys
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 from config import Config, ConfigError
 from core import recurrence
-from core.digest import marks, ordered_open, render_digest, select_digest_items
+from core.digest import (
+    digest_nudge_item,
+    marks,
+    ordered_open,
+    render_digest,
+    select_digest_items,
+)
 from core.interpreter import MODEL_UNREACHABLE, interpret
 from core.models import (
     SOURCE_CAPTURE,
@@ -64,16 +71,21 @@ HELP = (
     '"drop 2", or follow up with "make it 4pm" / "that\'s urgent". reply to a '
     'reminder with "done" or "snooze 20"; edit a message and i take the edit. '
     'ask: "what\'s on today", "what\'s overdue", "what did i finish this week". '
-    '/today lists what is open; /undo (or "scratch that") reverts your last change.'
+    '/today shows today; /list shows every open item; /settings shows timing; '
+    '/undo (or "scratch that") reverts your last change. ask "plan my day" or '
+    '"what should i do next?" for a short, reasoned plan.'
 )
 
 # meta key for the single user's chat id, learned from inbound messages.
 CHAT_ID_KEY = "chat_id"
+# Telegram user id paired to this single-user Hob. Unlike a chat id, this is the
+# authorization boundary; the first /start pairs when no configured owner exists.
+OWNER_USER_KEY = "telegram_owner_user_id"
 # meta key holding the JSON of clarifications awaiting an answer (see core.planner
 # Pending). One inbound message replaces it: resolved -> cleared, still unclear ->
 # re-set.
 PENDING_KEY = "pending"
-# meta key holding a destructive bulk (JSON {op, ids}) held back for a yes/no.
+# meta key holding tokenized JSON {id, mutations} held back for a yes/no.
 CONFIRM_KEY = "pending_confirm"
 # meta key holding the user-set wake time (HH:MM), overriding the configured
 # default at runtime so "send the digest at 8" takes effect without a restart.
@@ -94,10 +106,71 @@ _AFFIRMATIONS = {
     "yes", "y", "yeah", "yep", "yup", "sure", "ok", "okay", "confirm",
     "do it", "go ahead", "yes please", "please do", "absolutely", "definitely",
 }
+_NEGATIONS = {
+    "no", "n", "nope", "nah", "cancel", "never mind", "nevermind", "stop",
+    "do not", "don't", "dont",
+}
+
+PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "headline": {"type": "string"},
+        "picks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}, "reason": {"type": "string"}},
+                "required": ["id", "reason"],
+            },
+        },
+    },
+    "required": ["headline", "picks"],
+}
+PLAN_PROMPT = """\
+You are Hob, a concise personal planning partner. Choose at most three items from
+the supplied on-deck list that form a realistic next plan. Respect the user's
+constraint, deadlines, priority, waiting state, and task wording. Do not invent
+tasks or ids. Give one short headline and one practical reason per chosen item.
+
+Today: {today}
+User constraint: {constraint}
+On deck: {items}
+"""
+
+SEARCH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "matches": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["matches"],
+}
+SEARCH_PROMPT = """\
+Return the ids of open tasks semantically related to the user's memory or search
+phrase. Match meaning, synonyms, notes, projects, and forwarded context, not just
+exact words. Do not invent ids. Return an empty list when nothing is relevant.
+
+Search phrase: {term}
+Open tasks: {items}
+"""
 
 
 def _is_affirmation(text: str) -> bool:
     return text in _AFFIRMATIONS or text.startswith("yes")
+
+
+def _is_negation(text: str) -> bool:
+    return text in _NEGATIONS or text.startswith("no ")
+
+
+def _decode_confirm(raw: str) -> tuple[str | None, list]:
+    """Read current tokenized confirmations and legacy list-only state."""
+    data = json.loads(raw)
+    if isinstance(data, dict):
+        mutations = data.get("mutations")
+        return str(data.get("id")) if data.get("id") else None, (
+            mutations if isinstance(mutations, list) else []
+        )
+    return None, data if isinstance(data, list) else []
 
 
 def _relative(due_iso: str, today: date) -> str:
@@ -137,13 +210,22 @@ class MessageService:
     """
 
     def __init__(
-        self, store: Store, clock: Clock, llm: Llm, timezone: str, wake_time: str = "07:00"
+        self,
+        store: Store,
+        clock: Clock,
+        llm: Llm,
+        timezone: str,
+        wake_time: str = "07:00",
+        allowed_user_id: int | None = None,
+        eod_time: str = "20:30",
     ) -> None:
         self._store = store
         self._clock = clock
         self._llm = llm
         self._timezone = timezone
         self._wake_time = wake_time
+        self._allowed_user_id = allowed_user_id
+        self._eod_time = eod_time
 
     def _welcome(self) -> str:
         return (
@@ -152,40 +234,87 @@ class MessageService:
             f"{self._wake_time} i will send one organized digest. correct it in "
             'plain language ("did the vet one", "push it to friday"), ask me '
             'things ("what is on today", "what is overdue"), and i will keep it '
-            "all right here. /help anytime."
+            f"all right here. times use {self._timezone}. /help anytime."
         )
 
+    def _authorize(self, msg: InboundMessage, low: str) -> tuple[bool, str | None]:
+        """Pair one Telegram user and reject every other sender before state access."""
+        if msg.chat_type is not None and msg.chat_type != "private":
+            return False, "hob only works in a private chat with its owner."
+        if msg.user_id is None:
+            return True, None  # non-Telegram tests/adapters without identity
+        configured = self._allowed_user_id
+        owner_raw = self._store.get_meta(OWNER_USER_KEY)
+        owner = int(owner_raw) if owner_raw else None
+        expected = configured or owner
+        if expected is not None:
+            if msg.user_id != expected:
+                log.warning("rejected Telegram user %s", msg.user_id)
+                return False, "this hob is already paired to its owner."
+            if configured is not None and owner != configured:
+                self._store.set_meta(OWNER_USER_KEY, str(configured))
+            elif owner is None:
+                self._store.set_meta(OWNER_USER_KEY, str(msg.user_id))
+            return True, None
+        if low != "/start":
+            return False, "send /start to pair this hob before adding tasks."
+        self._store.set_meta(OWNER_USER_KEY, str(msg.user_id))
+        return True, None
+
+    @staticmethod
+    def _message_key(msg: InboundMessage) -> str:
+        return f"{msg.chat_id}:{msg.message_id}"
+
     def handle(self, msg: InboundMessage) -> str:
-        # Learn where to send the unsolicited morning digest.
+        text = msg.text.strip()
+        low = text.lower()
+        authorized, denial = self._authorize(msg, low)
+        if not authorized:
+            return denial or ""
+        # Learn where to send proactive messages only after owner authorization.
         self._store.set_meta(CHAT_ID_KEY, str(msg.chat_id))
         if msg.edited:
             return self._handle_edit(msg)
-        text = msg.text.strip()
-        low = text.lower()
         if low == "/start":
             return self._welcome()
         if low == "/help":
             return HELP
         if low == "/today":
             return self._today()
+        if low in ("/list", "/all"):
+            return self._list()
+        if low == "/settings":
+            return self._settings()
         if low == "/undo":
             return self._undo()
-        message_id = str(msg.message_id)
         # A destructive bulk held back for confirmation: apply it on yes, drop it
         # on anything else (and let that message be handled normally).
         pending_confirm = self._store.get_meta(CONFIRM_KEY)
         if pending_confirm:
             self._store.set_meta(CONFIRM_KEY, "")
             if _is_affirmation(low):
-                return self._apply_confirmed(json.loads(pending_confirm), message_id)
+                _, mutations = _decode_confirm(pending_confirm)
+                return self._apply_confirmed(
+                    mutations, self._message_key(msg)
+                )
+            if _is_negation(low):
+                return "canceled. nothing changed."
         # Idempotency backstop: if a crash redelivered this message after its
         # mutations were already applied, do not apply or reply again. Normal
         # restarts are covered by the persisted poll offset; this guards the
         # narrow window between applying and advancing it.
-        if self._store.has_actions_for_message(message_id):
+        message_key = self._message_key(msg)
+        if self._store.has_actions_for_message(message_key):
             return ""
+        replied = self._replied_item(msg.reply_to)
+        if replied and low in {"keep", "keep it", "still on", "yes keep it"}:
+            applied = self._apply(
+                [Mutation(kind="keep", target=replied["id"])], message_key
+            )
+            self._save_focus(applied)
+            return self._reply(applied, [], [])
         return self._interpret_and_apply(
-            text, message_id, reply_to=msg.reply_to,
+            text, message_key, reply_to=msg.reply_to,
             forwarded_from=msg.forwarded_from,
         )
 
@@ -265,10 +394,19 @@ class MessageService:
                 json.dumps({"ts": self._clock.now().isoformat(), "items": items}),
             )
 
-    def handle_reaction(self, message_id: int, emojis: list[str]) -> str:
+    def handle_reaction(
+        self, message_id: int, emojis: list[str], user_id: int | None = None
+    ) -> str:
         """A reaction on a Hob message that maps to an item: a thumbs-up family
         emoji completes it, a thumbs-down drops it. Reactions on anything else
         (hearts on chit-chat) are appreciation, not instructions: ignored."""
+        if user_id is not None:
+            owner = self._allowed_user_id or int(
+                self._store.get_meta(OWNER_USER_KEY) or "0"
+            )
+            if owner and user_id != owner:
+                log.warning("rejected reaction from Telegram user %s", user_id)
+                return ""
         item_id = self._store.ref_for(message_id)
         if item_id is None:
             return ""
@@ -290,12 +428,66 @@ class MessageService:
         applied = self._apply([Mutation(kind=kind, target=item_id)], inbound)
         return self._reply(applied, [], [])
 
+    def handle_callback(
+        self,
+        callback_id: str,
+        data: str,
+        user_id: int | None,
+        chat_id: int | None,
+    ) -> str:
+        """Apply only whitelisted inline-button actions; never interpret callback text."""
+        owner = self._allowed_user_id or int(
+            self._store.get_meta(OWNER_USER_KEY) or "0"
+        )
+        if owner and user_id is not None and user_id != owner:
+            log.warning("rejected callback from Telegram user %s", user_id)
+            return ""
+        inbound = f"callback:{callback_id}"
+        if self._store.has_actions_for_message(inbound):
+            return ""
+        if data.startswith("hob:confirm:"):
+            parts = data.split(":", 3)
+            choice = parts[2] if len(parts) >= 3 else ""
+            clicked_token = parts[3] if len(parts) == 4 else None
+            pending = self._store.get_meta(CONFIRM_KEY)
+            if not pending:
+                return "that confirmation has expired."
+            current_token, mutations = _decode_confirm(pending)
+            if clicked_token and current_token and clicked_token != current_token:
+                return "that confirmation has expired."
+            self._store.set_meta(CONFIRM_KEY, "")
+            if choice == "no":
+                return "canceled. nothing changed."
+            if choice == "yes":
+                return self._apply_confirmed(mutations, inbound)
+            return ""
+        parts = data.split(":")
+        if len(parts) != 4 or parts[:2] != ["hob", "item"]:
+            return ""
+        _, _, item_id, action = parts
+        item = self._store.get_item(item_id)
+        if item is None or item.status != STATUS_OPEN:
+            return "that task is no longer open."
+        mutation = {
+            "complete": Mutation(kind="complete", target=item_id),
+            "snooze": Mutation(kind="snooze", target=item_id, minutes=10),
+            "drop": Mutation(kind="drop", target=item_id),
+        }.get(action)
+        if mutation is None:
+            return ""
+        if chat_id is not None:
+            self._store.set_meta(CHAT_ID_KEY, str(chat_id))
+        applied = self._apply([mutation], inbound)
+        self._save_focus(applied)
+        return self._reply(applied, [], [])
+
     def _interpret_and_apply(
         self,
         text: str,
         message_id: str,
         reply_to: int | None = None,
         forwarded_from: str | None = None,
+        restore_on_outage: list[ActionLogEntry] | None = None,
     ) -> str:
         ctx = self._context(text, reply_to, forwarded_from)
         actions = interpret(self._llm, ctx)
@@ -308,14 +500,23 @@ class MessageService:
             and actions[0].note == MODEL_UNREACHABLE
         ):
             log.warning("model unreachable; not applying message %s", message_id)
+            if restore_on_outage:
+                self._restore_batch(restore_on_outage)
             return "i can't reach the model right now. give it a few seconds and resend."
         plan = reconcile(actions, ctx)
         if plan.undo:  # "scratch that" / "undo that"
             return self._undo()
-        applied = self._apply(plan.mutations, message_id)
+        batch_id = (
+            self._store.next_batch_id()
+            if plan.mutations or plan.settings
+            else None
+        )
+        applied = self._apply(plan.mutations, message_id, batch_id=batch_id)
         self._save_focus(applied)
         answers = [self._answer_query(q) for q in plan.queries]
-        answers += [self._apply_setting(s) for s in plan.settings]
+        answers += [
+            self._apply_setting(s, message_id, batch_id) for s in plan.settings
+        ]
         # Persist this turn's clarifications for the next message; "" clears any
         # that were just resolved or superseded.
         self._store.set_meta(
@@ -326,7 +527,12 @@ class MessageService:
         if plan.confirm is not None:
             self._store.set_meta(
                 CONFIRM_KEY,
-                json.dumps([asdict(m) for m in plan.confirm.mutations]),
+                json.dumps(
+                    {
+                        "id": message_id,
+                        "mutations": [asdict(m) for m in plan.confirm.mutations],
+                    }
+                ),
             )
             questions.append(plan.confirm.question)
         reply = self._reply(applied, questions, answers)
@@ -349,12 +555,28 @@ class MessageService:
         reply = out.get("reply") if isinstance(out, dict) else None
         return reply.strip() if isinstance(reply, str) and reply.strip() else None
 
-    def _apply_setting(self, s: SettingChange) -> str:
+    def _apply_setting(
+        self, s: SettingChange, message_id: str, batch_id: str | None
+    ) -> str:
+        key = WAKE_KEY if s.key == "wake_time" else EOD_KEY
+        before = self._store.get_meta(key)
+        self._store.set_meta(key, s.value)
+        self._store.append_actions(
+            [
+                ActionLogEntry(
+                    batch_id=batch_id or self._store.next_batch_id(),
+                    ts=self._clock.now().isoformat(),
+                    action_type="setting",
+                    item_id=f"setting:{key}",
+                    before_json=json.dumps(before),
+                    after_json=json.dumps(s.value),
+                    inbound_message_id=message_id,
+                )
+            ]
+        )
         if s.key == "wake_time":
-            self._store.set_meta(WAKE_KEY, s.value)
             return f"ok, morning digest at {s.value} from now on."
         if s.key == "eod_time":
-            self._store.set_meta(EOD_KEY, s.value)
             return f"ok, evening recap at {s.value} from now on."
         return "ok"
 
@@ -366,12 +588,16 @@ class MessageService:
         return self._reply(applied, [], [])
 
     def _apply(
-        self, mutations: list[Mutation], message_id: str
+        self,
+        mutations: list[Mutation],
+        message_id: str,
+        *,
+        batch_id: str | None = None,
     ) -> list[tuple[str, Item]]:
         if not mutations:
             return []
         # One inbound message is one batch; the actions undo together.
-        batch_id = self._store.next_batch_id()
+        batch_id = batch_id or self._store.next_batch_id()
         ts = self._clock.now().isoformat()
         applied: list[tuple[str, Item]] = []
         entries: list[ActionLogEntry] = []
@@ -453,6 +679,8 @@ class MessageService:
                 item.waiting_since = self._clock.today().isoformat()
             elif m.kind == "resume":
                 item.waiting_since = None
+            elif m.kind == "keep":
+                pass  # updated_at below records an explicit keep/review decision
             item.updated_at = ts
             self._store.update_item(item)
             entries.append(
@@ -478,23 +706,54 @@ class MessageService:
         return f"undid {len(batch)} change(s)"
 
     def _revert(self, batch) -> None:
-        for op in plan_undo(batch):
+        settings = [entry for entry in batch if entry.action_type == "setting"]
+        items = [entry for entry in batch if entry.action_type != "setting"]
+        for entry in reversed(settings):
+            key = entry.item_id.removeprefix("setting:")
+            before = json.loads(entry.before_json) if entry.before_json else None
+            self._store.set_meta(key, before or "")
+        for op in plan_undo(items):
             if op.kind == "delete":
                 self._store.delete_item(op.item_id)
             else:
                 self._store.update_item(op.item)
         self._store.mark_batch_undone(batch[0].batch_id)
 
+    def _restore_batch(self, batch: list[ActionLogEntry]) -> None:
+        """Restore an edit's original batch if replacement interpretation fails."""
+        for entry in batch:
+            if entry.action_type == "setting":
+                key = entry.item_id.removeprefix("setting:")
+                value = json.loads(entry.after_json) if entry.after_json else ""
+                self._store.set_meta(key, value or "")
+                continue
+            if not entry.after_json:
+                continue
+            item = Item.from_dict(json.loads(entry.after_json))
+            if self._store.get_item(item.id) is None:
+                self._store.add_item(item)
+            else:
+                self._store.update_item(item)
+        self._store.mark_batch_redone(batch[0].batch_id)
+
     def _handle_edit(self, msg: InboundMessage) -> str:
         """The user edited an earlier message (their natural typo fix): revert
         what the original produced, then interpret the corrected text fresh."""
-        message_id = str(msg.message_id)
+        message_id = self._message_key(msg)
         batch = self._store.batch_for_message(message_id)
         if batch:
             self._revert(batch)
-        out = self._interpret_and_apply(
-            msg.text.strip(), message_id, reply_to=msg.reply_to
-        )
+        try:
+            out = self._interpret_and_apply(
+                msg.text.strip(),
+                message_id,
+                reply_to=msg.reply_to,
+                restore_on_outage=batch or None,
+            )
+        except Exception:
+            if batch:
+                self._restore_batch(batch)
+            raise
         return ("took the edit. " + out) if out else "took the edit."
 
     def _answer_query(self, q: QueryIntent) -> str:
@@ -507,6 +766,8 @@ class MessageService:
         open_items = self._store.open_items()
         ordered = ordered_open(open_items, today)
         pos = {i.id: n for n, i in enumerate(ordered, start=1)}
+        if q.kind == "plan":
+            return self._answer_plan(q.constraint or "plan my day", open_items)
         if q.kind == "all":
             items, title = ordered, "all open:"
         elif q.kind == "overdue":
@@ -518,7 +779,7 @@ class MessageService:
             title = "this week:"
         elif q.kind == "search":
             term = (q.term or "").lower()
-            items = [i for i in ordered if term and term in i.task.lower()]
+            items = self._semantic_search(term, ordered)
             title = f'matching "{q.term}":'
         elif q.kind == "tag":
             tag = (q.tag or "").lower()
@@ -544,6 +805,99 @@ class MessageService:
         return title + "\n" + "\n".join(
             f"{pos[i.id]}: {i.task}{marks(i)}" for i in items
         )
+
+    @staticmethod
+    def _item_context(items: list[Item]) -> str:
+        return json.dumps(
+            [
+                {
+                    "id": i.id,
+                    "task": i.task,
+                    "due_date": i.due_date,
+                    "due_time": i.due_time,
+                    "priority": i.priority,
+                    "tag": i.tag,
+                    "note": i.note,
+                    "raw": i.raw_text,
+                    "waiting": bool(i.waiting_since),
+                }
+                for i in items
+            ],
+            ensure_ascii=False,
+        )
+
+    def _semantic_search(self, term: str, ordered: list[Item]) -> list[Item]:
+        """Use the model for meaning-based recall; validate ids and fall back locally."""
+        literal = [
+            i
+            for i in ordered
+            if term
+            and term
+            in " ".join(
+                filter(None, (i.task, i.raw_text, i.note, i.tag))
+            ).lower()
+        ]
+        if not term or not ordered:
+            return literal
+        try:
+            out = self._llm.complete_json(
+                SEARCH_PROMPT.format(term=term, items=self._item_context(ordered)),
+                SEARCH_SCHEMA,
+            )
+        except Exception:
+            return literal
+        ids = out.get("matches") if isinstance(out, dict) else None
+        if not isinstance(ids, list):
+            return literal
+        wanted = {str(item_id).lower() for item_id in ids}
+        matches = [i for i in ordered if i.id.lower() in wanted]
+        return matches or literal
+
+    def _answer_plan(self, constraint: str, open_items: list[Item]) -> str:
+        """Generate a short read-only plan; ids are validated before rendering."""
+        on_deck = select_digest_items(open_items, self._clock.today().isoformat())
+        if not on_deck:
+            return "plan: nothing on deck. enjoy the breathing room."
+        fallback = on_deck[:3]
+        try:
+            out = self._llm.complete_json(
+                PLAN_PROMPT.format(
+                    today=self._clock.today().isoformat(),
+                    constraint=constraint,
+                    items=self._item_context(on_deck),
+                ),
+                PLAN_SCHEMA,
+                temperature=0.2,
+            )
+        except Exception:
+            out = {}
+        by_id = {i.id.lower(): i for i in on_deck}
+        picks: list[tuple[Item, str]] = []
+        seen: set[str] = set()
+        raw_picks = out.get("picks", []) if isinstance(out, dict) else []
+        if isinstance(raw_picks, list):
+            for pick in raw_picks[:3]:
+                if not isinstance(pick, dict):
+                    continue
+                item_id = str(pick.get("id", "")).lower()
+                reason = str(pick.get("reason", "")).strip()
+                if item_id in by_id and item_id not in seen:
+                    picks.append((by_id[item_id], reason or "best fit for the day"))
+                    seen.add(item_id)
+        if not picks:
+            picks = [(i, "highest current priority on deck") for i in fallback]
+        headline = (
+            str(out.get("headline", "")).strip()
+            if isinstance(out, dict)
+            else ""
+        ) or "a realistic next pass"
+        lines = [f"plan: {headline}"]
+        lines.extend(
+            f"{n}: {item.task}{marks(item)} — {reason}"
+            for n, (item, reason) in enumerate(picks, start=1)
+        )
+        lines.append("nothing moved yet. tell me what to change, or say 'do the first one'.")
+        return "\n".join(lines)
 
     def _reply(
         self, applied: list[tuple[str, Item]], questions: list[str], answers: list[str]
@@ -616,16 +970,40 @@ class MessageService:
                 )
             elif kind == "resume":
                 parts.append(f'back on: "{item.task}"')
+            elif kind == "keep":
+                parts.append(f'keeping: "{item.task}". i will check again later.')
         parts.extend(questions)
         parts.extend(answers)
         return "\n".join(parts) if parts else "ok"
 
     def _today(self) -> str:
-        ordered = ordered_open(self._store.open_items(), self._clock.today().isoformat())
+        ordered = select_digest_items(
+            self._store.open_items(), self._clock.today().isoformat()
+        )
         if not ordered:
             return "nothing on deck"
         return "\n".join(
             f"{n}: {i.task}{marks(i)}" for n, i in enumerate(ordered, start=1)
+        )
+
+    def _list(self) -> str:
+        ordered = ordered_open(
+            self._store.open_items(), self._clock.today().isoformat()
+        )
+        if not ordered:
+            return "no open tasks"
+        return "all open:\n" + "\n".join(
+            f"{n}: {i.task}{marks(i)}" for n, i in enumerate(ordered, start=1)
+        )
+
+    def _settings(self) -> str:
+        wake = self._store.get_meta(WAKE_KEY) or self._wake_time
+        eod = self._store.get_meta(EOD_KEY)
+        eod = self._eod_time if eod is None else eod
+        return (
+            f"settings:\ntimezone: {self._timezone}\n"
+            f"morning digest: {wake}\n"
+            f"evening recap: {eod if eod != '' else 'disabled'}"
         )
 
 
@@ -667,6 +1045,9 @@ class DigestService:
         # send failure retries cleanly without leaving orphan digest rows.
         sent_id = await self._send(int(chat), text)
         self._store.save_digest(digest)
+        nudge = digest_nudge_item(ordered, today, waiting)
+        if nudge is not None and isinstance(sent_id, int):
+            self._store.record_sent_ref(sent_id, nudge.id)
         if self._pin is not None and isinstance(sent_id, int):
             old = self._store.get_meta(PINNED_KEY)
             await self._pin(int(chat), sent_id, int(old) if old else None)
@@ -711,6 +1092,7 @@ class ReminderService:
         self._clock = clock
         self._send = send
         self._lead = timedelta(minutes=max(0, lead_minutes))
+        self._grace = timedelta(hours=6)
 
     async def check(self) -> None:
         chat = self._store.get_meta(CHAT_ID_KEY)
@@ -720,13 +1102,24 @@ class ReminderService:
         # A snoozed item instead fires at its snooze_until (compared to now).
         now = self._clock.now().strftime("%Y-%m-%dT%H:%M")
         threshold = (self._clock.now() + self._lead).strftime("%Y-%m-%dT%H:%M")
-        for item in self._store.due_reminders(threshold, now):
+        earliest = (self._clock.now() - self._grace).strftime("%Y-%m-%dT%H:%M")
+        missed_cutoff = (self._clock.now() - timedelta(minutes=15)).strftime(
+            "%Y-%m-%dT%H:%M"
+        )
+        for item in self._store.due_reminders(threshold, now, earliest):
             text = f'reminder: "{item.task}" at {item.due_time}'
+            due_at = f"{item.due_date}T{item.due_time}"
+            if not item.snooze_until and due_at < missed_cutoff:
+                text = f'missed reminder: "{item.task}" was due at {item.due_time}'
             if item.snooze_until:
                 text = f'reminder (snoozed): "{item.task}" at {item.due_time}'
             if item.note:
                 text += f" ({item.note})"
-            sent_id = await self._send(int(chat), text)
+            try:
+                sent_id = await self._send(int(chat), text, item.id)
+            except TypeError:
+                # Small fake/custom adapters may still implement send(chat, text).
+                sent_id = await self._send(int(chat), text)
             self._store.mark_reminded(item.id)
             # Remember which item this ping was about, so a Telegram reply to it
             # ("done", "snooze 20") anchors to the item with no guessing.
@@ -771,13 +1164,22 @@ async def _run_daemon(cfg: Config, store: SqliteStore) -> None:
             "ollama not reachable at %s; messages will fail until it is up "
             "(ollama serve, or Hearth)", cfg.ollama_host
         )
-    service = MessageService(store, clock, llm, cfg.timezone, cfg.wake_time)
+    service = MessageService(
+        store,
+        clock,
+        llm,
+        cfg.timezone,
+        cfg.wake_time,
+        cfg.allowed_telegram_user_id,
+        cfg.eod_time,
+    )
     telegram = TelegramAdapter(
         store, service.handle, token=cfg.telegram_token,
         reaction_handler=service.handle_reaction,
+        callback_handler=service.handle_callback,
     )
     digest = DigestService(store, clock, telegram.send, pin=telegram.pin)
-    reminder = ReminderService(store, clock, telegram.send, cfg.reminder_lead)
+    reminder = ReminderService(store, clock, telegram.send_reminder, cfg.reminder_lead)
     eod = EODService(store, clock, telegram.send)
     scheduler = DigestScheduler(
         clock, store, digest.fire, cfg.wake_time, remind=reminder.check,
@@ -843,6 +1245,27 @@ def _doctor() -> int:
     return 0 if ok else 1
 
 
+def _export_or_backup(cfg: Config, argv: list[str]) -> int:
+    command = argv[0]
+    default = (
+        f"hob-export-{datetime.now().date().isoformat()}.json"
+        if command == "export"
+        else f"hob-backup-{datetime.now().date().isoformat()}.db"
+    )
+    destination = Path(argv[1] if len(argv) > 1 else default).expanduser()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with SqliteStore(cfg.db_path) as store:
+        if command == "export":
+            destination.write_text(
+                json.dumps(store.export_data(), indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+        else:
+            store.backup(str(destination))
+    print(f"hob: wrote {command} to {destination}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     logging.basicConfig(
@@ -859,6 +1282,9 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"hob: config error: {exc}", file=sys.stderr)
         return 2
+
+    if argv and argv[0] in ("export", "backup"):
+        return _export_or_backup(cfg, argv)
 
     log = logging.getLogger("hob")
     log.info(

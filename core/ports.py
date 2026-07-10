@@ -71,7 +71,13 @@ class Store(Protocol):
     def mark_batch_undone(self, batch_id: str) -> None:
         ...
 
+    def mark_batch_redone(self, batch_id: str) -> None:
+        ...
+
     def has_actions_for_message(self, inbound_message_id: str) -> bool:
+        ...
+
+    def batch_for_message(self, inbound_message_id: str) -> list[ActionLogEntry]:
         ...
 
     # digests (so references resolve against what was actually shown)

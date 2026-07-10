@@ -25,6 +25,7 @@ class ConfigError(Exception):
 @dataclass(frozen=True)
 class Config:
     telegram_token: str
+    allowed_telegram_user_id: int | None  # explicit owner; first /start pairs if unset
     model: str
     wake_time: str  # HH:MM 24h, interpreted in timezone
     timezone: str  # IANA tz key
@@ -41,6 +42,13 @@ class Config:
     @classmethod
     def from_env(cls, env: dict | None = None) -> "Config":
         src = os.environ if env is None else env
+        owner_raw = src.get("HOB_ALLOWED_TELEGRAM_USER_ID", "").strip()
+        try:
+            allowed_user = int(owner_raw) if owner_raw else None
+        except ValueError as exc:
+            raise ConfigError(
+                "HOB_ALLOWED_TELEGRAM_USER_ID must be a positive integer"
+            ) from exc
         lead_raw = src.get("HOB_REMINDER_LEAD", "10").strip()
         try:
             reminder_lead = int(lead_raw)
@@ -50,6 +58,7 @@ class Config:
             ) from exc
         cfg = cls(
             telegram_token=src.get("HOB_TELEGRAM_TOKEN", "").strip(),
+            allowed_telegram_user_id=allowed_user,
             model=src.get("HOB_MODEL", "qwen2.5:7b-instruct").strip(),
             wake_time=src.get("HOB_WAKE_TIME", "07:00").strip(),
             timezone=src.get("HOB_TIMEZONE", "UTC").strip(),
@@ -63,6 +72,8 @@ class Config:
         return cfg
 
     def validate(self) -> None:
+        if self.allowed_telegram_user_id is not None and self.allowed_telegram_user_id <= 0:
+            raise ConfigError("HOB_ALLOWED_TELEGRAM_USER_ID must be a positive integer")
         if not _WAKE_RE.match(self.wake_time):
             raise ConfigError(
                 f"HOB_WAKE_TIME must be HH:MM 24h, got {self.wake_time!r}"

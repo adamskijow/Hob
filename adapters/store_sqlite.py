@@ -213,19 +213,25 @@ class SqliteStore:
         ).fetchall()
         return [self._row_to_item(r) for r in rows]
 
-    def due_reminders(self, threshold_iso: str, now_iso: str | None = None) -> list[Item]:
+    def due_reminders(
+        self,
+        threshold_iso: str,
+        now_iso: str | None = None,
+        earliest_iso: str | None = None,
+    ) -> list[Item]:
         """Open, timed items owed a ping and not yet reminded. threshold_iso is
         now + the reminder lead ('YYYY-MM-DDTHH:MM'); a snoozed item ignores its
         due moment and instead fires once now_iso reaches its snooze_until."""
         now_iso = now_iso or threshold_iso
+        earliest_iso = earliest_iso or "0000-00-00T00:00"
         rows = self._conn.execute(
             f"SELECT {_ITEM_COLS} FROM items WHERE status = ? "
             "AND due_date IS NOT NULL AND due_time IS NOT NULL AND reminded = 0 "
             "AND waiting_since IS NULL "  # parked on someone else: no pings
-            "AND ((snooze_until IS NULL AND (due_date || 'T' || due_time) <= ?) "
-            "     OR (snooze_until IS NOT NULL AND snooze_until <= ?)) "
+            "AND ((snooze_until IS NULL AND (due_date || 'T' || due_time) BETWEEN ? AND ?) "
+            "     OR (snooze_until IS NOT NULL AND snooze_until BETWEEN ? AND ?)) "
             "ORDER BY due_date, due_time",
-            (STATUS_OPEN, threshold_iso, now_iso),
+            (STATUS_OPEN, earliest_iso, threshold_iso, earliest_iso, now_iso),
         ).fetchall()
         return [self._row_to_item(r) for r in rows]
 
@@ -308,6 +314,14 @@ class SqliteStore:
             self._set_meta_locked("undone_batches", json.dumps(sorted(undone)))
             self._conn.commit()
 
+    def mark_batch_redone(self, batch_id: str) -> None:
+        """Remove a batch from the undone set after an edit rollback is restored."""
+        with self._lock:
+            undone = self._undone_batches()
+            undone.discard(batch_id)
+            self._set_meta_locked("undone_batches", json.dumps(sorted(undone)))
+            self._conn.commit()
+
     def has_actions_for_message(self, inbound_message_id: str) -> bool:
         """Whether this message's mutations are applied and still standing.
         Undone batches do not count: an edited message's old batch is undone
@@ -376,6 +390,44 @@ class SqliteStore:
         with self._lock:
             self._set_meta_locked(key, value)
             self._conn.commit()
+
+    def export_data(self) -> dict:
+        """Portable JSON-ready snapshot of user data and history."""
+        item_rows = self._conn.execute(
+            f"SELECT {_ITEM_COLS} FROM items ORDER BY created_at, id"
+        ).fetchall()
+        action_rows = self._conn.execute(
+            "SELECT * FROM action_log ORDER BY id"
+        ).fetchall()
+        digest_rows = self._conn.execute(
+            "SELECT id, sent_at, items_json FROM digests ORDER BY id"
+        ).fetchall()
+        meta_rows = self._conn.execute(
+            "SELECT key, value FROM meta ORDER BY key"
+        ).fetchall()
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "items": [self._row_to_item(row).to_dict() for row in item_rows],
+            "action_log": [dict(row) for row in action_rows],
+            "digests": [
+                {
+                    "id": row["id"],
+                    "sent_at": row["sent_at"],
+                    "items": json.loads(row["items_json"]),
+                }
+                for row in digest_rows
+            ],
+            "meta": {row["key"]: row["value"] for row in meta_rows},
+        }
+
+    def backup(self, destination: str) -> None:
+        """Create a consistent SQLite backup, including any live WAL changes."""
+        target = sqlite3.connect(destination)
+        try:
+            with target:
+                self._conn.backup(target)
+        finally:
+            target.close()
 
     def _set_meta_locked(self, key: str, value: str) -> None:
         self._conn.execute(

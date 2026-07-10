@@ -42,6 +42,7 @@ and `HOB_KEEP_ALIVE`:
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOB_TELEGRAM_TOKEN</key> <string>123456:ABC-DEF...</string>
+    <key>HOB_ALLOWED_TELEGRAM_USER_ID</key> <string>123456789</string>
     <key>HOB_MODEL</key>          <string>qwen2.5:7b-instruct</string>
     <key>HOB_WAKE_TIME</key>      <string>07:00</string>
     <key>HOB_TIMEZONE</key>       <string>America/New_York</string>
@@ -54,7 +55,10 @@ and `HOB_KEEP_ALIVE`:
 </plist>
 ```
 
-Keep the plist readable only by your user; it holds the bot token.
+Keep the plist readable only by your user; it holds the bot token. The explicit
+owner id is recommended for unattended installs. If omitted, the first private
+`/start` pairs the database to that Telegram user. Group chats are always
+rejected.
 
 Ollama is kept alive separately by Hearth. Install Hearth, then run it headless
 under `launchd` with
@@ -83,3 +87,11 @@ Hob does not manage its own log files.
   sent, so a digest owed before the chat is known is not lost.
 - Model timeouts or malformed output degrade to a clarifying question rather than
   a crash.
+
+**Backups and export.** Both commands open the live database consistently; the
+SQLite backup API includes committed WAL changes.
+
+```
+uv run --directory /path/to/hob python app.py backup /safe/hob.db
+uv run --directory /path/to/hob python app.py export /safe/hob.json
+```

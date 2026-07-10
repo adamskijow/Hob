@@ -111,7 +111,7 @@
   <!-- wordmark -->
   <g transform="translate(520 0)">
     <text x="0" y="172" font-family="Georgia, 'Iowan Old Style', 'Times New Roman', serif" font-size="118" font-weight="700" fill="#f7ead8" letter-spacing="1">Hob</text>
-    <text x="4" y="222" font-family="-apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="25" fill="#d8b79b">Text tasks all day. Wake to one organized digest.</text>
+    <text x="4" y="222" font-family="-apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="25" fill="#d8b79b">A realistic day, renegotiated in chat.</text>
     <text x="4" y="270" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="18" fill="#ff9a3c" letter-spacing="1.4">Natural language &#183; Local LLM &#183; launchd &#183; macOS &#183; MIT</text>
   </g>
 </svg>

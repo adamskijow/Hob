@@ -127,3 +127,21 @@ def test_persists_across_reopen(tmp_path):
     # id counter continues, no collision after restart
     assert s2.next_item_id() == "a2"
     s2.close()
+
+
+def test_export_and_backup_include_user_data(tmp_path):
+    source = str(tmp_path / "hob.db")
+    backup = str(tmp_path / "backup.db")
+    s = SqliteStore(source)
+    s.add_item(make_item("a1", "portable task"))
+    s.set_meta("wake_time", "08:00")
+
+    exported = s.export_data()
+    assert exported["items"][0]["task"] == "portable task"
+    assert exported["meta"]["wake_time"] == "08:00"
+
+    s.backup(backup)
+    copied = SqliteStore(backup)
+    assert copied.get_item("a1").task == "portable task"
+    copied.close()
+    s.close()

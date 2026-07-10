@@ -14,7 +14,7 @@ model (after tuning the prompt or changing `HOB_MODEL`), run the eval, which
 feeds representative messages through Ollama and asserts the resulting plan:
 
 ```
-HOB_MODEL=qwen2.5:14b-instruct uv run python evals/interpreter_eval.py
+HOB_MODEL=qwen2.5:14b-instruct uv run python -m evals.interpreter_eval
 ```
 
 On Windows, a `tzdata` package is installed under a platform marker so the

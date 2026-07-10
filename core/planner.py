@@ -70,10 +70,11 @@ class Mutation:
 
 @dataclass
 class QueryIntent:
-    kind: str  # today | date | all | overdue | week | search | done | tag
+    kind: str  # today | date | all | overdue | week | search | done | tag | plan
     date: str | None = None  # ISO; for date, or the period start for done
     term: str | None = None  # search keywords, for kind=search
     tag: str | None = None  # project/list name, for kind=tag
+    constraint: str | None = None  # user context for kind=plan
 
 
 @dataclass
@@ -85,15 +86,15 @@ class SettingChange:
 @dataclass
 class Pending:
     """A clarification Hob is waiting on, persisted between turns so a short
-    reply ("thursday") can be resolved against the question it answers. Only the
-    resumable cases (a capture or reschedule whose date was unclear) become
-    Pending; reference errors and hallucinated reschedules do not."""
+    reply ("thursday") can be resolved against the question it answers."""
 
-    kind: str  # capture | reschedule
+    kind: str  # capture | reschedule | setting | query | amend
     question: str
     task: str | None = None  # capture: the clean label to re-capture
     target: str | None = None  # reschedule: the item id
     label: str | None = None  # reschedule: human label, for the next prompt
+    key: str | None = None  # setting: preference key
+    query_kind: str | None = None  # query: original query intent
 
 
 @dataclass
@@ -178,7 +179,14 @@ def _resolve_ref(ref: str, active: dict, by_pos: dict) -> str | None:
 
 
 def _check_target(
-    target: str, confidence: float, active: dict, by_pos: dict, plan: Plan
+    target: str,
+    confidence: float,
+    active: dict,
+    by_pos: dict,
+    plan: Plan,
+    *,
+    proposed: Mutation | None = None,
+    verb: str = "make that change",
 ) -> str | None:
     """Validate a reference. Queue a question and return None if it does not
     resolve confidently; otherwise return the id. Accepts an id or a position."""
@@ -187,7 +195,17 @@ def _check_target(
         plan.questions.append("i could not find that item. check /today for the list.")
         return None
     if confidence < CONFIDENCE_THRESHOLD:
-        plan.questions.append(f'did you mean: "{active[key]}"?')
+        if proposed is not None:
+            proposed.target = key
+            _hold(
+                plan,
+                proposed,
+                f'did you mean "{active[key]}"? reply yes to {verb}, or no to cancel.',
+            )
+        else:
+            plan.questions.append(
+                f'i am not sure you meant "{active[key]}". say the task name again.'
+            )
         return None
     return key
 
@@ -425,11 +443,23 @@ def _reconcile_capture(
 
 
 def _reconcile_amend(action: Amend, active: dict, by_pos: dict, plan: Plan) -> None:
-    target = _check_target(action.target, action.confidence, active, by_pos, plan)
+    target = _check_target(
+        action.target,
+        action.confidence,
+        active,
+        by_pos,
+        plan,
+        proposed=Mutation(kind="amend", task=action.task),
+        verb="rename it",
+    )
     if target is None:
         return
     if not action.task:
-        plan.questions.append(f'what should "{active[target]}" say now?')
+        question = f'what should "{active[target]}" say now?'
+        plan.questions.append(question)
+        plan.pending.append(
+            Pending(kind="amend", question=question, target=target, label=active[target])
+        )
         return
     plan.mutations.append(Mutation(kind="amend", target=target, task=action.task))
 
@@ -439,7 +469,9 @@ def _reconcile_setting(action: Setting, plan: Plan) -> None:
         value = dates.parse_time(action.raw)
         if value is None:
             what = "morning digest" if action.key == "wake_time" else "evening recap"
-            plan.questions.append(f"what time should i send the {what}?")
+            question = f"what time should i send the {what}?"
+            plan.questions.append(question)
+            plan.pending.append(Pending(kind="setting", question=question, key=action.key))
             return
         plan.settings.append(SettingChange(key=action.key, value=value))
     else:
@@ -449,7 +481,15 @@ def _reconcile_setting(action: Setting, plan: Plan) -> None:
 def _reconcile_prioritize(
     action: Prioritize, active: dict, by_pos: dict, plan: Plan
 ) -> None:
-    target = _check_target(action.target, action.confidence, active, by_pos, plan)
+    target = _check_target(
+        action.target,
+        action.confidence,
+        active,
+        by_pos,
+        plan,
+        proposed=Mutation(kind="prioritize", priority=action.level),
+        verb="change its priority",
+    )
     if target is None:
         return
     level = action.level if action.level in ("high", "normal", "low") else "normal"
@@ -462,7 +502,11 @@ _TODAY_WORDS = ("today", "tonight", "this morning", "this afternoon", "this even
 def _reconcile_reschedule(
     action: Reschedule, today: date, active: dict, by_pos: dict, ctx, plan: Plan
 ) -> None:
-    target = _check_target(action.target, action.confidence, active, by_pos, plan)
+    # Resolve the reference first, then hold the fully resolved move if confidence
+    # is low. That makes the subsequent "yes" deterministic and resumable.
+    target = _resolve_ref(action.target, active, by_pos)
+    if target is None:
+        plan.questions.append("i could not find that item. check /today for the list.")
     if target is None:
         return
     label = active[target]
@@ -518,6 +562,13 @@ def _reconcile_reschedule(
         if years is not None:
             _hold(plan, mutation, f'move "{label}" to {resolution.date}, about {years} years out. reply yes to keep it.')
             return
+    if action.confidence < CONFIDENCE_THRESHOLD:
+        _hold(
+            plan,
+            mutation,
+            f'did you mean "{label}"? reply yes to move it, or no to cancel.',
+        )
+        return
     plan.mutations.append(mutation)
 
 
@@ -578,7 +629,13 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
     if action.confidence < CONFIDENCE_THRESHOLD:
         # A sweeping mutation is the last place to guess; confirm, never apply.
         verb = "finish" if action.op == "complete" else "drop"
-        plan.questions.append(f"that would {verb} {len(ids)} open item(s). confirm?")
+        plan.confirm = ConfirmIntent(
+            mutations=[Mutation(kind=action.op, target=item_id) for item_id in ids],
+            question=(
+                f"that would {verb} {len(ids)} open item(s). "
+                "reply yes to confirm, or no to cancel."
+            ),
+        )
         return
     # Deleting across more than one day is a big swing: hold it for a yes/no.
     if action.op == "drop":
@@ -598,6 +655,11 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
 
 def _reconcile_query(action: Query, today: date, ctx, plan: Plan) -> None:
     kind, term = action.kind, action.term
+    if kind == "plan":
+        plan.queries.append(
+            QueryIntent(kind="plan", constraint=action.constraint or ctx.message)
+        )
+        return
     if kind == "done":
         # "what did I finish": this week -> last 7 days, otherwise today.
         start = today - timedelta(days=6) if "week" in ctx.message.lower() else today
@@ -621,7 +683,9 @@ def _reconcile_query(action: Query, today: date, ctx, plan: Plan) -> None:
     # that day; today -> today query.
     resolution = dates.resolve_intent(action.when, today)
     if resolution.ambiguous:
-        plan.questions.append("which day did you mean?")
+        question = "which day did you mean?"
+        plan.questions.append(question)
+        plan.pending.append(Pending(kind="query", question=question, query_kind=kind))
         return
     # Backstop: a day word in the question wins over a dropped or misfiled
     # intent ("what about tomorrow" read as a today query).
@@ -636,7 +700,9 @@ def _reconcile_query(action: Query, today: date, ctx, plan: Plan) -> None:
         return
     if model_kind == "date":
         # model wanted a specific day but the message names none
-        plan.questions.append("which day did you mean?")
+        question = "which day did you mean?"
+        plan.questions.append(question)
+        plan.pending.append(Pending(kind="query", question=question, query_kind=kind))
         return
     plan.queries.append(QueryIntent(kind=model_kind))
 
@@ -731,11 +797,27 @@ def reconcile(actions: list, ctx) -> Plan:
         elif isinstance(action, Setting):
             _reconcile_setting(action, plan)
         elif isinstance(action, Complete):
-            target = _check_target(action.target, action.confidence, active, by_pos, plan)
+            target = _check_target(
+                action.target,
+                action.confidence,
+                active,
+                by_pos,
+                plan,
+                proposed=Mutation(kind="complete"),
+                verb="mark it done",
+            )
             if target is not None:
                 plan.mutations.append(Mutation(kind="complete", target=target))
         elif isinstance(action, Drop):
-            target = _check_target(action.target, action.confidence, active, by_pos, plan)
+            target = _check_target(
+                action.target,
+                action.confidence,
+                active,
+                by_pos,
+                plan,
+                proposed=Mutation(kind="drop", reason=action.reason),
+                verb="drop it",
+            )
             if target is not None:
                 plan.mutations.append(
                     Mutation(kind="drop", target=target, reason=action.reason)
@@ -747,23 +829,47 @@ def reconcile(actions: list, ctx) -> Plan:
         elif isinstance(action, Bulk):
             _reconcile_bulk(action, today, ctx, plan)
         elif isinstance(action, Snooze):
-            target = _check_target(action.target, action.confidence, active, by_pos, plan)
+            target = _check_target(
+                action.target,
+                action.confidence,
+                active,
+                by_pos,
+                plan,
+                proposed=Mutation(kind="snooze", minutes=max(1, action.minutes)),
+                verb="snooze it",
+            )
             if target is not None:
                 plan.mutations.append(
                     Mutation(kind="snooze", target=target, minutes=max(1, action.minutes))
                 )
         elif isinstance(action, Note):
-            target = _check_target(action.target, action.confidence, active, by_pos, plan)
+            target = _check_target(
+                action.target,
+                action.confidence,
+                active,
+                by_pos,
+                plan,
+                proposed=Mutation(kind="note", note=action.text),
+                verb="add that note",
+            )
             if target is not None:
                 plan.mutations.append(
                     Mutation(kind="note", target=target, note=action.text)
                 )
         elif isinstance(action, Wait):
-            target = _check_target(action.target, action.confidence, active, by_pos, plan)
+            target = _check_target(
+                action.target,
+                action.confidence,
+                active,
+                by_pos,
+                plan,
+                proposed=Mutation(kind="wait"),
+                verb="park it as waiting",
+            )
             if target is not None:
                 plan.mutations.append(Mutation(kind="wait", target=target))
         elif isinstance(action, Resume):
-            target = _check_target(action.target, action.confidence, active, by_pos, plan)
+            target = _check_target(action.target, 1.0, active, by_pos, plan)
             if target is not None:
                 # Resume only means something on a waiting item. If the model
                 # picked a non-waiting one (focus pull), retarget to the only
@@ -780,7 +886,16 @@ def reconcile(actions: list, ctx) -> Plan:
                     else:
                         plan.questions.append("which waiting item do you mean?")
                         continue
-                plan.mutations.append(Mutation(kind="resume", target=target))
+                mutation = Mutation(kind="resume", target=target)
+                if action.confidence < CONFIDENCE_THRESHOLD:
+                    _hold(
+                        plan,
+                        mutation,
+                        f'did you mean "{active[target]}"? reply yes to put it '
+                        "back on deck, or no to cancel.",
+                    )
+                else:
+                    plan.mutations.append(mutation)
         elif isinstance(action, Undo):
             plan.undo = True
         elif isinstance(action, Chitchat):
@@ -804,6 +919,9 @@ def _reconcile_unknown(ctx, plan: Plan) -> None:
         if re.search(r"\b(did|done|finish|finished|complete|completed)\b", ctx.message.lower()):
             plan.confirm = _confirm_did_you_mean(best, "complete")
         else:
-            plan.questions.append(f'did you mean "{best["label"]}"?')
+            plan.questions.append(
+                f'i found "{best["label"]}", but not the action. say complete, '
+                "move, rename, or drop with the task name."
+            )
         return
     plan.questions.append("i did not catch a task there. can you rephrase?")

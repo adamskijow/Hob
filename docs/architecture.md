@@ -47,3 +47,12 @@ The model and the store run locally, but Telegram messages transit Telegram's
 servers, so this is not an end-to-end local pipeline. The capture channel is the
 swappable part: anyone who needs fully local can replace the Telegram adapter
 (`adapters/telegram_bot.py`) without touching the core.
+
+## Read-only intelligence
+
+Planning and semantic recall deliberately sit outside the mutation path. The
+model may rank known task ids and explain a proposed day, or return ids related
+to a search phrase. The edge validates every id against the current store and
+falls back deterministically on malformed output or an outage. The model cannot
+create, complete, move, or delete through these read-only passes; requested
+changes still use the interpreter, planner, action log, and undo path above.

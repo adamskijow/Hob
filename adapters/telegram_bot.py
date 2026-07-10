@@ -23,6 +23,8 @@ from core.ports import Store
 
 log = logging.getLogger("hob.telegram")
 
+TELEGRAM_TEXT_LIMIT = 4096
+
 # Presentation: the core keeps its terse lowercase voice; this dresses it up for
 # display only (stored data, including item ids, and the tested strings are
 # untouched).
@@ -61,6 +63,8 @@ class InboundMessage:
     chat_id: int
     message_id: int
     update_id: int
+    user_id: int | None = None  # Telegram user identity; chat ids are not an auth boundary
+    chat_type: str | None = None  # private/group/supergroup/channel
     reply_to: int | None = None  # message id this one replies to, if any
     edited: bool = False  # True when the user edited an earlier message
     forwarded_from: str | None = None  # original sender of a forwarded message
@@ -95,12 +99,14 @@ class TelegramAdapter:
         poll_timeout: int = 30,
         error_backoff: float = 3.0,
         reaction_handler=None,  # callable(message_id, [emoji]) -> reply str
+        callback_handler=None,  # callable(callback_id, data, user_id, chat_id) -> reply
     ) -> None:
         if bot is None and token is None:
             raise ValueError("TelegramAdapter needs either a bot or a token")
         self._store = store
         self._handler = handler
         self._reaction_handler = reaction_handler
+        self._callback_handler = callback_handler
         self._token = token
         self._bot = bot
         self._poll_timeout = poll_timeout
@@ -125,11 +131,95 @@ class TelegramAdapter:
         self._stop.set()
 
     async def _dispatch(self, msg: InboundMessage) -> None:
+        # Local models can take a few seconds. Give immediate feedback instead of
+        # leaving the user staring at a silent chat while interpretation runs.
+        send_action = getattr(self._bot, "send_chat_action", None)
+        if send_action is not None:
+            try:
+                await send_action(chat_id=msg.chat_id, action="typing")
+            except Exception:
+                log.debug("could not send typing indicator", exc_info=True)
         reply = self._handler(msg)
         if inspect.isawaitable(reply):
             reply = await reply
         if reply:
-            await self._bot.send_message(chat_id=msg.chat_id, text=present(reply))
+            raw_confirm = self._store.get_meta("pending_confirm")
+            markup = self._confirm_markup(raw_confirm) if raw_confirm else None
+            await self._send_text(msg.chat_id, present(reply), reply_markup=markup)
+
+    @staticmethod
+    def _confirm_markup(raw_confirm: str):
+        import telegram
+
+        token = ""
+        try:
+            import json
+
+            data = json.loads(raw_confirm)
+            token = str(data.get("id", "")) if isinstance(data, dict) else ""
+        except (TypeError, ValueError):
+            pass
+        suffix = f":{token}" if token else ""
+
+        return telegram.InlineKeyboardMarkup(
+            [[
+                telegram.InlineKeyboardButton(
+                    "Yes", callback_data=f"hob:confirm:yes{suffix}"
+                ),
+                telegram.InlineKeyboardButton(
+                    "Cancel", callback_data=f"hob:confirm:no{suffix}"
+                ),
+            ]]
+        )
+
+    @staticmethod
+    def _item_markup(item_id: str):
+        import telegram
+
+        return telegram.InlineKeyboardMarkup(
+            [[
+                telegram.InlineKeyboardButton(
+                    "Done", callback_data=f"hob:item:{item_id}:complete"
+                ),
+                telegram.InlineKeyboardButton(
+                    "Snooze 10", callback_data=f"hob:item:{item_id}:snooze"
+                ),
+                telegram.InlineKeyboardButton(
+                    "Drop", callback_data=f"hob:item:{item_id}:drop"
+                ),
+            ]]
+        )
+
+    @staticmethod
+    def _chunks(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> list[str]:
+        """Split long replies on line boundaries, then hard-wrap pathological lines."""
+        if len(text) <= limit:
+            return [text]
+        chunks: list[str] = []
+        current = ""
+        for line in text.splitlines(keepends=True):
+            while len(line) > limit:
+                if current:
+                    chunks.append(current.rstrip("\n"))
+                    current = ""
+                chunks.append(line[:limit])
+                line = line[limit:]
+            if current and len(current) + len(line) > limit:
+                chunks.append(current.rstrip("\n"))
+                current = ""
+            current += line
+        if current:
+            chunks.append(current.rstrip("\n"))
+        return [c for c in chunks if c]
+
+    async def _send_text(self, chat_id: int, text: str, reply_markup=None) -> int | None:
+        first_id = None
+        for index, chunk in enumerate(self._chunks(text)):
+            kwargs = {"reply_markup": reply_markup} if index == 0 and reply_markup else {}
+            sent = await self._bot.send_message(chat_id=chat_id, text=chunk, **kwargs)
+            if first_id is None:
+                first_id = getattr(sent, "message_id", None)
+        return first_id
 
     async def _handle_reaction(self, reaction: object) -> None:
         """A reaction changed on some message; pass the newly added emojis to
@@ -145,13 +235,36 @@ class TelegramAdapter:
         ]
         if not added:
             return
-        reply = self._reaction_handler(reaction.message_id, added)
+        reply = self._reaction_handler(
+            reaction.message_id,
+            added,
+            getattr(getattr(reaction, "user", None), "id", None),
+        )
         if inspect.isawaitable(reply):
             reply = await reply
         if reply:
             await self._bot.send_message(
                 chat_id=reaction.chat.id, text=present(reply)
             )
+
+    async def _handle_callback(self, callback: object) -> None:
+        answer = getattr(callback, "answer", None)
+        if answer is not None:
+            await answer()
+        if self._callback_handler is None:
+            return
+        message = getattr(callback, "message", None)
+        chat = getattr(message, "chat", None)
+        reply = self._callback_handler(
+            str(getattr(callback, "id", "")),
+            str(getattr(callback, "data", "")),
+            getattr(getattr(callback, "from_user", None), "id", None),
+            getattr(chat, "id", None),
+        )
+        if inspect.isawaitable(reply):
+            reply = await reply
+        if reply and chat is not None:
+            await self._send_text(chat.id, present(reply))
 
     async def _handle_update(self, update: object) -> None:
         message = getattr(update, "message", None)
@@ -168,6 +281,8 @@ class TelegramAdapter:
                 chat_id=message.chat.id,
                 message_id=message.message_id,
                 update_id=update.update_id,
+                user_id=getattr(getattr(message, "from_user", None), "id", None),
+                chat_type=getattr(message.chat, "type", None),
                 reply_to=getattr(replied, "message_id", None),
                 edited=edited,
                 forwarded_from=_forward_name(message),
@@ -176,6 +291,9 @@ class TelegramAdapter:
         reaction = getattr(update, "message_reaction", None)
         if reaction is not None:
             await self._handle_reaction(reaction)
+        callback = getattr(update, "callback_query", None)
+        if callback is not None:
+            await self._handle_callback(callback)
         # Advance past this update only after it is fully handled, so a crash
         # mid-handling reprocesses just this one, never the whole backlog.
         self._save_offset(update.update_id + 1)
@@ -186,7 +304,9 @@ class TelegramAdapter:
         updates = await self._bot.get_updates(
             offset=offset,
             timeout=self._poll_timeout,
-            allowed_updates=["message", "edited_message", "message_reaction"],
+            allowed_updates=[
+                "message", "edited_message", "message_reaction", "callback_query"
+            ],
         )
         for update in updates:
             await self._handle_update(update)
@@ -207,8 +327,15 @@ class TelegramAdapter:
     async def send(self, chat_id: int, text: str) -> int | None:
         """Send a message; returns its Telegram message id so the caller can
         associate a later reply with what this message was about."""
-        sent = await self._ensure_bot().send_message(chat_id=chat_id, text=present(text))
-        return getattr(sent, "message_id", None)
+        self._ensure_bot()
+        return await self._send_text(chat_id, present(text))
+
+    async def send_reminder(self, chat_id: int, text: str, item_id: str) -> int | None:
+        """Send a reminder with fast, deterministic task-action buttons."""
+        self._ensure_bot()
+        return await self._send_text(
+            chat_id, present(text), reply_markup=self._item_markup(item_id)
+        )
 
     async def set_profile_photo(self, photo_path: str) -> bool:
         """Set the bot's own avatar (Bot API set_my_profile_photo). Returns

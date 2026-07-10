@@ -107,6 +107,32 @@ def _days_over(item: Item, today: str) -> int:
     return (date.fromisoformat(today) - date.fromisoformat(item.due_date)).days
 
 
+def _stale_age(item: Item, today: str) -> int:
+    """Days since an on-deck task was due, captured, or last actively reviewed."""
+    anchors = [item.created_at[:10], item.updated_at[:10]]
+    if item.due_date and item.due_date <= today:
+        anchors.append(item.due_date)
+    return max(0, (date.fromisoformat(today) - date.fromisoformat(max(anchors))).days)
+
+
+def digest_nudge_item(
+    ordered: list[Item], today: str, waiting: list[Item] | None = None
+) -> Item | None:
+    """The one item a reply to today's digest should conversationally anchor to."""
+    stale = [i for i in ordered if _stale_age(i, today) >= STALE_DAYS]
+    if stale:
+        return max(stale, key=lambda i: _stale_age(i, today))
+    waiting = waiting or []
+    stale_waits = [
+        i
+        for i in waiting
+        if i.waiting_since
+        and (date.fromisoformat(today) - date.fromisoformat(i.waiting_since)).days
+        >= STALE_DAYS
+    ]
+    return min(stale_waits, key=lambda i: i.waiting_since) if stale_waits else None
+
+
 def render_digest(
     ordered: list[Item], today: str, waiting: list[Item] | None = None
 ) -> str:
@@ -125,24 +151,29 @@ def render_digest(
         if not stale_waits:
             return "morning. nothing on deck today."
         lines = ["morning. nothing on deck today."]
-        lines += [f'still waiting: "{i.task}" ({n}d). worth a nudge?' for i, n in stale_waits]
+        lines += [f'still waiting: "{i.task}" ({n}d).' for i, n in stale_waits]
+        lines.append("reply 'back on' if the oldest wait has cleared.")
         return "\n".join(lines)
     lines = ["morning. here is today:"]
     for n, item in enumerate(ordered, start=1):
         over = _days_over(item, today)
         if over:
             suffix = f" (day {over + 1})"
+        elif _stale_age(item, today) >= STALE_DAYS:
+            suffix = f" (day {_stale_age(item, today) + 1})"
         elif item.due_time:
             suffix = f" ({item.due_time})"
         else:
             suffix = ""
         lines.append(f"{n}: {item.task}{suffix}{marks(item)}")
-    stale = max(ordered, key=lambda i: _days_over(i, today))
-    worst = _days_over(stale, today)
+    stale = max(ordered, key=lambda i: _stale_age(i, today))
+    worst = _stale_age(stale, today)
     if worst >= STALE_DAYS:
         lines.append(
-            f'"{stale.task}" has rolled over {worst + 1} days now. '
-            "still on, or should i push or drop it?"
+            f'"{stale.task}" has been on deck {worst + 1} days. '
+            "reply keep, tomorrow, or drop to decide it."
         )
-    lines += [f'still waiting: "{i.task}" ({n}d). worth a nudge?' for i, n in stale_waits]
+    lines += [f'still waiting: "{i.task}" ({n}d).' for i, n in stale_waits]
+    if worst < STALE_DAYS and stale_waits:
+        lines.append("reply 'back on' if the oldest wait has cleared.")
     return "\n".join(lines)

@@ -135,7 +135,8 @@ def test_unresolved_reference_asks_not_mutates():
 def test_low_confidence_reference_asks():
     plan = reconcile([Complete(target="a1", confidence=0.2)], ctx(ACTIVE))
     assert not plan.mutations
-    assert "org prez" in plan.questions[0]
+    assert plan.confirm is not None
+    assert "org prez" in plan.confirm.question
 
 
 def test_drop_with_reason():
@@ -312,7 +313,7 @@ def test_low_confidence_bulk_confirms_not_applies():
     # A sweeping mutation must not apply on a low-confidence guess.
     plan = reconcile([Bulk(op="drop", scope="all", confidence=0.2)], ctx(ACTIVE))
     assert not plan.mutations
-    assert plan.questions and "confirm" in plan.questions[0]
+    assert plan.confirm is not None and "confirm" in plan.confirm.question
 
 
 def test_bulk_reschedule_moves_matching():
@@ -684,7 +685,7 @@ def test_amend_bad_target_asks():
 
 def test_amend_low_confidence_asks():
     plan = reconcile([Amend(target="a1", task="x", confidence=0.2)], ctx(ACTIVE))
-    assert not plan.mutations and plan.questions
+    assert not plan.mutations and plan.confirm is not None
 
 
 def test_multi_capture_shares_leading_date():
