@@ -90,7 +90,7 @@ class Mutation:
 
 @dataclass
 class QueryIntent:
-    kind: str  # today | date | all | overdue | week | search | done | tag | plan
+    kind: str  # today | date | all | overdue | week | search | done | tag | plan | outlook
     date: str | None = None  # ISO; query day, planning day, or done-period start
     term: str | None = None  # search keywords, for kind=search
     tag: str | None = None  # project/list name, for kind=tag
@@ -692,6 +692,16 @@ def _reconcile_setting(action: Setting, plan: Plan) -> None:
             plan.pending.append(Pending(kind="setting", question=question, key=action.key))
             return
         plan.settings.append(SettingChange(key=action.key, value=value))
+    elif action.key == "work_days":
+        value = _parse_work_days(action.raw)
+        if value is None:
+            question = "which weekdays may i plan flexible work on?"
+            plan.questions.append(question)
+            plan.pending.append(
+                Pending(kind="setting", question=question, key=action.key)
+            )
+            return
+        plan.settings.append(SettingChange(key=action.key, value=value))
     elif action.key in ("default_duration", "transition_buffer"):
         value = _parse_minutes(action.raw)
         low, high = (5, 480) if action.key == "default_duration" else (0, 120)
@@ -710,7 +720,8 @@ def _reconcile_setting(action: Setting, plan: Plan) -> None:
         plan.settings.append(SettingChange(key=action.key, value=str(value)))
     else:
         plan.questions.append(
-            "i can change digest, recap, work hours, breaks, default effort, and buffers."
+            "i can change digest, recap, work hours, work days, breaks, "
+            "default effort, and buffers."
         )
 
 
@@ -758,6 +769,59 @@ def _parse_minutes(raw: str) -> int | None:
         return round(float(hours.group(1)) * 60)
     match = re.search(r"\b(\d+)\s*(minutes?|mins?)?\b", low)
     return int(match.group(1)) if match else None
+
+
+_DAY_NAMES = {
+    "monday": 0, "mon": 0,
+    "tuesday": 1, "tues": 1, "tue": 1,
+    "wednesday": 2, "wed": 2,
+    "thursday": 3, "thurs": 3, "thur": 3, "thu": 3,
+    "friday": 4, "fri": 4,
+    "saturday": 5, "sat": 5,
+    "sunday": 6, "sun": 6,
+}
+_DAY_CODES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def _parse_work_days(raw: str) -> str | None:
+    low = raw.strip().lower()
+    exclusion = re.search(r"\b(?:except|but not|not)\s+(.+)$", low)
+    included_text = low[:exclusion.start()] if exclusion else low
+
+    def mentioned(text: str) -> set[int]:
+        days: set[int] = set()
+        if re.search(r"\b(?:every day|all days|daily|seven days)\b", text):
+            days.update(range(7))
+        if "weekdays" in text:
+            days.update(range(5))
+        if "weekends" in text:
+            days.update((5, 6))
+        names = "|".join(_DAY_NAMES)
+        for match in re.finditer(
+            rf"\b({names})\s+(?:through|to|-)\s+({names})\b", text
+        ):
+            first = _DAY_NAMES[match.group(1)]
+            last = _DAY_NAMES[match.group(2)]
+            days.update(
+                range(first, last + 1)
+                if first <= last
+                else (*range(first, 7), *range(last + 1))
+            )
+        days.update(
+            index
+            for name, index in _DAY_NAMES.items()
+            if re.search(rf"\b{re.escape(name)}\b", text)
+        )
+        return days
+
+    chosen = mentioned(included_text)
+    if exclusion:
+        if not chosen:
+            chosen = set(range(7))
+        chosen -= mentioned(exclusion.group(1))
+    if not chosen:
+        return None
+    return ",".join(_DAY_CODES[index] for index in sorted(chosen))
 
 
 def _reconcile_prioritize(
@@ -1066,6 +1130,22 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
 
 def _reconcile_query(action: Query, today: date, ctx, plan: Plan) -> None:
     kind, term = action.kind, action.term
+    if kind == "outlook":
+        resolution = dates.resolve_intent(action.when, today)
+        corrected = dates.named_day_correction(
+            ctx.message, resolution.date, today
+        )
+        horizon = corrected or resolution.date or dates.deadline_in_text(
+            ctx.message, today
+        )
+        plan.queries.append(
+            QueryIntent(
+                kind="outlook",
+                date=horizon,
+                constraint=action.constraint or ctx.message,
+            )
+        )
+        return
     if kind == "plan_status":
         plan.queries.append(QueryIntent(kind="plan_status"))
         return
@@ -1334,13 +1414,47 @@ def _recover_new_recurrence(actions: list, ctx) -> list:
     ]
 
 
+def _drop_redundant_new_recur(actions: list, message: str) -> list:
+    """Keep a stop-after count on its new capture, not an unrelated series."""
+    captures = [
+        action
+        for action in actions
+        if isinstance(action, Capture) and recurrence.normalize(action.repeat)
+    ]
+    series_edits = [action for action in actions if isinstance(action, Recur)]
+    if (
+        len(captures) == 1
+        and len(series_edits) == 1
+        and series_edits[0].op == "stop"
+        and re.search(
+            r"\bevery\s+\d+\s+(?:days?|weeks?|months?|years?)\b",
+            message,
+            re.IGNORECASE,
+        )
+        and re.search(
+            r"\b(?:stop|end) after \d+ (?:times?|occurrences?)\b",
+            message,
+            re.IGNORECASE,
+        )
+    ):
+        return [action for action in actions if action is not series_edits[0]]
+    return actions
+
+
 def reconcile(actions: list, ctx) -> Plan:
     today = date.fromisoformat(ctx.today)
     actions = _fix_everything_but(actions, ctx)
+    actions = _drop_redundant_new_recur(actions, ctx.message)
     actions = _recover_new_recurrence(actions, ctx)
     actions = _merge_new_capture_constraints(actions, ctx)
     low = ctx.message.strip().lower()
     queries = [action for action in actions if isinstance(action, Query)]
+    outlook_words = re.search(
+        r"\b(?:overloaded|overbooked|capacity|what (?:will|won't|will not) fit|"
+        r"can i finish|can everything fit|enough time|fit (?:it|this|everything) "
+        r"(?:this week|by))\b",
+        low,
+    )
     deviation = re.search(
         r"\b(?:replan|got interrupted|was interrupted|meeting ran (?:long|over)|"
         r"lost \d+ (?:minutes?|hours?)|running \d+ (?:minutes?|hours?) late)\b",
@@ -1351,7 +1465,9 @@ def reconcile(actions: list, ctx) -> Plan:
         r"snooze)\b",
         low,
     )
-    if deviation and not explicit_item_change:
+    if outlook_words:
+        actions = [Query(kind="outlook", constraint=ctx.message)]
+    elif deviation and not explicit_item_change:
         actions = [
             next(
                 (query for query in queries if query.kind == "plan"),

@@ -38,6 +38,7 @@ from core.feasibility import (
     diff_day_plans,
     parse_plan_preferences,
 )
+from core.forecast import build_week_forecast
 from core.models import (
     SOURCE_CAPTURE,
     STATUS_DONE,
@@ -97,7 +98,8 @@ HELP = (
     'every monday". correct the same way: "did the prez one", "push it to friday", '
     '"drop 2", or follow up with "make it 4pm" / "that\'s urgent". reply to a '
     'reminder with "done" or "snooze 20"; edit a message and i take the edit. '
-    'ask: "what\'s on today", "what\'s overdue", "what did i finish this week". '
+    'ask: "what\'s on today", "what\'s overdue", "what did i finish this week", '
+    'or "am i overloaded this week?". '
     '/today shows today; /list shows every open item; /settings shows timing; '
     '/setup guides planning preferences; '
     '/undo (or "scratch that") reverts your last change. ask "plan my day" or '
@@ -105,7 +107,8 @@ HELP = (
     'effort, fixed times, dependencies, preferred windows, and reminder offsets '
     'the same way: "the deck is due friday and takes 90 minutes". after the '
     'calendar bridge is connected, plans avoid calendar conflicts. say "plan '
-    'work from 9 to 5" or "protect lunch noon to 1" to set the daily frame. '
+    'work from 9 to 5", "plan work weekdays", or "protect lunch noon to 1" '
+    'to set the daily frame. /outlook shows the read-only capacity result. '
     'say "use this plan" to adopt local sessions; /plan shows the active '
     'version. adoption never moves tasks or writes calendar events.'
 )
@@ -127,6 +130,7 @@ WAKE_KEY = "wake_time"
 # meta key for the user-set evening recap time; same contract as WAKE_KEY.
 EOD_KEY = "eod_time"
 WORK_HOURS_KEY = "work_hours"
+WORK_DAYS_KEY = "work_days"
 BREAKS_KEY = "breaks"
 DEFAULT_DURATION_KEY = "default_duration"
 TRANSITION_BUFFER_KEY = "transition_buffer"
@@ -137,10 +141,12 @@ RELEASE_NOTICE_KEY = "release_notice_version"
 FIRST_PLAN_ADOPTED_KEY = "first_plan_adopted_at"
 ONBOARDING_STEPS = (
     "work_hours",
+    "work_days",
     "break_window",
     "default_duration",
     "transition_buffer",
 )
+DAY_CODES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 # meta key holding the conversational focus: the items the last message touched
 # (JSON {ts, items: [{id, label}]}), so a bare follow-up ("make it 4pm") can
 # resolve. Stale focus is ignored after this many minutes.
@@ -295,6 +301,7 @@ class MessageService:
         calendar: Calendar | None = None,
         work_start: str = "09:00",
         work_end: str = "17:30",
+        work_days: tuple[int, ...] = (0, 1, 2, 3, 4),
         breaks: tuple[tuple[str, str], ...] = (("12:00", "13:00"),),
         default_duration_minutes: int = 30,
         transition_buffer_minutes: int = 0,
@@ -310,6 +317,7 @@ class MessageService:
         self._calendar = calendar
         self._work_start = work_start
         self._work_end = work_end
+        self._work_days = work_days
         self._breaks = breaks
         self._default_duration_minutes = default_duration_minutes
         self._transition_buffer_minutes = transition_buffer_minutes
@@ -336,11 +344,41 @@ class MessageService:
         except Exception:
             return "unavailable"
 
+    def _effective_work_days(self) -> tuple[int, ...]:
+        """Preserve pre-v0.9 weekend behavior until an owner chooses days."""
+        stored = self._store.get_meta(WORK_DAYS_KEY)
+        if stored:
+            try:
+                parsed = tuple(
+                    dict.fromkeys(DAY_CODES.index(day) for day in stored.split(","))
+                )
+            except ValueError:
+                parsed = ()
+            if parsed:
+                return parsed
+        if self._uses_legacy_work_days():
+            return tuple(range(7))
+        return self._work_days
+
+    def _uses_legacy_work_days(self) -> bool:
+        if self._store.get_meta(WORK_DAYS_KEY):
+            return False
+        if self._store.get_meta(ONBOARDING_DONE_KEY):
+            return True
+        return bool(self._store.get_meta(OWNER_USER_KEY)) and (
+            self._store.get_meta(INSTALL_VERSION_KEY) != __version__
+        )
+
+    def _work_days_value(self) -> str:
+        return ",".join(DAY_CODES[index] for index in self._effective_work_days())
+
     def _setup_value(self, key: str) -> str:
         if key == "work_hours":
             return self._store.get_meta(WORK_HOURS_KEY) or (
                 f"{self._work_start}-{self._work_end}"
             )
+        if key == "work_days":
+            return self._work_days_value()
         if key == "break_window":
             value = self._store.get_meta(BREAKS_KEY)
             if value:
@@ -357,20 +395,25 @@ class MessageService:
     def _setup_prompt(self, stage: str) -> str:
         prompts = {
             "work_hours": (
-                'setup 1/4: what hours may i plan inside? reply like "plan work '
+                'setup 1/5: what hours may i plan inside? reply like "plan work '
                 'from 9 to 5", or say "skip" to keep {current}.'
             ),
+            "work_days": (
+                'setup 2/5: which days may i plan work? reply like "weekdays", '
+                '"monday through saturday", or "every day"; "skip" keeps '
+                "{current}."
+            ),
             "break_window": (
-                'setup 2/4: what daily time should stay protected? reply like '
+                'setup 3/5: what daily time should stay protected? reply like '
                 '"protect lunch from noon to 1", "no break", or "skip" to keep '
                 "{current}."
             ),
             "default_duration": (
-                'setup 3/4: when a task has no estimate, what should i assume? '
+                'setup 4/5: when a task has no estimate, what should i assume? '
                 'reply like "assume 30 minutes", or say "skip" to keep {current}m.'
             ),
             "transition_buffer": (
-                'setup 4/4: how much breathing room should i leave between '
+                'setup 5/5: how much breathing room should i leave between '
                 'commitments? reply like "leave 10 minutes between things", '
                 '"no buffer", or "skip" to keep {current}m.'
             ),
@@ -433,6 +476,10 @@ class MessageService:
         stage = self._store.get_meta(ONBOARDING_STAGE_KEY)
         if stage not in ONBOARDING_STEPS:
             return self._begin_onboarding()
+        if stage == "work_days" and not self._store.get_meta(WORK_DAYS_KEY):
+            # Record the displayed value so a fresh skip cannot later be
+            # mistaken for an upgraded profile that predates this setting.
+            self._store.set_meta(WORK_DAYS_KEY, self._work_days_value())
         index = ONBOARDING_STEPS.index(stage) + 1
         if index >= len(ONBOARDING_STEPS):
             return self._finish_onboarding()
@@ -526,6 +573,8 @@ class MessageService:
             return self._settings()
         if low in {"/plan", "/next"}:
             return self._answer_plan_status()
+        if low in {"/outlook", "/capacity"}:
+            return self._answer_outlook("what will fit this week?")
         if low == "/undo":
             return self._undo()
         # A destructive bulk held back for confirmation: apply it on yes, drop it
@@ -875,6 +924,7 @@ class MessageService:
             "wake_time": WAKE_KEY,
             "eod_time": EOD_KEY,
             "work_hours": WORK_HOURS_KEY,
+            "work_days": WORK_DAYS_KEY,
             "break_window": BREAKS_KEY,
             "default_duration": DEFAULT_DURATION_KEY,
             "transition_buffer": TRANSITION_BUFFER_KEY,
@@ -900,6 +950,8 @@ class MessageService:
             return f"ok, evening recap at {s.value} from now on."
         if s.key == "work_hours":
             return f"ok, i will plan inside {s.value} from now on."
+        if s.key == "work_days":
+            return f"ok, i will plan flexible work on {s.value} from now on."
         if s.key == "break_window":
             return (
                 f"ok, i will protect {s.value} from planning."
@@ -969,7 +1021,13 @@ class MessageService:
                 if item is not None and item.status == STATUS_OPEN
             ]
             self._save_focus_items(items, context="plan", limit=10)
-            if not self._store.get_meta(FIRST_PLAN_ADOPTED_KEY):
+            first_adoption = not self._store.get_meta(FIRST_PLAN_ADOPTED_KEY)
+            if first_adoption:
+                reply += (
+                    ' first-run tip: if the day changes, say "replan"; the new '
+                    'version stays a proposal until you say "replace my plan '
+                    'with this".'
+                )
                 self._store.set_meta(FIRST_PLAN_ADOPTED_KEY, now)
         self._store.append_actions(
             [
@@ -1306,6 +1364,10 @@ class MessageService:
         today = self._clock.today().isoformat()
         if q.kind == "plan_status":
             return self._answer_plan_status()
+        if q.kind == "outlook":
+            return self._answer_outlook(
+                q.constraint or "what will fit this week?", q.date
+            )
         if q.kind == "done":  # already-finished items (closed, so no positions)
             items = self._store.done_since(q.date or today)
             if not items:
@@ -1445,6 +1507,119 @@ class MessageService:
             lines.append("no remaining session today.")
         return "\n".join(lines)
 
+    def _answer_outlook(
+        self, constraint: str, requested_end: str | None = None
+    ) -> str:
+        """Render a read-only seven-day capacity simulation."""
+        now = self._clock.now()
+        horizon_days = 7
+        if requested_end:
+            try:
+                requested = date.fromisoformat(requested_end)
+                distance = (requested - now.date()).days
+                if 0 <= distance < 7:
+                    horizon_days = distance + 1
+            except ValueError:
+                pass
+        days = [
+            now.date() + timedelta(days=offset)
+            for offset in range(horizon_days)
+        ]
+        snapshots = {
+            day.isoformat(): self._calendar_snapshot(day) for day in days
+        }
+        adopted = []
+        for day in days:
+            run = self._store.active_plan(day.isoformat())
+            if run is not None:
+                adopted.extend(self._store.plan_sessions(run.id))
+        open_items = self._store.open_items()
+        preferences = self._planning_preferences(constraint)
+        forecast = build_week_forecast(
+            open_items,
+            snapshots,
+            now,
+            preferences,
+            horizon_days=horizon_days,
+            adopted_sessions=adopted,
+        )
+        lines = [
+            f"week outlook {forecast.start_day} to {forecast.end_day}: "
+            f"{forecast.used_minutes}m allocated, {forecast.free_minutes}m open"
+        ]
+        for day in forecast.days:
+            parsed = date.fromisoformat(day.day)
+            label = f"{parsed:%a} {parsed.month}/{parsed.day}"
+            if parsed.weekday() not in preferences.work_days:
+                lines.append(f"{label}: not a planning day")
+            else:
+                lines.append(
+                    f"{label}: {day.used_minutes}m allocated, "
+                    f"{day.free_minutes}m open"
+                )
+        warnings = [
+            f"{day.day}: {warning}"
+            for day in forecast.days
+            for warning in day.warnings
+            if warning not in {
+                "not a configured planning day",
+                "no working time remains inside the requested window",
+            }
+        ]
+        if warnings:
+            lines.append("conflicts and warnings:")
+            lines.extend(f"- {warning}" for warning in dict.fromkeys(warnings))
+        if forecast.risks:
+            lines.append("at risk:")
+            lines.extend(
+                f'- {risk.label}: {risk.reason} ({risk.remaining_minutes}m left)'
+                for risk in forecast.risks[:7]
+            )
+        else:
+            lines.append("no known deadline or scheduled-date risk in this window.")
+        if forecast.unplaced:
+            lines.append("outside the seven-day fit:")
+            lines.extend(
+                f"- {item.label}: {item.remaining_minutes}m"
+                for item in forecast.unplaced[:5]
+            )
+        if forecast.assumed_item_ids:
+            assumed = set(forecast.assumed_item_ids)
+            labels = [item.task for item in open_items if item.id in assumed]
+            lines.append(
+                f"assumption: {len(labels)} task(s) use the visible "
+                f"{preferences.default_duration_minutes}m default"
+            )
+        if (
+            preferences.budget_scope == "horizon"
+            and preferences.budget_minutes is not None
+        ):
+            lines.append(
+                f"what-if budget: {preferences.budget_minutes}m total across "
+                "this outlook"
+            )
+        elif preferences.budget_minutes is not None:
+            lines.append(
+                f"what-if budget: {preferences.budget_minutes}m per planning day"
+            )
+        if self._uses_legacy_work_days():
+            lines.append(
+                "assumption: this upgraded profile keeps the prior all-days "
+                'behavior. say "plan work weekdays" or use /setup to choose.'
+            )
+        authorized = sum(
+            snapshot.status == "authorized" for snapshot in snapshots.values()
+        )
+        lines.append(
+            f"calendar: {authorized}/{horizon_days} day(s) checked with EventKit; "
+            "other days use the working profile."
+        )
+        lines.append(
+            "nothing changed. this is a read-only load test, not an adopted "
+            "weekly schedule."
+        )
+        return "\n".join(lines)
+
     def _answer_start(self, item_id: str) -> str:
         item = self._store.get_item(item_id)
         if item is None or item.status != STATUS_OPEN:
@@ -1538,12 +1713,8 @@ class MessageService:
             return default
         return value if minimum <= value <= maximum else default
 
-    def _answer_plan(
-        self, constraint: str, open_items: list[Item], target_iso: str
-    ) -> str:
-        """Build a read-only timeline; the model can explain but cannot schedule."""
+    def _calendar_snapshot(self, target: date) -> CalendarSnapshot:
         now = self._clock.now()
-        target = date.fromisoformat(target_iso)
         day_start = now.replace(
             year=target.year,
             month=target.month,
@@ -1553,15 +1724,17 @@ class MessageService:
             second=0,
             microsecond=0,
         )
-        day_end = day_start + timedelta(days=1)
         if self._calendar is None:
-            snapshot = CalendarSnapshot("unavailable", detail="calendar adapter not configured")
-        else:
-            try:
-                snapshot = self._calendar.snapshot(day_start, day_end)
-            except Exception as exc:  # calendar failure must not break task planning
-                log.warning("calendar snapshot unavailable: %s", exc)
-                snapshot = CalendarSnapshot("unavailable", detail=str(exc))
+            return CalendarSnapshot(
+                "unavailable", detail="calendar adapter not configured"
+            )
+        try:
+            return self._calendar.snapshot(day_start, day_start + timedelta(days=1))
+        except Exception as exc:  # Calendar failure never breaks task planning.
+            log.warning("calendar snapshot unavailable: %s", exc)
+            return CalendarSnapshot("unavailable", detail=str(exc))
+
+    def _planning_preferences(self, constraint: str):
         work_range = self._store.get_meta(WORK_HOURS_KEY) or (
             f"{self._work_start}-{self._work_end}"
         )
@@ -1569,6 +1742,7 @@ class MessageService:
             work_start, work_end = work_range.split("-", 1)
         except ValueError:
             work_start, work_end = self._work_start, self._work_end
+        work_days = self._effective_work_days()
         stored_breaks = self._store.get_meta(BREAKS_KEY)
         break_range = (
             stored_breaks
@@ -1583,10 +1757,11 @@ class MessageService:
             if window and "-" in window
             for start, end in [window.split("-", 1)]
         )
-        preferences = parse_plan_preferences(
+        return parse_plan_preferences(
             constraint,
             work_start=work_start,
             work_end=work_end,
+            work_days=work_days,
             breaks=breaks,
             default_duration_minutes=self._minutes_setting(
                 DEFAULT_DURATION_KEY,
@@ -1601,6 +1776,15 @@ class MessageService:
                 120,
             ),
         )
+
+    def _answer_plan(
+        self, constraint: str, open_items: list[Item], target_iso: str
+    ) -> str:
+        """Build a read-only timeline; the model can explain but cannot schedule."""
+        now = self._clock.now()
+        target = date.fromisoformat(target_iso)
+        snapshot = self._calendar_snapshot(target)
+        preferences = self._planning_preferences(constraint)
         previous = None
         active = self._store.active_plan(target_iso)
         if active is not None:
@@ -1924,6 +2108,9 @@ class MessageService:
         work_hours = self._store.get_meta(WORK_HOURS_KEY) or (
             f"{self._work_start}-{self._work_end}"
         )
+        work_days = self._work_days_value()
+        if self._uses_legacy_work_days():
+            work_days += " (legacy all-days default; set this in chat or /setup)"
         breaks = self._store.get_meta(BREAKS_KEY)
         if not breaks:
             breaks = ",".join(f"{start}-{end}" for start, end in self._breaks)
@@ -1956,6 +2143,7 @@ class MessageService:
             f"morning digest: {wake}\n"
             f"evening recap: {eod if eod != '' else 'disabled'}\n"
             f"planning hours: {work_hours}\n"
+            f"planning days: {work_days}\n"
             f"protected breaks: {'none' if breaks == 'none' else breaks}\n"
             f"default estimate: {default_duration}m\n"
             f"transition buffer: {transition_buffer}m\n"
@@ -1998,9 +2186,10 @@ class DigestService:
         )
         if release_notice:
             text += (
-                f"\n\nnew in hob {__version__}: /setup tunes planning, then ask "
-                '"plan my day" and say "use this plan" when it fits. this note '
-                "appears once."
+                f"\n\nnew in hob {__version__}: ask \"am i overloaded this "
+                'week?" for a read-only capacity outlook. check planning days '
+                'in /settings, then say "plan work weekdays" or use /setup if '
+                "the assumption is wrong. this note appears once."
             )
         digest = Digest(
             sent_at=self._clock.now().isoformat(),
@@ -2047,13 +2236,77 @@ class EODService:
             return False
         today = self._clock.today().isoformat()
         on_deck = select_digest_items(self._store.open_items(), today)
-        if not on_deck:
-            return True  # nothing was on deck; nothing to recap, day is done
-        lines = "\n".join(f"{n}: {i.task}" for n, i in enumerate(on_deck, start=1))
-        text = (
-            "evening. what got done today? tell me and i'll check them off.\n"
-            + lines
-        )
+        try:
+            run = self._store.adopted_plan(today)
+            sessions = self._store.plan_sessions(run.id) if run is not None else []
+        except Exception as exc:
+            log.warning("adopted plan unavailable for evening recap: %s", exc)
+            run, sessions = None, []
+        if run is None:
+            if not on_deck:
+                return True  # nothing was on deck; nothing to recap, day is done
+            lines = "\n".join(
+                f"{n}: {i.task}" for n, i in enumerate(on_deck, start=1)
+            )
+            text = (
+                "evening. what got done today? tell me and i'll check them off.\n"
+                + lines
+            )
+        else:
+            done_labels = list(dict.fromkeys(
+                session.label for session in sessions if session.status == "done"
+            ))
+            open_sessions = [
+                session
+                for session in sessions
+                if session.status in {"planned", "started"}
+                and (item := self._store.get_item(session.item_id)) is not None
+                and item.status == STATUS_OPEN
+            ]
+            missing_sessions = [
+                session
+                for session in sessions
+                if session.status in {"planned", "started"}
+                and self._store.get_item(session.item_id) is None
+            ]
+            open_ids = {session.item_id for session in open_sessions}
+            lines = ["evening plan check:"]
+            if done_labels:
+                lines.append("explicitly done:")
+                lines.extend(f"- {label}" for label in done_labels)
+            if open_sessions:
+                lines.append("still open from the adopted plan:")
+                seen: set[str] = set()
+                for session in open_sessions:
+                    if session.item_id in seen:
+                        continue
+                    seen.add(session.item_id)
+                    windows = [
+                        f"{part.start[11:16]}-{part.end[11:16]}"
+                        for part in open_sessions
+                        if part.item_id == session.item_id
+                    ]
+                    lines.append(f"- {session.label} ({', '.join(windows)})")
+            if missing_sessions:
+                lines.append("plan references no longer in the task store:")
+                lines.extend(
+                    f"- {label}"
+                    for label in dict.fromkeys(
+                        session.label for session in missing_sessions
+                    )
+                )
+            extra = [item for item in on_deck if item.id not in open_ids]
+            if extra:
+                lines.append("also still on deck:")
+                lines.extend(f"- {item.task}" for item in extra)
+            if open_sessions or extra or missing_sessions:
+                lines.append(
+                    "what actually got done? tell me; elapsed sessions are not "
+                    "marked complete on their own."
+                )
+            else:
+                lines.append("everything in the adopted plan is explicitly done.")
+            text = "\n".join(lines)
         try:
             await self._send(int(chat), text, dedupe_key=f"eod:{today}")
         except TypeError:
@@ -2261,6 +2514,7 @@ async def _run_daemon(cfg: Config, store: SqliteStore) -> None:
         calendar=EventKitCalendar(cfg.calendar_bridge or None, cfg.calendar_enabled),
         work_start=cfg.work_start,
         work_end=cfg.work_end,
+        work_days=cfg.work_days,
         breaks=cfg.breaks,
         default_duration_minutes=cfg.default_duration_minutes,
         transition_buffer_minutes=cfg.transition_buffer_minutes,
@@ -2387,6 +2641,18 @@ def _status(cfg: Config) -> int:
             work_hours = store.get_meta(WORK_HOURS_KEY) or (
                 f"{cfg.work_start}-{cfg.work_end}"
             )
+            stored_work_days = store.get_meta(WORK_DAYS_KEY)
+            if stored_work_days:
+                work_days = stored_work_days
+            elif store.get_meta(ONBOARDING_DONE_KEY) or (
+                store.get_meta(OWNER_USER_KEY)
+                and store.get_meta(INSTALL_VERSION_KEY) != __version__
+            ):
+                work_days = "mon,tue,wed,thu,fri,sat,sun (legacy default)"
+            else:
+                work_days = ",".join(
+                    DAY_CODES[index] for index in cfg.work_days
+                )
             default_duration = store.get_meta(DEFAULT_DURATION_KEY) or str(
                 cfg.default_duration_minutes
             )
@@ -2395,7 +2661,8 @@ def _status(cfg: Config) -> int:
             )
             print(
                 f"  INFO planning: hours={work_hours} "
-                f"estimate={default_duration}m buffer={transition_buffer}m"
+                f"days={work_days} estimate={default_duration}m "
+                f"buffer={transition_buffer}m"
             )
             active_plan = store.active_plan()
             proposal = store.latest_proposed_plan()

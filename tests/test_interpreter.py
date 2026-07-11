@@ -78,6 +78,14 @@ def test_plan_action_and_plan_status_parse_as_typed_actions():
     assert isinstance(actions[1], Query) and actions[1].kind == "plan_status"
 
 
+def test_outlook_query_preserves_what_if_constraint():
+    action = parse_actions({"actions": [{
+        "type": "query", "kind": "outlook", "constraint": "mornings only"
+    }]})[0]
+    assert isinstance(action, Query)
+    assert action.kind == "outlook" and action.constraint == "mornings only"
+
+
 def test_capture_uses_raw_when_task_missing():
     res = parse_actions({"actions": [{"type": "capture", "raw": "call mom"}]})
     assert isinstance(res[0], Capture) and res[0].task == "call mom"

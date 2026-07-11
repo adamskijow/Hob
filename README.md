@@ -97,8 +97,9 @@ uv run python app.py token set
 
 `HOB_TELEGRAM_TOKEN` remains an environment-variable override for development.
 The first `/start` pairs Hob to that Telegram user; every other user and all
-group chats are rejected. A fresh owner then gets a four-step, resumable setup
-for planning hours, protected time, default effort, and transition space. Run
+group chats are rejected. A fresh owner then gets a five-step, resumable setup
+for planning hours, planning days, protected time, default effort, and
+transition space. Run
 `/setup` later to review it; every preference is visible in `/settings` and each
 change is undoable. For explicit deployment-time ownership, set
 `HOB_ALLOWED_TELEGRAM_USER_ID` before starting.
@@ -121,6 +122,9 @@ Talk to it like a person:
 - Ask "plan my day", "plan tomorrow", "I have 30 minutes before I leave", or
   "my afternoon is gone" for an overlap-checked timeline and a diff from the
   prior proposal. Named future days use their own availability window.
+- Ask "am I overloaded this week?" or "can I finish everything by Friday?" for
+  a read-only capacity outlook. It checks the planning profile and opaque
+  Calendar busy time, exposes assumptions and conflicts, and changes nothing.
 - Say "use this plan" to adopt every block as a local session, including split
   work. `/plan` or "what is on my plan?" shows the active version. A revised
   proposal requires "replace my plan with this"; "cancel my plan" and `/undo`
@@ -160,6 +164,7 @@ All configuration is environment variables:
 | `HOB_CALENDAR_ENABLED` | Use the local EventKit availability bridge | `true` |
 | `HOB_CALENDAR_BRIDGE` | Override path to the bridge executable | (bundled build) |
 | `HOB_WORK_HOURS` | Daily planning bounds, `HH:MM-HH:MM` | `09:00-17:30` |
+| `HOB_WORK_DAYS` | Days for flexible planning, comma-separated names | `mon,tue,wed,thu,fri` |
 | `HOB_BREAKS` | Comma-separated protected time ranges | `12:00-13:00` |
 | `HOB_DEFAULT_DURATION` | Estimate for tasks with no stated duration | `30` |
 | `HOB_TRANSITION_BUFFER` | Minutes kept between commitments | `0` |

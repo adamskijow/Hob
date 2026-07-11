@@ -490,6 +490,15 @@ class SqliteStore:
         ).fetchone()
         return self._row_to_plan_run(row) if row else None
 
+    def adopted_plan(self, day: str) -> PlanRun | None:
+        row = self._conn.execute(
+            "SELECT * FROM plan_runs WHERE day=? AND adopted_at IS NOT NULL "
+            "AND status IN ('active','completed') "
+            "ORDER BY adopted_at DESC, id DESC LIMIT 1",
+            (day,),
+        ).fetchone()
+        return self._row_to_plan_run(row) if row else None
+
     def expire_plans(self, before_day: str, ended_at: str) -> int:
         with self._lock:
             rows = self._conn.execute(

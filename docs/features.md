@@ -24,11 +24,12 @@ interpreter is the load-bearing component; everything else is plumbing.
 
 ## Onboarding and explicit work style
 
-A fresh private `/start` pairs the owner and begins four short setup steps:
-planning hours, protected daily time, the estimate for tasks without a duration,
-and transition minutes between commitments. Setup state and its pending question
-are transactional local metadata, so the flow resumes after a restart. Every
-step can be skipped, the whole flow can be paused, and `/setup` resumes it later.
+A fresh private `/start` pairs the owner and begins five short setup steps:
+planning hours, planning days, protected daily time, the estimate for tasks
+without a duration, and transition minutes between commitments. Setup state and
+its pending question are transactional local metadata, so the flow resumes after
+a restart. Every step can be skipped, the whole flow can be paused, and `/setup`
+resumes it later.
 `/settings` shows setup progress, Calendar readiness, every resulting value, and
 whether the first plan has actually been adopted.
 
@@ -157,7 +158,14 @@ task can carry a priority ("call the plumber, it's urgent", "the audit can wait"
 that floats it up or down the digest, and a project tag ("for the wedding: book
 the caterer, order flowers") you can later query ("what's left for the wedding").
 You can change settings by chat too ("send the morning digest at 6:30", "plan
-work from 9 to 5", "protect lunch noon to 1").
+work from 9 to 5", "plan flexible work weekdays", "protect lunch noon to 1").
+
+The weekly outlook applies the same deterministic planning rules across up to
+seven days. It counts each task's effort once, reserves adopted sessions and
+opaque Calendar busy periods, simulates prerequisites only on later forecast
+days, and reports deadline risk, leftovers, conflicts, and default-estimate
+assumptions. It is a load test, not a schedule: it changes no tasks, plans,
+reminders, or Calendar data.
 
 ## Commands and queries
 
@@ -167,13 +175,15 @@ work from 9 to 5", "protect lunch noon to 1").
   and setup progress.
 - `/setup` starts or resumes the guided planning-profile setup.
 - `/plan` shows the explicitly adopted plan and its next session.
+- `/outlook` or `/capacity` shows the read-only seven-day capacity outlook.
 - `/undo` reverts your last change (one inbound message is one undoable batch;
   repeat to walk further back).
 - `/help` shows a one-liner.
 
 Everything else is just plain language. You can ask ("what's on today", "what's
-overdue", "what do I have this week", "anything about the audit", "what did I
-finish today"), move many at once ("push everything to tomorrow"), and undo
+overdue", "am I overloaded this week", "what will not fit by Friday", "anything
+about the audit", "what did I finish today"), move many at once ("push
+everything to tomorrow"), and undo
 conversationally ("scratch that") as well as with `/undo`.
 
 ## Ownership and portability

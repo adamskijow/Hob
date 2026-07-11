@@ -46,6 +46,7 @@ and `HOB_KEEP_ALIVE`:
     <key>HOB_WAKE_TIME</key>      <string>07:00</string>
     <key>HOB_TIMEZONE</key>       <string>America/New_York</string>
     <key>HOB_DB_PATH</key>        <string>/Users/you/Library/Application Support/Hob/hob.db</string>
+    <key>HOB_WORK_DAYS</key>      <string>mon,tue,wed,thu,fri</string>
   </dict>
   <key>KeepAlive</key>          <true/>
   <key>StandardOutPath</key>    <string>/Users/you/Library/Application Support/Hob/hob.log</string>

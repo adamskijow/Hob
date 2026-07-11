@@ -91,6 +91,9 @@ class Store(Protocol):
     def active_plan(self, day: str | None = None) -> PlanRun | None:
         ...
 
+    def adopted_plan(self, day: str) -> PlanRun | None:
+        ...
+
     def expire_plans(self, before_day: str, ended_at: str) -> int:
         ...
 
