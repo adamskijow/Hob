@@ -643,6 +643,7 @@ class MessageService:
         last_items = (
             [{"id": d.id, "label": d.label} for d in last.items] if last else []
         )
+        last_batch = self._store.last_batch()
         raw_pending = self._store.get_meta(PENDING_KEY)
         return InterpreterContext(
             message=text,
@@ -655,6 +656,7 @@ class MessageService:
             focus=self._load_focus(),
             replied=self._replied_item(reply_to),
             forwarded_from=forwarded_from,
+            last_change_at=last_batch[0].ts if last_batch else None,
         )
 
     def _load_focus(self) -> list[dict]:

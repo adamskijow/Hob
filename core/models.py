@@ -408,3 +408,6 @@ class InterpreterContext:
     # Who forwarded this message to hob (a Telegram forward), else None. A
     # forwarded message's text is content to capture, not a command to hob.
     forwarded_from: str | None = None
+    # Most recent still-undoable mutation batch. Literal retractions only use
+    # it while fresh, so a social "nevermind" cannot undo an old change.
+    last_change_at: str | None = None

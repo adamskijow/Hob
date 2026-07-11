@@ -20,7 +20,7 @@ from __future__ import annotations
 import difflib
 import re
 from dataclasses import asdict, dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from core import dates, recurrence
 from core.models import (
@@ -53,6 +53,34 @@ CONFIDENCE_THRESHOLD = 0.5
 # A resolved date further out than this is probably a typo or a joke ("in 200
 # years"); confirm before applying rather than scheduling it silently.
 FAR_FUTURE_DAYS = 365 * 5
+RETRACTION_TTL_MINUTES = 15
+
+
+def _is_recent_literal_retraction(ctx) -> bool:
+    """A short standalone retraction undoes only a fresh mutation batch."""
+    tokens = tuple(re.findall(r"[a-z]+", (ctx.message or "").lower()))
+    if tokens not in {
+        ("nevermind",),
+        ("never", "mind"),
+        ("nevermind", "i", "m", "good"),
+        ("never", "mind", "i", "m", "good"),
+        ("nevermind", "im", "good"),
+        ("never", "mind", "im", "good"),
+        ("nevermind", "all", "good"),
+        ("never", "mind", "all", "good"),
+        ("nevermind", "no", "thanks"),
+        ("never", "mind", "no", "thanks"),
+    }:
+        return False
+    if not ctx.last_change_at:
+        return False
+    try:
+        age = datetime.fromisoformat(ctx.now) - datetime.fromisoformat(
+            ctx.last_change_at
+        )
+    except (TypeError, ValueError):
+        return False
+    return timedelta(0) <= age <= timedelta(minutes=RETRACTION_TTL_MINUTES)
 
 
 @dataclass
@@ -1443,6 +1471,8 @@ def _drop_redundant_new_recur(actions: list, message: str) -> list:
 
 def reconcile(actions: list, ctx) -> Plan:
     today = date.fromisoformat(ctx.today)
+    if _is_recent_literal_retraction(ctx):
+        actions = [Undo()]
     actions = _fix_everything_but(actions, ctx)
     actions = _drop_redundant_new_recur(actions, ctx.message)
     actions = _recover_new_recurrence(actions, ctx)

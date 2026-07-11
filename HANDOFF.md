@@ -22,6 +22,11 @@ snapshot.
   `29165341007`, was tagged and published as v0.9.0, backed up, and deployed by
   graceful launchd restart. Status is healthy on schema 10 with clean queues and
   14B. The first real `/outlook` delivered without changing adopted-plan state.
+- **v0.9 patch candidate:** `agent/fix-nevermind-retraction` fixes the live
+  screenshot case where an immediate “Nevermind I'm good” became chitchat and
+  left the unwanted capture scheduled. Only an exact standalone phrase plus a
+  mutation batch at most 15 minutes old can trigger undo; stale or task-bearing
+  variants fail safe. Local gates pass at 347 tests and 73/73 model cases.
 - **Live v0.8 evidence:** the exact launchd database contains one active and one
   superseded run, three canceled old sessions, one started and two planned
   revised sessions. The direct nudge reply produced `started`, not completion;
