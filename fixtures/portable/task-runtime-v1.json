@@ -1,0 +1,285 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "captures support repeated undo",
+      "now": "2026-06-29T09:00:00-04:00",
+      "timezone": "America/New_York",
+      "initialTasks": [],
+      "turns": [
+        {
+          "message": "Tomorrow buy bananas",
+          "actions": [
+            {
+              "type": "capture",
+              "task": "buy bananas",
+              "raw": "Tomorrow buy bananas",
+              "when": {"kind": "tomorrow"}
+            }
+          ],
+          "expected": {
+            "disposition": "applied",
+            "appliedKinds": ["capture"],
+            "pythonReplyContains": "got it",
+            "tasks": [
+              {
+                "id": "a1",
+                "rawText": "Tomorrow buy bananas",
+                "task": "buy bananas",
+                "dueDate": "2026-06-30",
+                "dueTime": null,
+                "status": "open",
+                "createdAt": "2026-06-29T09:00:00-04:00",
+                "updatedAt": "2026-06-29T09:00:00-04:00"
+              }
+            ]
+          }
+        },
+        {
+          "message": "call mom",
+          "actions": [
+            {
+              "type": "capture",
+              "task": "call mom",
+              "raw": "call mom"
+            }
+          ],
+          "expected": {
+            "disposition": "applied",
+            "appliedKinds": ["capture"],
+            "pythonReplyContains": "got it",
+            "tasks": [
+              {
+                "id": "a1",
+                "rawText": "Tomorrow buy bananas",
+                "task": "buy bananas",
+                "dueDate": "2026-06-30",
+                "dueTime": null,
+                "status": "open",
+                "createdAt": "2026-06-29T09:00:00-04:00",
+                "updatedAt": "2026-06-29T09:00:00-04:00"
+              },
+              {
+                "id": "a2",
+                "rawText": "call mom",
+                "task": "call mom",
+                "dueDate": null,
+                "dueTime": null,
+                "status": "open",
+                "createdAt": "2026-06-29T09:00:00-04:00",
+                "updatedAt": "2026-06-29T09:00:00-04:00"
+              }
+            ]
+          }
+        },
+        {
+          "message": "undo",
+          "actions": [{"type": "undo"}],
+          "expected": {
+            "disposition": "applied",
+            "appliedKinds": ["undo"],
+            "pythonReplyContains": "undid 1",
+            "tasks": [
+              {
+                "id": "a1",
+                "rawText": "Tomorrow buy bananas",
+                "task": "buy bananas",
+                "dueDate": "2026-06-30",
+                "dueTime": null,
+                "status": "open",
+                "createdAt": "2026-06-29T09:00:00-04:00",
+                "updatedAt": "2026-06-29T09:00:00-04:00"
+              }
+            ]
+          }
+        },
+        {
+          "message": "undo",
+          "actions": [{"type": "undo"}],
+          "expected": {
+            "disposition": "applied",
+            "appliedKinds": ["undo"],
+            "pythonReplyContains": "undid 1",
+            "tasks": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "atomic multi-action correction",
+      "now": "2026-06-29T09:00:00-04:00",
+      "timezone": "America/New_York",
+      "initialTasks": [
+        {
+          "id": "a1",
+          "rawText": "org prez",
+          "task": "org prez",
+          "dueDate": null,
+          "dueTime": null,
+          "status": "open",
+          "createdAt": "2026-06-25T08:00:00-04:00",
+          "updatedAt": "2026-06-25T08:00:00-04:00"
+        },
+        {
+          "id": "a2",
+          "rawText": "call the pool guy",
+          "task": "call the pool guy",
+          "dueDate": null,
+          "dueTime": null,
+          "status": "open",
+          "createdAt": "2026-06-26T08:00:00-04:00",
+          "updatedAt": "2026-06-26T08:00:00-04:00"
+        },
+        {
+          "id": "a3",
+          "rawText": "review SR audit",
+          "task": "review SR audit",
+          "dueDate": "2026-06-28",
+          "dueTime": null,
+          "status": "open",
+          "createdAt": "2026-06-27T08:00:00-04:00",
+          "updatedAt": "2026-06-27T08:00:00-04:00"
+        }
+      ],
+      "turns": [
+        {
+          "message": "already did the prez one, drop the pool call, push the audit to Friday",
+          "actions": [
+            {"type": "complete", "target": "a1", "confidence": 0.95},
+            {"type": "drop", "target": "a2", "confidence": 0.95},
+            {
+              "type": "reschedule",
+              "target": "a3",
+              "when": {"kind": "weekday", "which": "next", "day": "fri"},
+              "confidence": 0.95
+            }
+          ],
+          "expected": {
+            "disposition": "applied",
+            "appliedKinds": ["complete", "drop", "reschedule"],
+            "pythonReplyContains": "moved",
+            "tasks": [
+              {
+                "id": "a1",
+                "rawText": "org prez",
+                "task": "org prez",
+                "dueDate": null,
+                "dueTime": null,
+                "status": "done",
+                "createdAt": "2026-06-25T08:00:00-04:00",
+                "updatedAt": "2026-06-29T09:00:00-04:00"
+              },
+              {
+                "id": "a2",
+                "rawText": "call the pool guy",
+                "task": "call the pool guy",
+                "dueDate": null,
+                "dueTime": null,
+                "status": "dropped",
+                "createdAt": "2026-06-26T08:00:00-04:00",
+                "updatedAt": "2026-06-29T09:00:00-04:00"
+              },
+              {
+                "id": "a3",
+                "rawText": "review SR audit",
+                "task": "review SR audit",
+                "dueDate": "2026-07-03",
+                "dueTime": null,
+                "status": "open",
+                "createdAt": "2026-06-27T08:00:00-04:00",
+                "updatedAt": "2026-06-29T09:00:00-04:00"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "ambiguous date fails closed",
+      "now": "2026-06-29T09:00:00-04:00",
+      "timezone": "America/New_York",
+      "initialTasks": [],
+      "turns": [
+        {
+          "message": "lunch with Sam Thursday or Friday",
+          "actions": [
+            {
+              "type": "capture",
+              "task": "lunch with Sam",
+              "raw": "lunch with Sam Thursday or Friday",
+              "when": {"kind": "ambiguous"}
+            }
+          ],
+          "expected": {
+            "disposition": "clarificationRequired",
+            "appliedKinds": [],
+            "pythonReplyContains": "not clear",
+            "tasks": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "low confidence mutation requires confirmation",
+      "now": "2026-06-29T09:00:00-04:00",
+      "timezone": "America/New_York",
+      "initialTasks": [
+        {
+          "id": "a1",
+          "rawText": "org prez",
+          "task": "org prez",
+          "dueDate": null,
+          "dueTime": null,
+          "status": "open",
+          "createdAt": "2026-06-25T08:00:00-04:00",
+          "updatedAt": "2026-06-25T08:00:00-04:00"
+        }
+      ],
+      "turns": [
+        {
+          "message": "maybe the prez",
+          "actions": [
+            {"type": "complete", "target": "a1", "confidence": 0.2}
+          ],
+          "expected": {
+            "disposition": "confirmationRequired",
+            "appliedKinds": [],
+            "pythonReplyContains": "did you mean",
+            "tasks": [
+              {
+                "id": "a1",
+                "rawText": "org prez",
+                "task": "org prez",
+                "dueDate": null,
+                "dueTime": null,
+                "status": "open",
+                "createdAt": "2026-06-25T08:00:00-04:00",
+                "updatedAt": "2026-06-25T08:00:00-04:00"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "unknown target changes nothing",
+      "now": "2026-06-29T09:00:00-04:00",
+      "timezone": "America/New_York",
+      "initialTasks": [],
+      "turns": [
+        {
+          "message": "did the thing",
+          "actions": [
+            {"type": "complete", "target": "a9", "confidence": 0.95}
+          ],
+          "expected": {
+            "disposition": "clarificationRequired",
+            "appliedKinds": [],
+            "pythonReplyContains": "could not find",
+            "tasks": []
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -24,6 +24,15 @@ maintainable. If they do not, deterministic core behavior will move behind a
 portable native library rather than being independently reimplemented. Golden
 fixtures must make divergence between editions a release-blocking failure.
 
+Native migration proceeds by vertical behavior slices, not a second unchecked
+rewrite. Each slice begins with synthetic, privacy-safe golden turns executed
+through the Python reference and Swift core. A versioned runtime request keeps
+the original message beside typed model actions so literal safety backstops can
+remain deterministic. Unsupported actions, protocol versions, oversized input,
+ambiguous dates, missing targets, and low-confidence mutations fail closed.
+The Store helper cannot be activated until durable App Group transactions and
+the complete release corpus replace the initial in-memory slice.
+
 The first native package in `native/HobAppFoundation` establishes three seams:
 
 - a small SwiftUI menu-bar and settings surface for setup, privacy, and health;
