@@ -6,9 +6,9 @@ identifies a product gap after Hob computes a feasible plan or outlook: the
 owner can see the result but cannot naturally ask why a task was placed,
 deferred, or marked at risk, or what explicit input could make it fit.
 
-Release status: implemented on a stacked local branch. This branch is stacked
-on three unreleased increments and cannot merge, release, or deploy ahead of
-them. CI, accessibility, and live dogfood gates remain.
+Release status: implemented in stacked draft PR #4. This branch is stacked on
+three unreleased increments and cannot merge, release, or deploy ahead of them.
+Accessibility and live dogfood gates remain.
 
 ## Implementation evidence
 
@@ -26,7 +26,11 @@ them. CI, accessibility, and live dogfood gates remain.
 - 384 deterministic tests, compile, the signed native build, and both plist
   checks pass locally. The complete 14B real-model corpus passes 75/75 after
   deterministic recovery of every failure found in two preliminary runs.
-  Ubuntu/macOS CI remains.
+- GitHub Actions run
+  [29161761127](https://github.com/adamskijow/Hob/actions/runs/29161761127)
+  passes Ubuntu and macOS at exact feature head
+  `b53f131347135c45cedda98a41addb5720689081`. The macOS job includes the
+  EventKit bridge build and complete test step.
 
 ## Defects found during implementation
 

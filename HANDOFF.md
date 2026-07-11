@@ -31,11 +31,13 @@ snapshot.
   tests, compile, a signed native build, both plist lints, and the 72/72 14B
   real-model corpus. Ubuntu and macOS CI pass on verification head `4543f73`.
   The copied-data/VoiceOver drill remains pending for the stacked draft.
-- **Grounded explanation in progress:** `agent/v1-grounded-explanations` adds a
-  typed, read-only planning explanation artifact and natural “why?” / “what
-  would make it fit?” follow-ups. 384 deterministic tests, compile, native,
-  plist, and the 75/75 14B corpus pass locally; CI and live disagreement-repair
-  gates remain.
+- **Stacked grounded explanation:** `agent/v1-grounded-explanations` is draft
+  PR #4. It adds a typed, read-only planning explanation artifact and natural
+  “why?” / “what would make it fit?” follow-ups. Exact feature head `b53f131`
+  passes 384 deterministic tests, compile, native, both plists, the 75/75 14B
+  corpus, and Ubuntu/macOS CI in run `29161761127`. Fresh-owner VoiceOver and
+  five live disagreement-repair checks remain, and it is not deployable ahead
+  of its parent branches.
 
 ## What is built
 
