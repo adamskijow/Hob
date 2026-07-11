@@ -5,6 +5,7 @@ import plistlib
 
 ROOT = Path(__file__).parents[1]
 FOUNDATION = ROOT / "native" / "HobAppFoundation"
+XCODE_PROJECT = ROOT / "native" / "HobMacApp" / "HobMacApp.xcodeproj"
 
 
 def test_app_store_entitlements_are_minimal_and_sandboxed():
@@ -63,3 +64,14 @@ def test_native_package_exposes_shell_core_and_model_adapter():
     assert "read(upToCount: 200_001)" in bridge
     assert "prompt.utf8.count + instructions.utf8.count <= 100_000" in bridge
     assert "error.userInfo" not in bridge
+
+
+def test_xcode_shell_consumes_store_bundle_and_sandbox_configuration():
+    project = (XCODE_PROJECT / "project.pbxproj").read_text(encoding="utf-8")
+
+    assert 'productType = "com.apple.product-type.application"' in project
+    assert "MACOSX_DEPLOYMENT_TARGET = 26.0" in project
+    assert "ENABLE_APP_SANDBOX = YES" in project
+    assert "HobMacShell.entitlements" in project
+    assert "HobAppFoundation/AppStore/Info.plist" in project
+    assert (XCODE_PROJECT / "xcshareddata" / "xcschemes" / "Hob.xcscheme").is_file()

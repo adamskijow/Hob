@@ -23,7 +23,8 @@ model assets are still checked explicitly.
 
 ## Current foundation
 
-`native/HobAppFoundation` is a buildable Swift package, not an App Store archive:
+The native foundation now has both a tested Swift package and an Xcode-owned
+application shell. It is still not an App Store archive:
 
 - `HobAppCore` holds edition-neutral setup/readiness types.
 - `HobMacShell` is the initial menu-bar/settings experience.
@@ -32,9 +33,12 @@ model assets are still checked explicitly.
   and accepts generation requests without logging prompts.
 - `AppStore/` records the minimum sandbox, outbound network, Calendar, bundle,
   and permission-description boundary that the Xcode target must consume.
+- `native/HobMacApp/HobMacApp.xcodeproj` builds a real `Hob.app` menu-bar bundle
+  targeting macOS 26. CI builds it without signing so project drift fails before
+  signing credentials or App Store Connect are involved.
 
-The package intentionally contains no Ollama, uv, Homebrew, launchctl, shell
-installer, inbound network server, or arbitrary filesystem entitlement.
+The Store targets intentionally contain no Ollama, uv, Homebrew, launchctl,
+shell installer, inbound network server, or arbitrary filesystem entitlement.
 
 ## Delivery increments
 

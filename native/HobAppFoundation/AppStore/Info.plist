@@ -5,12 +5,18 @@
 <dict>
   <key>CFBundleDisplayName</key>
   <string>Hob</string>
+  <key>CFBundleExecutable</key>
+  <string>$(EXECUTABLE_NAME)</string>
   <key>CFBundleIdentifier</key>
   <string>com.josephadamski.hob</string>
   <key>CFBundleName</key>
   <string>Hob</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.1</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
   <key>LSMinimumSystemVersion</key>
   <string>26.0</string>
   <key>LSUIElement</key>
