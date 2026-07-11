@@ -39,14 +39,15 @@ jobs:
 
       - name: Build App Store shell bundle
         if: runner.os == 'macOS'
-        run: >-
-          xcodebuild
-          -project native/HobMacApp/HobMacApp.xcodeproj
-          -scheme Hob
-          -configuration Debug
-          -derivedDataPath "$RUNNER_TEMP/hob-macapp-derived"
-          CODE_SIGNING_ALLOWED=NO
-          build
+        run: |
+          xcodebuild \
+            -project native/HobMacApp/HobMacApp.xcodeproj \
+            -scheme Hob \
+            -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/hob-macapp-derived" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+          test -x "$RUNNER_TEMP/hob-macapp-derived/Build/Products/Debug/Hob.app/Contents/Library/LoginItems/HobAgent.app/Contents/MacOS/HobAgent"
 
       - name: Test
         run: uv run pytest

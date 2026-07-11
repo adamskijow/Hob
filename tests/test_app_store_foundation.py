@@ -14,6 +14,7 @@ def test_app_store_entitlements_are_minimal_and_sandboxed():
 
     assert entitlements == {
         "com.apple.security.app-sandbox": True,
+        "com.apple.security.application-groups": ["group.com.josephadamski.hob"],
         "com.apple.security.network.client": True,
         "com.apple.security.personal-information.calendars": True,
     }
@@ -54,6 +55,7 @@ def test_native_package_exposes_shell_core_and_model_adapter():
 
     assert 'name: "HobAppCore"' in manifest
     assert 'name: "HobMacShell"' in manifest
+    assert 'name: "HobAgent"' in manifest
     assert 'name: "HobFoundationBridge"' in manifest
 
     bridge = (
@@ -74,4 +76,39 @@ def test_xcode_shell_consumes_store_bundle_and_sandbox_configuration():
     assert "ENABLE_APP_SANDBOX = YES" in project
     assert "HobMacShell.entitlements" in project
     assert "HobAppFoundation/AppStore/Info.plist" in project
+    assert "Contents/Library/LoginItems" in project
+    assert "HobAgent.app in Embed Login Items" in project
     assert (XCODE_PROJECT / "xcshareddata" / "xcschemes" / "Hob.xcscheme").is_file()
+
+
+def test_background_helper_is_sandboxed_and_shares_only_required_storage():
+    with (FOUNDATION / "AppStore" / "HobAgent.entitlements").open("rb") as fh:
+        entitlements = plistlib.load(fh)
+    with (FOUNDATION / "AppStore" / "HobAgent-Info.plist").open("rb") as fh:
+        info = plistlib.load(fh)
+
+    assert entitlements == {
+        "com.apple.security.app-sandbox": True,
+        "com.apple.security.application-groups": ["group.com.josephadamski.hob"],
+        "com.apple.security.network.client": True,
+    }
+    assert info["CFBundleIdentifier"] == "com.josephadamski.hob.agent"
+    assert info["LSBackgroundOnly"] is True
+    assert "com.apple.security.network.server" not in entitlements
+
+
+def test_service_registration_is_explicit_and_reversible():
+    controller = (
+        FOUNDATION
+        / "Sources"
+        / "HobMacShell"
+        / "BackgroundServiceController.swift"
+    ).read_text(encoding="utf-8")
+
+    assert ".loginItem(identifier: helperIdentifier)" in controller
+    assert "try service.register()" in controller
+    assert "try service.unregister()" in controller
+    assert "openSystemSettingsLoginItems" in controller
+    assert "could not register" in controller
+    assert "guard runtimeAvailable" in controller
+    assert "runtimeAvailable: Bool = false" in controller

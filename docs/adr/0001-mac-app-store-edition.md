@@ -49,6 +49,10 @@ product and distribution boundary while preserving one behavioral authority.
 - The main app and every executable helper are sandboxed and signed together.
 - Background operation is registered with `SMAppService` only after a clear
   owner action, remains visible in the UI, and can be disabled there.
+- The Store app embeds a GUI-less login-item helper at
+  `Contents/Library/LoginItems/HobAgent.app`. Main app and helper share only the
+  registered App Group `group.com.josephadamski.hob`; absence of that container
+  is a hard readiness failure rather than permission to use another path.
 - The app opens outbound connections only; it never exposes a local server.
 - Calendar access uses EventKit with an honest full-access explanation because
   Apple offers no read-only authorization tier. Hob still emits only opaque busy
