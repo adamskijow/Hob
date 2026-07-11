@@ -91,11 +91,24 @@ intervals such as every 2 weeks are supported as well.
 ## Planning and recall
 
 "Plan my day", "what should I do next?", and constraints such as "I have 40
-minutes and low energy" trigger a separate read-only planning pass. It chooses
-up to three real on-deck ids and explains why; invented ids are discarded and
-nothing moves until you explicitly request a change. Search is semantic across
-task wording, the original capture, notes, and project tags, with literal search
-as the failure fallback.
+minutes and low energy" trigger a separate read-only planning pass. A pure,
+deterministic engine fits work into the remaining day without overlaps. It
+respects opaque Calendar busy periods, working hours, protected breaks, fixed
+times, durations, deadlines, dependencies, earliest starts, preferred windows,
+splitting permission, and literal time budgets. Unknown durations are shown as
+30-minute estimates rather than hidden assumptions. Work that cannot fit is
+named with a reason, deadline risk is called out, and fixed conflicts are shown
+without silently moving the commitment.
+
+The model sees only the feasible task timeline, then supplies a concise headline
+and reasons. It cannot change times or add work. Hob persists the prior proposal
+so "my afternoon is gone" can show a small plan diff. Nothing moves until you
+explicitly request a change. Calendar event titles never cross the Swift
+EventKit adapter boundary. Without permission or a bridge, the same planner
+falls back to working hours and breaks.
+
+Search is semantic across task wording, the original capture, notes, and project
+tags, with literal search as the failure fallback.
 
 ## Dates, priorities, tags, settings
 
@@ -104,13 +117,14 @@ days" all resolve to concrete days (the core owns the math, never the model). A
 task can carry a priority ("call the plumber, it's urgent", "the audit can wait")
 that floats it up or down the digest, and a project tag ("for the wedding: book
 the caterer, order flowers") you can later query ("what's left for the wedding").
-You can change settings by chat too ("send the morning digest at 6:30").
+You can change settings by chat too ("send the morning digest at 6:30", "plan
+work from 9 to 5", "protect lunch noon to 1").
 
 ## Commands and queries
 
 - `/today` lists only today's on-deck items.
 - `/list` lists every open item, including future and waiting tasks.
-- `/settings` shows the configured timezone and live digest/recap times.
+- `/settings` shows the timezone, digest/recap times, planning hours, and breaks.
 - `/undo` reverts your last change (one inbound message is one undoable batch;
   repeat to walk further back).
 - `/help` shows a one-liner.
@@ -135,8 +149,8 @@ secrets. Verified `restore` and `import` commands safety-backup current data
 before an atomic replacement.
 
 Every Telegram update is durable before its polling offset advances. One user
-turn—including mutations, settings, undo history, clarification state, and its
-reply—commits atomically. Temporary model failures retry the original inbox row;
+turn (including mutations, settings, undo history, clarification state, and its
+reply) commits atomically. Temporary model failures retry the original inbox row;
 delivery failures retry a deduplicated outbox without applying the task twice.
 
 ## Scheduling constraints

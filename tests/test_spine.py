@@ -335,6 +335,29 @@ def test_invalid_setting_question_is_resumable():
     assert "08:00" in out and store.get_meta("wake_time") == "08:00"
 
 
+def test_work_hours_and_break_are_chat_configurable_and_undoable():
+    llm = FakeLlm(
+        {
+            "actions": [
+                {"type": "setting", "key": "work_hours", "raw": "9 to 5"},
+                {"type": "setting", "key": "break_window", "raw": "noon to 1"},
+            ]
+        }
+    )
+    store = SqliteStore(":memory:")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York")
+    out = svc.handle(msg("plan work from 9 to 5 and protect lunch noon to 1"))
+    assert "09:00-17:00" in out and "12:00-13:00" in out
+    assert store.get_meta("work_hours") == "09:00-17:00"
+    assert store.get_meta("breaks") == "12:00-13:00"
+    settings = svc.handle(msg("/settings", message_id=2))
+    assert "planning hours: 09:00-17:00" in settings
+    assert "protected breaks: 12:00-13:00" in settings
+    assert "2 change" in svc.handle(msg("/undo", message_id=3))
+    assert store.get_meta("work_hours") == "" and store.get_meta("breaks") == ""
+
+
 def test_followup_resolves_via_focus():
     # Turn 1 captures; turn 2's bare "make it 4pm" sees the captured item as the
     # conversational focus and reschedules it.
@@ -650,6 +673,43 @@ def test_plan_my_day_is_reasoned_read_only_and_validates_ids():
     assert "call the pool guy" in out and "review SR audit" in out
     assert "made-up" not in out
     assert [i.to_dict() for i in store.open_items()] == before
+
+
+def test_plan_my_day_uses_injected_calendar_availability():
+    from core.feasibility import BusyPeriod, CalendarSnapshot
+
+    class Calendar:
+        def snapshot(self, start, end):
+            assert start.hour == 0 and end.date() > start.date()
+            return CalendarSnapshot(
+                "authorized",
+                [BusyPeriod(
+                    datetime(2026, 6, 29, 9, 0, tzinfo=TZ),
+                    datetime(2026, 6, 29, 10, 0, tzinfo=TZ),
+                )],
+            )
+
+    llm = FakeLlm([
+        {"actions": [{"type": "query", "kind": "plan"}]},
+        {"headline": "start after the busy block", "picks": [
+            {"id": "a1", "reason": "it fits the first real opening"}
+        ]},
+    ])
+    store = SqliteStore(":memory:")
+    store.add_item(Item(
+        id="a1", raw_text="write brief", task="write brief", due_date=None,
+        due_time=None, status="open", source="capture",
+        created_at="2026-06-29T08:00:00", updated_at="2026-06-29T08:00:00",
+        duration_minutes=30,
+    ))
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(
+        store, clock, llm, "America/New_York", calendar=Calendar(), breaks=()
+    )
+    out = svc.handle(msg("plan my day"))
+    assert "10:00–10:30 write brief" in out
+    assert "calendar checked: 1 busy block" in out
+    assert "Feasible timeline" in llm.calls[1][0]
 
 
 def test_semantic_search_validates_model_selected_ids():

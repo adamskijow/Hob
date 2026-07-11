@@ -80,11 +80,11 @@ Reuse this "cold decide, hot deliver" pattern for other voice, never for facts.
    screenshots and were reproduced this way.
 2. **Implement**, keeping the core pure and the fix deterministic where it is
    about correctness.
-3. **`uv run pytest`** (currently 227 passing). Add a unit test for any new core
+3. **`uv run pytest`** (currently 286 passing). Add a unit test for any new core
    behavior.
 4. **Run the eval** against the real model and add a case for the new behavior:
    `HOB_MODEL=qwen2.5:14b-instruct uv run python -m evals.interpreter_eval`
-   (currently 48/48). The eval is the real-model regression net; keep it green.
+   (currently 60/60). The eval is the real-model regression net; keep it green.
 5. **Deploy** by restarting the daemon (see Ops). Confirm the fix live.
 
 ## Ops (this is a live daemon)
@@ -99,14 +99,13 @@ Reuse this "cold decide, hot deliver" pattern for other voice, never for facts.
   degrades gracefully by design; bring Ollama/Hearth back.
 - `uv run python app.py doctor` is the preflight: token, Ollama, model pulled,
   config, db. `scripts/setup.sh` is one-command setup.
-- The bot token is a secret: only in the chmod-600 launchd plist (committed
-  template has a placeholder). Never print it or commit it. The launchd env is
-  the source of truth; let the daemon use it rather than handling it yourself.
+- The bot token is a secret stored in macOS Keychain. Never print or commit it.
+  `HOB_TELEGRAM_TOKEN` is only a development override.
 
 ## Data and schema
 
 SQLite (`adapters/store_sqlite.py`). Schema is versioned by `PRAGMA
-user_version` (`SCHEMA_VERSION`, currently 7) with stepped `ALTER TABLE`
+user_version` (`SCHEMA_VERSION`, currently 9) with stepped `ALTER TABLE`
 migrations in `_migrate`. To add an item column: bump the version, add a
 migration step, and extend `_ITEM_COLS`, `add_item`, `update_item`,
 `_row_to_item`, and the `Item` dataclass. A restart migrates the live db.
@@ -115,8 +114,10 @@ migration step, and extend `_ITEM_COLS`, `add_item`, `update_item`,
 
 ```
 core/        pure logic (models, ports, interpreter, planner, dates,
-             digest, recurrence, undo)
-adapters/    I/O (store_sqlite, llm_ollama, telegram_bot, clock, scheduler)
+             digest, recurrence, feasibility, undo)
+adapters/    I/O (store_sqlite, llm_ollama, telegram_bot, clock, scheduler,
+             calendar_eventkit)
+native/      signed Swift EventKit bridge (busy times only, no event titles)
 app.py       composition root + MessageService/DigestService/ReminderService/EODService
 config.py    env config + validation
 evals/       real-model interpreter eval

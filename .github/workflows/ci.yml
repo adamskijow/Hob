@@ -29,5 +29,9 @@ jobs:
       - name: Verify runtime syntax
         run: uv run python -m compileall -q app.py config.py core adapters
 
+      - name: Build EventKit bridge
+        if: runner.os == 'macOS'
+        run: scripts/build_calendar_bridge.sh
+
       - name: Test
         run: uv run pytest

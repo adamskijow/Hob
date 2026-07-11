@@ -5,6 +5,18 @@
 uv run pytest
 ```
 
+On macOS, build and smoke-test the native availability edge separately:
+
+```
+scripts/build_calendar_bridge.sh
+uv run python app.py calendar status
+```
+
+Permission is not part of a build or test. `python app.py calendar authorize`
+is an explicit local-user operation. Linux CI exercises the pure feasibility
+engine and the Python adapter with fakes; macOS CI also compiles the Swift
+source.
+
 Core modules are near-fully covered with a fake clock, an in-memory store, and a
 fake LLM returning canned JSON. Reliability tests inject failures between state
 application and delivery, reopen databases, and migrate the released v7 schema

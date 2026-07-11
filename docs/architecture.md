@@ -16,6 +16,7 @@ core/         pure, zero I/O, fully tested, time injected
   dates.py        date-intent resolution + day-word backstops
   planner.py      Actions + context -> concrete mutations (no I/O)
   digest.py       owed-decision, digest selection + rollover, rendering
+  feasibility.py  deterministic time-grid planning and plan diffs
   recurrence.py   recurring-rule parsing + next-occurrence math
   undo.py         action-log replay / revert (operates on snapshots)
 adapters/     all I/O lives here
@@ -26,6 +27,9 @@ adapters/     all I/O lives here
   telegram_bot.py long-poll loop, durable ingestion and delivery
   clock.py        real clock
   scheduler.py    morning-digest timer + catch-up-on-wake
+  calendar_eventkit.py read-only subprocess edge for opaque busy times
+native/
+  HobCalendarBridge/ signed Swift EventKit bridge; no event writes or titles
 app.py        composition root: wire adapters into core, run the daemon
 config.py     env config + validation
 ```
@@ -53,11 +57,25 @@ swappable part: anyone who needs fully local can replace the Telegram adapter
 ## Read-only intelligence
 
 Planning and semantic recall deliberately sit outside the mutation path. The
-model may rank known task ids and explain a proposed day, or return ids related
-to a search phrase. The edge validates every id against the current store and
-falls back deterministically on malformed output or an outage. The model cannot
-create, complete, move, or delete through these read-only passes; requested
-changes still use the interpreter, planner, action log, and undo path above.
+feasibility core owns all time arithmetic: it subtracts opaque Calendar busy
+periods and protected breaks from working hours, locks stated times, validates
+dependencies and earliest starts, then packs flexible or explicitly splittable
+work. The model only explains the resulting timeline. It cannot change a time,
+create capacity, complete, move, or delete through this pass. The last proposal
+is stored as meta state so a replan can retain still-valid blocks and render a
+minimal diff.
+
+The Swift EventKit bridge is a signed background app because Calendar permission
+belongs to a stable macOS bundle identity. Apple exposes reads through a full-
+access permission tier, but the bridge implements only status, permission, and
+event-query commands. It emits only start, end, and all-day state; titles,
+calendar names, and event identifiers never cross the adapter boundary. Denial, a missing
+bridge, or a non-macOS development host degrades to working-hours-only planning.
+
+Semantic search still asks the model for known ids, validates every id against
+the current store, and falls back deterministically on malformed output or an
+outage. Requested changes use the interpreter, planner, action log, and undo
+path above.
 
 ## Transaction and delivery boundary
 

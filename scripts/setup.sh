@@ -36,6 +36,14 @@ say "uv $(uv --version)"
 say "Installing dependencies (uv sync)"
 uv sync
 
+# --- calendar bridge ----------------------------------------------------------
+# Build the read-only EventKit edge, but never request private-data permission
+# during unattended setup. The user grants that explicitly afterward.
+if [ "$(uname -s)" = "Darwin" ] && have swiftc; then
+  say "Building calendar availability bridge"
+  scripts/build_calendar_bridge.sh || warn "Calendar bridge build failed; planning will use working hours only."
+fi
+
 # --- Ollama -------------------------------------------------------------------
 if ! have ollama; then
   if have brew; then

@@ -59,6 +59,18 @@ explicit owner id is recommended for unattended installs. If omitted, the first 
 `/start` pairs the database to that Telegram user. Group chats are always
 rejected.
 
+Build the local Calendar bridge once from the checkout, then explicitly grant
+access while logged into the same macOS user account that owns the LaunchAgent:
+
+```
+scripts/build_calendar_bridge.sh
+uv run --directory /path/to/hob python app.py calendar authorize
+```
+
+Apple labels read access as full Calendar access. Hob's bridge exposes no write
+operation and emits no event titles. If permission is denied or later revoked,
+the daemon remains healthy and plans against working hours and protected breaks.
+
 Ollama is kept alive separately by Hearth. Install Hearth, then run it headless
 under `launchd` with
 [`deploy/com.hearth.headless.plist`](../deploy/com.hearth.headless.plist) (it

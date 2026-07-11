@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import ContextManager, Protocol, runtime_checkable
 
+from core.feasibility import CalendarSnapshot
 from core.models import ActionLogEntry, Digest, InboxEntry, Item, OutboxEntry
 
 
@@ -32,6 +33,14 @@ class Llm(Protocol):
     it only for creative text like a chitchat reply."""
 
     def complete_json(self, prompt: str, schema: dict, temperature: float = 0.0) -> dict:
+        ...
+
+
+@runtime_checkable
+class Calendar(Protocol):
+    """Read-only source of opaque busy periods; event text is never required."""
+
+    def snapshot(self, start: datetime, end: datetime) -> CalendarSnapshot:
         ...
 
 

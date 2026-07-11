@@ -47,6 +47,14 @@ can move without shifting a fixed series; series can be completion-relative,
 end on a date or count, and skip an occurrence. A task can have several explicit
 reminder offsets instead of relying only on the global lead time.
 
+Planning is calendar-aware on macOS. A deterministic engine lays tasks into real
+free time, honoring working hours, protected breaks, durations, deadlines,
+fixed commitments, dependencies, earliest starts, preferred windows, splitting,
+and a stated time budget. The local EventKit bridge strips event titles and
+passes only opaque busy intervals to Hob. The model explains the resulting
+timeline but cannot create overlaps or invent capacity. Replanning shows what
+changed from the previous proposal, and no task is moved automatically.
+
 ## Getting started
 
 One command installs [uv](https://docs.astral.sh/uv/) and
@@ -65,6 +73,19 @@ uv sync                           # venv, Python 3.12, deps
 uv run python app.py doctor       # preflight: token, ollama, model, config, db
 uv run python app.py              # start hob
 ```
+
+On macOS, setup also builds Hob's signed Calendar bridge. Calendar access is a
+separate, explicit step:
+
+```
+uv run python app.py calendar authorize
+```
+
+Apple exposes calendar reads through its
+["full access" permission tier](https://developer.apple.com/documentation/eventkit/ekeventstore/requestfullaccesstoevents(completion:)). Hob's
+bridge itself remains read-only: it has no save or delete operation and does
+not export event titles. Without permission, planning falls back cleanly to
+configured working hours and breaks.
 
 Create the bot: message [@BotFather](https://t.me/BotFather), send `/newbot`,
 then store the token in macOS Keychain and message the bot privately with
@@ -94,8 +115,11 @@ Talk to it like a person:
   "add a note to the vet one: gate code is 4412" sticks a note.
 - Forward someone's message to capture it, edit a message to correct it, or use
   `/today`, `/list`, `/settings`, `/undo`, `/help`.
-- Ask "plan my day", "what should I do next?", or "I have 30 minutes before I
-  leave" for a short plan. Hob proposes; it does not move anything until asked.
+- Ask "plan my day", "what should I do next?", "I have 30 minutes before I
+  leave", or "my afternoon is gone" for an overlap-checked timeline and a diff
+  from the prior proposal. Hob proposes; it does not move anything until asked.
+- Say "plan work from 9 to 5" or "protect lunch from noon to 1" to change the
+  planning frame in chat. `/settings` shows the live values.
 - Add or edit constraints naturally: "the audit is due Friday", "this takes 45
   minutes", "do it after the numbers", "split it into two sessions", "prefer
   mornings", or "remind me an hour and 10 minutes before".
@@ -120,6 +144,10 @@ All configuration is environment variables:
 | `HOB_KEEP_ALIVE` | How long Ollama keeps the model loaded | `-1` (resident) |
 | `HOB_REMINDER_LEAD` | Minutes of heads-up before a timed task | `10` |
 | `HOB_EOD_TIME` | Evening recap time (empty disables) | `20:30` |
+| `HOB_CALENDAR_ENABLED` | Use the local EventKit availability bridge | `true` |
+| `HOB_CALENDAR_BRIDGE` | Override path to the bridge executable | (bundled build) |
+| `HOB_WORK_HOURS` | Daily planning bounds, `HH:MM-HH:MM` | `09:00-17:30` |
+| `HOB_BREAKS` | Comma-separated protected time ranges | `12:00-13:00` |
 
 The digest and recap times can also be changed in chat ("send the morning
 digest at 8"), no restart needed.
@@ -131,6 +159,7 @@ Inspect health, back up, export, or recover everything:
 
 ```
 uv run python app.py status
+uv run python app.py calendar status
 uv run python app.py backup /safe/place/hob-backup.db
 uv run python app.py export /safe/place/hob-export.json
 uv run python app.py restore /safe/place/hob-backup.db

@@ -137,7 +137,9 @@ ACTION_SCHEMA = {
                     ),
                     _variant(
                         "setting",
-                        {"key": {"type": "string", "enum": ["wake_time", "eod_time"]},
+                        {"key": {"type": "string", "enum": [
+                            "wake_time", "eod_time", "work_hours", "break_window"
+                        ]},
                          "raw": _STR},
                         ["type", "key", "raw"],
                     ),
@@ -274,10 +276,10 @@ NOT wait.
 sent the slides"). Fields: type "resume", target, confidence. If the user says \
 the task is DONE, use complete instead.
 - setting: change a preference, not a task. Fields: type "setting", key \
-("wake_time" = when the morning digest is sent; "eod_time" = when the evening \
-"what got done?" recap is sent), raw (the time words, e.g. "6:30", "8am"). Use \
-for "change my wake time to 6:30", "send the digest at 8", "do the evening \
-check-in at 9".
+("wake_time" = morning digest; "eod_time" = evening recap; "work_hours" = \
+the bounds Hob may plan inside; "break_window" = protected daily break), raw \
+(the literal time words). Use for "send the digest at 8", "plan work from 9 \
+to 5", "protect lunch from noon to 1", or "remove my lunch break".
 - prioritize: change the importance of an item ALREADY on the list. Fields: type \
 "prioritize", target (item number), level ("high", "normal", or "low"), \
 confidence. Use it when the user re-ranks an existing item: "make the prez deck \

@@ -572,6 +572,20 @@ def test_setting_unparseable_asks():
     assert not plan.settings and plan.questions
 
 
+def test_planning_frame_settings_parse_ranges_deterministically():
+    plan = reconcile(
+        [
+            Setting(key="work_hours", raw="9 to 5"),
+            Setting(key="break_window", raw="noon to 1"),
+        ],
+        ctx(),
+    )
+    assert [(s.key, s.value) for s in plan.settings] == [
+        ("work_hours", "09:00-17:00"),
+        ("break_window", "12:00-13:00"),
+    ]
+
+
 def test_query_today_and_all():
     plan = reconcile([Query(kind="today")], ctx(ACTIVE))
     assert plan.queries[0].kind == "today"

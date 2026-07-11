@@ -187,6 +187,16 @@ CASES = [
     Case("send the morning digest at 7",
          lambda p: [(s.key, s.value) for s in p.settings] == [("wake_time", "07:00")],
          "NL setting (wake time)"),
+    Case("plan my work from 9 to 5",
+         lambda p: [(s.key, s.value) for s in p.settings] == [
+             ("work_hours", "09:00-17:00")
+         ],
+         "NL setting (working hours)"),
+    Case("protect lunch from noon to 1",
+         lambda p: [(s.key, s.value) for s in p.settings] == [
+             ("break_window", "12:00-13:00")
+         ],
+         "NL setting (protected break)"),
     Case("tomorrow I need to look at the slides, prep my 1130 meeting, and join the 2 o clock call",
          lambda p: kinds(p) == ["capture", "capture", "capture"]
          and all(m.due_date == "2026-06-30" for m in p.mutations),

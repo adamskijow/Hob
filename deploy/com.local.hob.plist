@@ -28,6 +28,9 @@
     <key>HOB_TIMEZONE</key>       <string>America/New_York</string>
     <key>HOB_DB_PATH</key>        <string>/Users/you/Library/Application Support/Hob/hob.db</string>
     <key>HOB_KEEP_ALIVE</key>     <string>-1</string>
+    <key>HOB_CALENDAR_ENABLED</key><string>true</string>
+    <key>HOB_WORK_HOURS</key>      <string>09:00-17:30</string>
+    <key>HOB_BREAKS</key>          <string>12:00-13:00</string>
     <key>PATH</key>              <string>/Users/you/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
   <key>RunAtLoad</key>        <true/>

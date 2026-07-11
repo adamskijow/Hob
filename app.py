@@ -31,6 +31,12 @@ from core.digest import (
 )
 from core.interpreter import MODEL_UNREACHABLE, interpret
 from core.errors import RetryableMessageError
+from core.feasibility import (
+    CalendarSnapshot,
+    build_day_plan,
+    diff_day_plans,
+    parse_plan_preferences,
+)
 from core.models import (
     SOURCE_CAPTURE,
     STATUS_DONE,
@@ -45,9 +51,10 @@ from core.models import (
     Unknown,
 )
 from core.planner import Mutation, QueryIntent, SettingChange, reconcile
-from core.ports import Clock, Llm, Store
+from core.ports import Calendar, Clock, Llm, Store
 from core.undo import plan_undo
 from core.version import __version__
+from adapters.calendar_eventkit import EventKitCalendar
 from adapters.clock import SystemClock
 from adapters.data_files import (
     DatabaseBusyError,
@@ -92,7 +99,9 @@ HELP = (
     '/undo (or "scratch that") reverts your last change. ask "plan my day" or '
     '"what should i do next?" for a short, reasoned plan. tell me deadlines, '
     'effort, fixed times, dependencies, preferred windows, and reminder offsets '
-    'the same way: "the deck is due friday and takes 90 minutes".'
+    'the same way: "the deck is due friday and takes 90 minutes". after the '
+    'calendar bridge is connected, plans avoid calendar conflicts. say "plan '
+    'work from 9 to 5" or "protect lunch noon to 1" to set the daily frame.'
 )
 
 # meta key for the single user's chat id, learned from inbound messages.
@@ -111,11 +120,14 @@ CONFIRM_KEY = "pending_confirm"
 WAKE_KEY = "wake_time"
 # meta key for the user-set evening recap time; same contract as WAKE_KEY.
 EOD_KEY = "eod_time"
+WORK_HOURS_KEY = "work_hours"
+BREAKS_KEY = "breaks"
 # meta key holding the conversational focus: the items the last message touched
 # (JSON {ts, items: [{id, label}]}), so a bare follow-up ("make it 4pm") can
 # resolve. Stale focus is ignored after this many minutes.
 FOCUS_KEY = "focus"
 FOCUS_TTL_MINUTES = 15
+LAST_PLAN_KEY = "last_day_plan"
 # Reactions on a Hob message that maps to an item: these complete it, this drops
 # it. Anything else (hearts on chit-chat) is appreciation, not an instruction.
 REACT_COMPLETE = {"\U0001F44D", "\U0001F44C", "\U0001F4AF", "\U0001F3C6"}
@@ -146,14 +158,14 @@ PLAN_SCHEMA = {
     "required": ["headline", "picks"],
 }
 PLAN_PROMPT = """\
-You are Hob, a concise personal planning partner. Choose at most three items from
-the supplied on-deck list that form a realistic next plan. Respect the user's
-constraint, deadlines, priority, waiting state, and task wording. Do not invent
-tasks or ids. Give one short headline and one practical reason per chosen item.
+You are Hob, a concise personal planning partner. A deterministic engine has
+already produced a feasibility-checked timeline. Write one short headline and one
+practical reason per scheduled item. Do not alter times, choose different work,
+or invent tasks or ids. Calendar event names are intentionally unavailable.
 
 Today: {today}
 User constraint: {constraint}
-On deck: {items}
+Feasible timeline: {items}
 """
 
 SEARCH_SCHEMA = {
@@ -261,6 +273,10 @@ class MessageService:
         allowed_user_id: int | None = None,
         eod_time: str = "20:30",
         retry_model_outages: bool = False,
+        calendar: Calendar | None = None,
+        work_start: str = "09:00",
+        work_end: str = "17:30",
+        breaks: tuple[tuple[str, str], ...] = (("12:00", "13:00"),),
     ) -> None:
         self._store = store
         self._clock = clock
@@ -270,6 +286,10 @@ class MessageService:
         self._allowed_user_id = allowed_user_id
         self._eod_time = eod_time
         self._retry_model_outages = retry_model_outages
+        self._calendar = calendar
+        self._work_start = work_start
+        self._work_end = work_end
+        self._breaks = breaks
 
     def _welcome(self) -> str:
         return (
@@ -629,7 +649,12 @@ class MessageService:
     def _apply_setting(
         self, s: SettingChange, message_id: str, batch_id: str | None
     ) -> str:
-        key = WAKE_KEY if s.key == "wake_time" else EOD_KEY
+        key = {
+            "wake_time": WAKE_KEY,
+            "eod_time": EOD_KEY,
+            "work_hours": WORK_HOURS_KEY,
+            "break_window": BREAKS_KEY,
+        }.get(s.key, s.key)
         before = self._store.get_meta(key)
         self._store.set_meta(key, s.value)
         self._store.append_actions(
@@ -649,6 +674,14 @@ class MessageService:
             return f"ok, morning digest at {s.value} from now on."
         if s.key == "eod_time":
             return f"ok, evening recap at {s.value} from now on."
+        if s.key == "work_hours":
+            return f"ok, i will plan inside {s.value} from now on."
+        if s.key == "break_window":
+            return (
+                f"ok, i will protect {s.value} from planning."
+                if s.value != "none"
+                else "ok, daily protected break removed."
+            )
         return "ok"
 
     def _apply_confirmed(self, data: list, message_id: str) -> str:
@@ -1068,58 +1101,147 @@ class MessageService:
         return matches or literal
 
     def _answer_plan(self, constraint: str, open_items: list[Item]) -> str:
-        """Generate a short read-only plan; ids are validated before rendering."""
-        open_ids = {item.id for item in open_items}
-        now_iso = self._clock.now().strftime("%Y-%m-%dT%H:%M")
-        on_deck = [
-            item
-            for item in select_digest_items(
-                open_items, self._clock.today().isoformat()
-            )
-            if not any(dependency in open_ids for dependency in item.depends_on)
-            and (not item.earliest_start or item.earliest_start <= now_iso)
-        ]
-        if not on_deck:
-            return "plan: nothing actionable on deck; remaining work is blocked or not ready yet."
-        fallback = on_deck[:3]
+        """Build a read-only timeline; the model can explain but cannot schedule."""
+        now = self._clock.now()
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
+        if self._calendar is None:
+            snapshot = CalendarSnapshot("unavailable", detail="calendar adapter not configured")
+        else:
+            try:
+                snapshot = self._calendar.snapshot(day_start, day_end)
+            except Exception as exc:  # calendar failure must not break task planning
+                log.warning("calendar snapshot unavailable: %s", exc)
+                snapshot = CalendarSnapshot("unavailable", detail=str(exc))
+        work_range = self._store.get_meta(WORK_HOURS_KEY) or (
+            f"{self._work_start}-{self._work_end}"
+        )
         try:
-            out = self._llm.complete_json(
-                PLAN_PROMPT.format(
-                    today=self._clock.today().isoformat(),
-                    constraint=constraint,
-                    items=self._item_context(on_deck),
-                ),
-                PLAN_SCHEMA,
-                temperature=0.2,
-            )
-        except Exception:
-            out = {}
-        by_id = {i.id.lower(): i for i in on_deck}
-        picks: list[tuple[Item, str]] = []
-        seen: set[str] = set()
+            work_start, work_end = work_range.split("-", 1)
+        except ValueError:
+            work_start, work_end = self._work_start, self._work_end
+        stored_breaks = self._store.get_meta(BREAKS_KEY)
+        break_range = (
+            stored_breaks
+            if stored_breaks
+            else ",".join(f"{start}-{end}" for start, end in self._breaks)
+        )
+        if stored_breaks == "none":
+            break_range = ""
+        breaks = tuple(
+            (start, end)
+            for window in break_range.split(",")
+            if window and "-" in window
+            for start, end in [window.split("-", 1)]
+        )
+        preferences = parse_plan_preferences(
+            constraint,
+            work_start=work_start,
+            work_end=work_end,
+            breaks=breaks,
+        )
+        previous = None
+        try:
+            previous = json.loads(self._store.get_meta(LAST_PLAN_KEY) or "null")
+        except (TypeError, json.JSONDecodeError):
+            pass
+        feasible = build_day_plan(
+            open_items, snapshot, now, preferences, previous=previous
+        )
+        changes = diff_day_plans(previous, feasible)
+        self._store.set_meta(LAST_PLAN_KEY, json.dumps(feasible.to_dict()))
+
+        by_id = {item.id: item for item in open_items}
+        timeline = [
+            {
+                "id": block.item_id,
+                "task": block.label,
+                "start": block.start.strftime("%H:%M"),
+                "end": block.end.strftime("%H:%M"),
+                "fixed": block.fixed,
+                "deadline": by_id.get(block.item_id).deadline_date
+                if by_id.get(block.item_id)
+                else None,
+                "priority": by_id.get(block.item_id).priority
+                if by_id.get(block.item_id)
+                else "normal",
+            }
+            for block in feasible.blocks
+        ]
+        if not timeline:
+            headline = "nothing safely fits in the remaining window"
+            out: dict = {}
+        else:
+            try:
+                out = self._llm.complete_json(
+                    PLAN_PROMPT.format(
+                        today=self._clock.today().isoformat(),
+                        constraint=constraint,
+                        items=json.dumps(timeline, ensure_ascii=False),
+                    ),
+                    PLAN_SCHEMA,
+                    temperature=0.2,
+                )
+            except Exception:
+                out = {}
+            headline = (
+                str(out.get("headline", "")).strip()
+                if isinstance(out, dict)
+                else ""
+            ) or "a feasible pass through the day"
+
+        reasons: dict[str, str] = {}
         raw_picks = out.get("picks", []) if isinstance(out, dict) else []
+        scheduled_ids = {block.item_id for block in feasible.blocks}
         if isinstance(raw_picks, list):
-            for pick in raw_picks[:3]:
+            for pick in raw_picks:
                 if not isinstance(pick, dict):
                     continue
                 item_id = str(pick.get("id", "")).lower()
                 reason = str(pick.get("reason", "")).strip()
-                if item_id in by_id and item_id not in seen:
-                    picks.append((by_id[item_id], reason or "best fit for the day"))
-                    seen.add(item_id)
-        if not picks:
-            picks = [(i, "highest current priority on deck") for i in fallback]
-        headline = (
-            str(out.get("headline", "")).strip()
-            if isinstance(out, dict)
-            else ""
-        ) or "a realistic next pass"
+                if item_id in scheduled_ids and reason:
+                    reasons[item_id] = reason
+
         lines = [f"plan: {headline}"]
-        lines.extend(
-            f"{n}: {item.task}{marks(item)} — {reason}"
-            for n, (item, reason) in enumerate(picks, start=1)
+        if snapshot.status == "authorized":
+            lines.append(f"calendar checked: {len(snapshot.busy)} busy block(s)")
+        elif snapshot.status == "not_determined":
+            lines.append("calendar not connected yet; this uses working hours only. run `python app.py calendar authorize` once on the Mac.")
+        elif snapshot.status in {"denied", "restricted", "write_only"}:
+            lines.append("calendar unavailable by macOS permission; this uses working hours only.")
+        elif snapshot.status == "disabled":
+            lines.append("calendar checking is disabled; this uses working hours only.")
+        else:
+            lines.append("calendar bridge unavailable; this uses working hours only.")
+
+        for number, block in enumerate(feasible.blocks, start=1):
+            item = by_id.get(block.item_id)
+            badges = marks(item) if item else ""
+            estimate = " (30m estimate)" if block.inferred_duration else ""
+            segment = f" (part {block.segment})" if block.segment > 1 else ""
+            reason = reasons.get(block.item_id)
+            suffix = f": {reason}" if reason else ""
+            lines.append(
+                f"{number}: {block.start:%H:%M}–{block.end:%H:%M} "
+                f"{block.label}{badges}{estimate}{segment}{suffix}"
+            )
+        if feasible.warnings:
+            lines.append("watchouts:")
+            lines.extend(f"- {warning}" for warning in dict.fromkeys(feasible.warnings))
+        if feasible.deferred:
+            lines.append("not placed:")
+            for deferred in feasible.deferred[:5]:
+                lines.append(
+                    f'- {deferred.label}: {deferred.reason} ({deferred.remaining_minutes}m)'
+                )
+            if len(feasible.deferred) > 5:
+                lines.append(f"- plus {len(feasible.deferred) - 5} more")
+        if changes:
+            lines.append("changed since the last plan:")
+            lines.extend(f"- {change}" for change in changes)
+        lines.append(
+            f"{feasible.free_minutes}m remains open. nothing moved; tell me what changed and i will replan."
         )
-        lines.append("nothing moved yet. tell me what to change, or say 'do the first one'.")
         return "\n".join(lines)
 
     def _reply(
@@ -1277,10 +1399,18 @@ class MessageService:
         wake = self._store.get_meta(WAKE_KEY) or self._wake_time
         eod = self._store.get_meta(EOD_KEY)
         eod = self._eod_time if eod is None else eod
+        work_hours = self._store.get_meta(WORK_HOURS_KEY) or (
+            f"{self._work_start}-{self._work_end}"
+        )
+        breaks = self._store.get_meta(BREAKS_KEY)
+        if not breaks:
+            breaks = ",".join(f"{start}-{end}" for start, end in self._breaks)
         return (
             f"settings:\ntimezone: {self._timezone}\n"
             f"morning digest: {wake}\n"
-            f"evening recap: {eod if eod != '' else 'disabled'}"
+            f"evening recap: {eod if eod != '' else 'disabled'}\n"
+            f"planning hours: {work_hours}\n"
+            f"protected breaks: {'none' if breaks == 'none' else breaks}"
         )
 
 
@@ -1526,6 +1656,10 @@ async def _run_daemon(cfg: Config, store: SqliteStore) -> None:
         cfg.allowed_telegram_user_id,
         cfg.eod_time,
         retry_model_outages=True,
+        calendar=EventKitCalendar(cfg.calendar_bridge or None, cfg.calendar_enabled),
+        work_start=cfg.work_start,
+        work_end=cfg.work_end,
+        breaks=cfg.breaks,
     )
     telegram = TelegramAdapter(
         store, service.handle, token=cfg.telegram_token,
@@ -1595,6 +1729,16 @@ def _doctor() -> int:
         print(f"  FAIL ollama not reachable at {cfg.ollama_host}. Start it "
               "(ollama serve, or Hearth).")
         ok = False
+    calendar = EventKitCalendar(cfg.calendar_bridge or None, cfg.calendar_enabled)
+    snapshot = calendar.status()
+    if snapshot.status == "authorized":
+        print("  OK   calendar: read access available")
+    elif snapshot.status == "disabled":
+        print("  INFO calendar: disabled")
+    elif snapshot.status == "not_determined":
+        print("  WARN calendar: run `python app.py calendar authorize`")
+    else:
+        print(f"  WARN calendar: {snapshot.status}")
     print("all good" if ok else "problems found (see above)")
     return 0 if ok else 1
 
@@ -1641,7 +1785,36 @@ def _status(cfg: Config) -> int:
     except Exception:  # noqa: BLE001
         print(f"  FAIL model: Ollama unavailable at {cfg.ollama_host}")
         ok = False
+    calendar = EventKitCalendar(cfg.calendar_bridge or None, cfg.calendar_enabled)
+    snapshot = calendar.status()
+    label = "OK  " if snapshot.status == "authorized" else "INFO"
+    print(
+        f"  {label} calendar: {snapshot.status}; working hours "
+        f"{cfg.work_start}-{cfg.work_end}"
+    )
     return 0 if ok else 1
+
+
+def _calendar_command(cfg: Config, argv: list[str]) -> int:
+    action = argv[1] if len(argv) > 1 else "status"
+    calendar = EventKitCalendar(cfg.calendar_bridge or None, cfg.calendar_enabled)
+    if action == "status":
+        snapshot = calendar.status()
+        print(f"hob: calendar {snapshot.status}")
+        if snapshot.detail:
+            print(f"hob: {snapshot.detail}")
+        return 0 if snapshot.status in {"authorized", "disabled", "not_determined"} else 1
+    if action == "authorize":
+        snapshot = calendar.request_access()
+        if snapshot.status == "authorized":
+            print("hob: calendar connected read-only; event titles stay inside EventKit")
+            return 0
+        print(f"hob: calendar access {snapshot.status}", file=sys.stderr)
+        if snapshot.detail:
+            print(f"hob: {snapshot.detail}", file=sys.stderr)
+        return 1
+    print("usage: python app.py calendar [status|authorize]", file=sys.stderr)
+    return 2
 
 
 def _token_command(argv: list[str]) -> int:
@@ -1746,6 +1919,8 @@ def main(argv: list[str] | None = None) -> int:
         return _export_or_backup(cfg, argv)
     if argv and argv[0] in ("restore", "import"):
         return _restore_or_import(cfg, argv)
+    if argv and argv[0] == "calendar":
+        return _calendar_command(cfg, argv)
     if argv and argv[0] == "status":
         return _status(cfg)
 

@@ -15,6 +15,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from adapters.keychain import get_telegram_token
 
 _WAKE_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+_RANGE_RE = re.compile(
+    r"^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$"
+)
 # ollama keep_alive: "-1" (forever), integer seconds ("0", "300"), or a duration
 # with a unit ("30m", "2h", "1.5h"). A unit-less decimal like "1.5" is rejected
 # (it passes here but ollama would reject it as a bad duration).
@@ -38,6 +41,11 @@ class Config:
     keep_alive: str  # how long ollama keeps the model loaded; "-1" = resident
     reminder_lead: int  # minutes before a timed item's due moment to ping
     eod_time: str  # HH:MM for the evening "what got done?" recap; "" = off
+    calendar_enabled: bool
+    calendar_bridge: str
+    work_start: str
+    work_end: str
+    breaks: tuple[tuple[str, str], ...]
 
     @property
     def telegram_enabled(self) -> bool:
@@ -83,6 +91,11 @@ class Config:
             keep_alive=src.get("HOB_KEEP_ALIVE", "-1").strip(),
             reminder_lead=reminder_lead,
             eod_time=src.get("HOB_EOD_TIME", "20:30").strip(),
+            calendar_enabled=_boolean(src.get("HOB_CALENDAR_ENABLED", "1")),
+            calendar_bridge=src.get("HOB_CALENDAR_BRIDGE", "").strip(),
+            work_start=_range(src.get("HOB_WORK_HOURS", "09:00-17:30"))[0],
+            work_end=_range(src.get("HOB_WORK_HOURS", "09:00-17:30"))[1],
+            breaks=_breaks(src.get("HOB_BREAKS", "12:00-13:00")),
         )
         cfg.validate()
         return cfg
@@ -116,6 +129,33 @@ class Config:
                 f"HOB_EOD_TIME must be HH:MM 24h (or empty to disable), "
                 f"got {self.eod_time!r}"
             )
+        if self.work_start >= self.work_end:
+            raise ConfigError("HOB_WORK_HOURS must end after it starts")
+
+
+def _boolean(value: str) -> bool:
+    low = value.strip().lower()
+    if low in {"1", "true", "yes", "on"}:
+        return True
+    if low in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError("HOB_CALENDAR_ENABLED must be true or false")
+
+
+def _range(value: str) -> tuple[str, str]:
+    raw = value.strip()
+    if not _RANGE_RE.match(raw):
+        raise ConfigError(f"time range must be HH:MM-HH:MM, got {raw!r}")
+    start, end = raw.split("-", 1)
+    if start >= end:
+        raise ConfigError(f"time range must end after it starts, got {raw!r}")
+    return start, end
+
+
+def _breaks(value: str) -> tuple[tuple[str, str], ...]:
+    if not value.strip():
+        return ()
+    return tuple(_range(part) for part in value.split(","))
 
 
 def _db_path(src: dict, *, preserve_legacy: bool) -> str:

@@ -661,8 +661,51 @@ def _reconcile_setting(action: Setting, plan: Plan) -> None:
             plan.pending.append(Pending(kind="setting", question=question, key=action.key))
             return
         plan.settings.append(SettingChange(key=action.key, value=value))
+    elif action.key in ("work_hours", "break_window"):
+        if action.key == "break_window" and action.raw.strip().lower() in {
+            "none", "off", "no break", "remove", "remove break",
+        }:
+            plan.settings.append(SettingChange(key=action.key, value="none"))
+            return
+        value = _parse_time_range(action.raw)
+        if value is None:
+            what = "working hours" if action.key == "work_hours" else "protected break"
+            question = f"what start and end time should i use for the {what}?"
+            plan.questions.append(question)
+            plan.pending.append(Pending(kind="setting", question=question, key=action.key))
+            return
+        plan.settings.append(SettingChange(key=action.key, value=value))
     else:
-        plan.questions.append("i can only change the digest and recap times right now.")
+        plan.questions.append("i can change digest, recap, working-hours, and break times.")
+
+
+def _parse_time_range(raw: str) -> str | None:
+    """Parse a literal daily range, inferring an unmarked afternoon end."""
+    token = r"(?:noon|midday|midnight|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)"
+    match = re.search(
+        rf"({token})\s*(?:to|through|until|-)\s*({token})",
+        raw.strip(),
+        re.I,
+    )
+    if not match:
+        return None
+    def one(value: str) -> str | None:
+        low = value.strip().lower()
+        if low in {"noon", "midday"}:
+            return "12:00"
+        if low == "midnight":
+            return "00:00"
+        return dates.parse_time(value.strip())
+
+    start = one(match.group(1))
+    end = one(match.group(2))
+    if start is None or end is None:
+        return None
+    if end <= start and not re.search(r"\b(am|pm)\b", match.group(2), re.I):
+        hour, minute = map(int, end.split(":"))
+        if hour < 12:
+            end = f"{hour + 12:02d}:{minute:02d}"
+    return f"{start}-{end}" if end > start else None
 
 
 def _reconcile_prioritize(

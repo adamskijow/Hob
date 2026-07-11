@@ -9,3 +9,6 @@ __pycache__/
 *.log
 .env
 .DS_Store
+.uv-cache/
+.swift-module-cache/
+native/HobCalendarBridge/.build/

@@ -29,6 +29,9 @@ def test_defaults_applied():
     assert c.reminder_lead == 10  # a heads-up 10 min before, by default
     assert not c.telegram_enabled
     assert c.allowed_telegram_user_id is None
+    assert c.calendar_enabled
+    assert (c.work_start, c.work_end) == ("09:00", "17:30")
+    assert c.breaks == (("12:00", "13:00"),)
 
 
 def test_allowed_telegram_user_id():
@@ -85,3 +88,22 @@ def test_bad_wake_time_out_of_range():
 def test_bad_timezone():
     with pytest.raises(ConfigError):
         Config.from_env({**BASE, "HOB_TIMEZONE": "Mars/Olympus"})
+
+
+def test_planning_frame_configuration_and_validation():
+    cfg = Config.from_env({
+        **BASE,
+        "HOB_CALENDAR_ENABLED": "off",
+        "HOB_WORK_HOURS": "08:30-16:30",
+        "HOB_BREAKS": "10:00-10:15,12:30-13:00",
+    })
+    assert not cfg.calendar_enabled
+    assert (cfg.work_start, cfg.work_end) == ("08:30", "16:30")
+    assert cfg.breaks == (("10:00", "10:15"), ("12:30", "13:00"))
+    for env in (
+        {**BASE, "HOB_CALENDAR_ENABLED": "perhaps"},
+        {**BASE, "HOB_WORK_HOURS": "9 to 5"},
+        {**BASE, "HOB_BREAKS": "13:00-12:00"},
+    ):
+        with pytest.raises(ConfigError):
+            Config.from_env(env)

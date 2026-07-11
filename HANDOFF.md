@@ -11,12 +11,13 @@ snapshot.
 - **Live and in daily use.** Runs as a `launchd` daemon on macOS, with
   [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive. Model:
   `qwen2.5:14b-instruct` (7b works; 14b is more reliable on dense messages).
-- **Released:** v0.5.0. Schema 9 adds scheduling constraints, structured
-  recurrence, dependencies/subtasks, and task-specific reminder offsets. A
-  verified backup is made before migrating v7 or v8 data.
-- **Green:** `uv run pytest` (272 passing) and the real-model eval
-  (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m evals.interpreter_eval`,
-  53/53).
+- **Released:** v0.6.0. Calendar-aware feasibility adds an opaque EventKit busy
+  time bridge, deterministic time-grid planning, chat-settable work hours and
+  breaks, deadline/capacity warnings, splitting, and plan diffs. Schema remains
+  9; a verified backup is made before migrating v7 or v8 data.
+- **Green:** `uv run pytest` (286 passing), native bridge build, and the
+  real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
+  evals.interpreter_eval`, 60/60).
 
 ## What is built
 
@@ -45,6 +46,12 @@ duration/confidence, fixed/flexible and splittable work, earliest starts,
 preferred windows, parents, dependency validation, and multiple reminders.
 Structured recurrence preserves fixed cadence across a moved occurrence and
 supports completion-relative schedules, end dates/counts, skips, and stops.
+
+The v0.6 feasibility layer subtracts opaque EventKit busy periods and protected
+breaks from working hours, locks stated times, and packs flexible work without
+letting the model invent capacity. Event titles never leave the Swift bridge.
+The prior proposal is persisted as meta state so replanning shows a small diff.
+Calendar denial or an absent bridge falls back to working-hours-only planning.
 
 ## How development goes here
 
