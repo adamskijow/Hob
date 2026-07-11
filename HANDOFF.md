@@ -11,17 +11,13 @@ snapshot.
 - **Live and in daily use.** Runs as a `launchd` daemon on macOS, with
   [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive. Model:
   `qwen2.5:14b-instruct` (7b works; 14b is more reliable on dense messages).
-- **Released:** v0.8.0. Date-correct proposals can be explicitly adopted as
-  first-class split sessions, queried as the current plan, safely replaced, and
-  nudged once at session start. Schema is 10.
-- **Draft:** v0.9 is isolated on `agent/llm-native-ux` in draft PR #1. It adds
-  a deterministic weekly capacity outlook, working days, plan-aware EOD, first-
-  adoption coaching, and privacy-safe activation metrics. The live v0.8
-  adoption/status/interruption/replan/replacement/nudge/reply gate completed on
-  2026-07-11 with clean queues, so this parent dogfood block is closed.
+- **Released:** v0.9.0. It adds a deterministic weekly capacity outlook,
+  explicit working days, plan-aware EOD, first-adoption coaching, accessible
+  media fallback, and privacy-safe activation metrics. Schema remains 10.
 - **Green:** `uv run pytest` (345 passing), native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
-  evals.interpreter_eval`, 72/72). Ubuntu and macOS PR checks pass.
+  evals.interpreter_eval`, 72/72). Ubuntu and macOS CI pass on exact release
+  feature head `e9f1c7d` in run `29165242422`.
 - **Live v0.8 evidence:** the exact launchd database contains one active and one
   superseded run, three canceled old sessions, one started and two planned
   revised sessions. The direct nudge reply produced `started`, not completion;
