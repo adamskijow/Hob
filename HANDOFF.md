@@ -22,9 +22,15 @@ snapshot.
   timezone, exposes it during setup, removes the template's regional default,
   and gives DST gaps/repeats explicit planning, reminder, and digest policies.
   It is not deployable ahead of v0.9.
-- **Green:** `uv run pytest` (345 passing), native bridge build, and the
-  real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
-  evals.interpreter_eval`, 72/72). Ubuntu and macOS PR checks pass.
+- **Stacked queue recovery:** `agent/v1-queue-recovery` adds schema 11,
+  privacy-safe queue status/history, explicit reversible retry/quarantine, a
+  daemon-stop lease, failed-outbox accounting, and poison-row regressions. Its
+  copied-data and VoiceOver operator drill is still pending, and it is not
+  deployable ahead of either parent branch.
+- **Current deterministic gate:** 358 tests and compile check pass on the queue
+  stack. The parent time-correctness head has a signed native build, 72/72
+  exact-head real-model eval, and green Ubuntu/macOS CI. Those exact-head model,
+  native, and CI gates remain to run for this branch.
 
 ## What is built
 
@@ -84,6 +90,14 @@ planning now has explicit working days with backward-compatible upgrade
 behavior. EOD reviews adopted session state without inferring completion, and
 status exposes aggregate adoption/session/nudge evidence without private text.
 The increment audit and unresolved dogfood gate are in `docs/audits/v0.9.md`.
+
+The stacked queue-recovery increment prevents one permanent inbox or outbox
+failure from blocking all later work. Automatic retry remains the default;
+local status exposes no message or error content, and only an explicit stopped-
+daemon command can retry or reversibly quarantine a failed row. Inbox recovery
+preserves transactional mutation safety, while outbound recovery states the
+remote duplicate-delivery edge. Its audit is in
+`docs/audits/v1-queue-recovery.md`.
 
 ## How development goes here
 

@@ -240,3 +240,55 @@ def test_outbox_retries_reply_without_reapplying_state():
     assert len(store.open_items()) == 1
     assert store.queue_counts() == (0, 0, 0)
     assert bot.sent == [(42, 'Got it: "Call vet"')]
+
+
+def test_quarantining_poison_inbound_allows_later_update_without_partial_state():
+    calls = []
+
+    def poison_then_echo(message):
+        calls.append(message.text)
+        if message.text == "poison private message":
+            raise RuntimeError("permanent parse failure with private content")
+        return "handled later"
+
+    store = SqliteStore(":memory:")
+    bot = FakeBot([[update(40, "poison private message"), update(41, "later")]])
+    adapter = TelegramAdapter(store, poison_then_echo, bot=bot)
+
+    asyncio.run(adapter.poll_once())
+    assert calls == ["poison private message"]
+    assert store.queue_metrics()["failed_in"] == 1
+    assert bot.sent == []
+
+    assert store.recover_queue_entry(
+        "inbox", "telegram:40", "quarantine", "2026-07-11T12:00:00+00:00"
+    )
+    asyncio.run(adapter.poll_once())
+    assert calls == ["poison private message", "later"]
+    assert bot.sent == [(42, "Handled later")]
+    assert store.queue_metrics()["quarantined_in"] == 1
+
+
+def test_quarantining_failed_outbound_unblocks_later_without_reapplying_state():
+    class FirstMessageAlwaysFails(FakeBot):
+        async def send_message(self, chat_id, text, **kwargs):
+            if "First" in text:
+                raise OSError("permanent send failure")
+            self.sent.append((chat_id, text))
+            return SimpleNamespace(message_id=88)
+
+    store = SqliteStore(":memory:")
+    first = store.enqueue_outbound("first", 42, "reply", "first", "now")
+    store.enqueue_outbound("second", 42, "reply", "second", "later")
+    bot = FirstMessageAlwaysFails([])
+    adapter = TelegramAdapter(store, echo_handler, bot=bot)
+
+    asyncio.run(adapter.flush_outbox())
+    assert store.queue_metrics()["failed_out"] == 1
+    assert bot.sent == []
+    assert store.recover_queue_entry(
+        "outbox", str(first.id), "quarantine", "2026-07-11T12:00:00+00:00"
+    )
+    asyncio.run(adapter.flush_outbox())
+    assert bot.sent == [(42, "Second")]
+    assert store.queue_metrics()["quarantined_out"] == 1

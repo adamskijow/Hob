@@ -18,7 +18,7 @@ import signal
 import sqlite3
 import sys
 from dataclasses import asdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from config import Config, ConfigError
@@ -2653,16 +2653,23 @@ def _status(cfg: Config) -> int:
     try:
         with SqliteStore(cfg.db_path) as store:
             healthy, detail = store.integrity_check()
-            pending_in, pending_out, failed_in = store.queue_counts()
+            queue = store.queue_metrics()
             print(
                 f"  {'OK  ' if healthy else 'FAIL'} database: {cfg.db_path} "
                 f"(schema {store.schema_version}, {detail})"
             )
             print(f"  INFO open tasks: {len(store.open_items())}")
+            queue_ok = not queue["pending_in"] and not queue["pending_out"]
             print(
-                f"  {'OK  ' if not pending_in and not pending_out else 'WARN'} queues: "
-                f"inbound={pending_in} outbound={pending_out} failed={failed_in}"
+                f"  {'OK  ' if queue_ok else 'WARN'} queues: "
+                f"inbound={queue['pending_in']} outbound={queue['pending_out']} "
+                f"failed_in={queue['failed_in']} failed_out={queue['failed_out']} "
+                f"quarantined_in={queue['quarantined_in']} "
+                f"quarantined_out={queue['quarantined_out']}"
             )
+            if queue["failed_in"] or queue["failed_out"]:
+                print("  WARN queue recovery: run `python app.py queue status`")
+                ok = False
             owner = store.get_meta(OWNER_USER_KEY)
             offset = store.get_meta("tg_offset") or "0"
             digest_date = store.get_meta("last_digest_date") or "never"
@@ -2853,6 +2860,114 @@ def _database_choice_error(cfg: Config) -> str | None:
     return None
 
 
+def _queue_command(cfg: Config, argv: list[str]) -> int:
+    """Inspect and explicitly recover durable delivery without exposing content."""
+    usage = (
+        "usage: python app.py queue [status|history|"
+        "retry DIRECTION REF|quarantine DIRECTION REF]"
+    )
+    action = argv[1] if len(argv) > 1 else "status"
+    ambiguity = _database_choice_error(cfg)
+    if ambiguity:
+        print(f"hob: queue refused: {ambiguity}", file=sys.stderr)
+        return 2
+
+    if action in {"status", "history"}:
+        if len(argv) != 2 and not (action == "status" and len(argv) == 1):
+            print(usage, file=sys.stderr)
+            return 2
+        try:
+            with SqliteStore(cfg.db_path) as store:
+                if action == "history":
+                    history = store.queue_recovery_history()
+                    print("hob queue recovery history (content is never shown)")
+                    if not history:
+                        print("  no recovery actions")
+                    for event in history:
+                        print(
+                            f"  {event.at} {event.action} {event.direction} "
+                            f"{event.ref} from={event.prior_status} "
+                            f"attempts={event.prior_attempts}"
+                        )
+                    return 0
+                metrics = store.queue_metrics()
+                print("hob queue status (content and errors are never shown)")
+                print(
+                    "  inbound: "
+                    f"pending={metrics['pending_in']} "
+                    f"failed={metrics['failed_in']} "
+                    f"quarantined={metrics['quarantined_in']}"
+                )
+                print(
+                    "  outbound: "
+                    f"pending={metrics['pending_out']} "
+                    f"failed={metrics['failed_out']} "
+                    f"quarantined={metrics['quarantined_out']}"
+                )
+                problems = store.queue_problem_entries()
+                for entry in problems:
+                    print(
+                        f"  {entry.direction} {entry.ref}: kind={entry.kind} "
+                        f"status={entry.status} attempts={entry.attempts} "
+                        f"created={entry.created_at}"
+                    )
+                failed = metrics["failed_in"] + metrics["failed_out"]
+                if failed:
+                    print(
+                        "  stop the Hob daemon, then run one of:"
+                    )
+                    print(
+                        "    python app.py queue retry DIRECTION REF"
+                    )
+                    print(
+                        "    python app.py queue quarantine DIRECTION REF"
+                    )
+                return 1 if failed else 0
+        except (OSError, sqlite3.DatabaseError) as exc:
+            print(f"hob: queue inspection failed: {exc}", file=sys.stderr)
+            return 1
+
+    if action not in {"retry", "quarantine"} or len(argv) != 4:
+        print(usage, file=sys.stderr)
+        return 2
+    direction, ref = argv[2], argv[3]
+    if direction not in {"inbox", "outbox"}:
+        print("hob: queue direction must be inbox or outbox", file=sys.stderr)
+        return 2
+    at = datetime.now(timezone.utc).isoformat()
+    try:
+        with database_lease(cfg.db_path):
+            with SqliteStore(cfg.db_path) as store:
+                recovered = store.recover_queue_entry(direction, ref, action, at)
+    except (DatabaseBusyError, OSError, ValueError, sqlite3.DatabaseError) as exc:
+        print(f"hob: queue {action} failed: {exc}", file=sys.stderr)
+        return 1
+    if not recovered:
+        print(
+            f"hob: {direction} {ref} is not a failed or quarantined entry",
+            file=sys.stderr,
+        )
+        return 1
+    if action == "retry":
+        print(f"hob: {direction} {ref} reset for retry; restart the daemon")
+        if direction == "outbox":
+            print(
+                "hob: outbound retry can duplicate a message if Telegram accepted "
+                "the earlier send without acknowledging it"
+            )
+    elif direction == "inbox":
+        print(
+            f"hob: inbox {ref} quarantined; it was not applied, is retained for "
+            "retry, and later updates may proceed"
+        )
+    else:
+        print(
+            f"hob: outbox {ref} quarantined; Hob's state remains applied, the "
+            "unsent message is retained for retry, and later deliveries may proceed"
+        )
+    return 0
+
+
 def _restore_or_import(cfg: Config, argv: list[str]) -> int:
     command = argv[0]
     if len(argv) != 2:
@@ -2905,6 +3020,8 @@ def main(argv: list[str] | None = None) -> int:
         return _restore_or_import(cfg, argv)
     if argv and argv[0] == "calendar":
         return _calendar_command(cfg, argv)
+    if argv and argv[0] == "queue":
+        return _queue_command(cfg, argv)
     if argv and argv[0] == "status":
         return _status(cfg)
 

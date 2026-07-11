@@ -109,8 +109,10 @@ not manage its own log files.
 **Backups and recovery.** Backups include committed WAL changes and are
 integrity-checked after writing. Restore/import verify a candidate in isolation,
 safety-backup current data, and replace the database atomically.
-Schema 10 backups and portable exports include proposed and adopted plan runs
-and every split session.
+Schema 11 backups and portable exports include proposed and adopted plan runs
+and every split session. Database backups also retain operational inbox,
+outbox, quarantine, and recovery history. Portable JSON exports deliberately
+start with fresh operational queues and no recovery history.
 The daemon holds an advisory database lease: restore/import will refuse to run
 until the LaunchAgent is stopped, preventing a live process from continuing on
 the replaced file. A second daemon using the same data path is rejected too.
@@ -127,3 +129,30 @@ Status is safe to retain in operational logs: execution activation is reported
 only as aggregate run/session state counts, adoption time, and plan-nudge
 delivery counts. It does not print task labels, plan constraints, message text,
 Telegram message identifiers, or secrets.
+
+If status reports a failed queue, inspect content-free metadata while Hob is
+still running:
+
+```
+uv run --directory /path/to/hob python app.py queue status
+uv run --directory /path/to/hob python app.py queue history
+```
+
+Automatic retries remain the default. For a failure known to be permanent,
+stop Hob before changing queue state. Replace `inbox` and `telegram:123` with
+the direction and reference shown by queue status:
+
+```
+launchctl bootout gui/$(id -u)/com.local.hob
+uv run --directory /path/to/hob python app.py queue quarantine inbox telegram:123
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.local.hob.plist
+uv run --directory /path/to/hob python app.py status
+```
+
+Use `queue retry DIRECTION REF` instead of `quarantine` after fixing the cause.
+A quarantined row is retained and can be retried later. Inbox quarantine means
+the failed user turn was not applied. Outbox quarantine means Hob's state was
+already applied and only that delivery is skipped. An outbound retry can
+duplicate a message if Telegram accepted the earlier send without returning an
+acknowledgement. Mutations refuse while Hob holds the database lease, and all
+queue commands refuse to guess when both legacy and app-data databases exist.
