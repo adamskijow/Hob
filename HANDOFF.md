@@ -18,6 +18,10 @@ snapshot.
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
   evals.interpreter_eval`, 72/72). Ubuntu and macOS CI pass on exact release
   feature head `e9f1c7d` in run `29165242422`.
+- **Live v0.9:** release commit `c656459` passed exact Ubuntu/macOS CI in run
+  `29165341007`, was tagged and published as v0.9.0, backed up, and deployed by
+  graceful launchd restart. Status is healthy on schema 10 with clean queues and
+  14B. The first real `/outlook` delivered without changing adopted-plan state.
 - **Live v0.8 evidence:** the exact launchd database contains one active and one
   superseded run, three canceled old sessions, one started and two planned
   revised sessions. The direct nudge reply produced `started`, not completion;
