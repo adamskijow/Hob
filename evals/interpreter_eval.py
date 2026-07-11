@@ -260,6 +260,22 @@ CASES = [
          lambda p: len(p.queries) == 1 and p.queries[0].kind == "outlook"
          and not p.mutations,
          "weekly fit question is a read-only outlook"),
+    Case("why did the audit not fit?",
+         lambda p: len(p.queries) == 1 and p.queries[0].kind == "explain"
+         and not p.mutations and not p.settings,
+         "latest planning result can be explained without mutation"),
+    Case("what would make the second one fit?",
+         lambda p: len(p.queries) == 1 and p.queries[0].kind == "explain"
+         and not p.mutations and not p.settings,
+         "natural displayed reference asks for grounded options",
+         focus=[
+             {"id": "a2", "label": "call the pool guy", "context": "plan"},
+             {"id": "a3", "label": "review the SR audit", "context": "plan"},
+         ]),
+    Case("why did the audit not fit? go ahead and extend my workday",
+         lambda p: len(p.queries) == 1 and p.queries[0].kind == "explain"
+         and not p.mutations and not p.settings,
+         "explanation cannot smuggle a hidden planning change"),
     Case("meeting ran over, I got interrupted; replan",
          lambda p: len(p.queries) == 1 and p.queries[0].kind == "plan"
          and not p.mutations,

@@ -23,6 +23,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import date, timedelta
 
 from core import dates, recurrence
+from core.explanation import is_explanation_question
 from core.models import (
     Amend,
     Bulk,
@@ -90,9 +91,9 @@ class Mutation:
 
 @dataclass
 class QueryIntent:
-    kind: str  # today | date | all | overdue | week | search | done | tag | plan | outlook
+    kind: str  # today | date | all | overdue | week | search | done | tag | plan | outlook | explain
     date: str | None = None  # ISO; query day, planning day, or done-period start
-    term: str | None = None  # search keywords, for kind=search
+    term: str | None = None  # search keywords or displayed explanation target
     tag: str | None = None  # project/list name, for kind=tag
     constraint: str | None = None  # user context for kind=plan
 
@@ -189,6 +190,14 @@ def _resolve_ref(ref: str, active: dict, by_pos: dict) -> str | None:
             return first
         if first in by_pos:
             return by_pos[first]
+    # Some models wrap a correct displayed position in explanatory prose such
+    # as "matches item id:1" instead of returning only the requested id token.
+    # Accept only that explicit marker; arbitrary embedded digits remain unsafe.
+    embedded_position = re.search(r"\b(?:item\s+)?id\s*:\s*(\d{1,2})\b", r)
+    if embedded_position:
+        resolved = by_pos.get(embedded_position.group(1))
+        if resolved is not None:
+            return resolved
     # Last resort: a noisy target carrying a trailing position ("url_not_provided_2",
     # "item 2"). The trailing number still points at the displayed item.
     tail = ""
@@ -1130,6 +1139,15 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
 
 def _reconcile_query(action: Query, today: date, ctx, plan: Plan) -> None:
     kind, term = action.kind, action.term
+    if kind == "explain":
+        plan.queries.append(
+            QueryIntent(
+                kind="explain",
+                term=term,
+                constraint=action.constraint or ctx.message,
+            )
+        )
+        return
     if kind == "outlook":
         resolution = dates.resolve_intent(action.when, today)
         corrected = dates.named_day_correction(
@@ -1383,8 +1401,6 @@ def _recover_new_recurrence(actions: list, ctx) -> list:
     action = actions[0]
     active = {item["id"].lower(): item.get("label", "") for item in ctx.active_items}
     by_pos = {str(n): item["id"] for n, item in enumerate(ctx.active_items, start=1)}
-    if _resolve_ref(action.target, active, by_pos) is not None:
-        return actions
     match = re.search(
         r"\bevery\s+(\d+)\s+(day|week|month|year)s?\b",
         ctx.message,
@@ -1395,6 +1411,11 @@ def _recover_new_recurrence(actions: list, ctx) -> list:
     task = ctx.message[:match.start()].strip(" ,;:")
     if not task:
         return actions
+    resolved = _resolve_ref(action.target, active, by_pos)
+    if resolved is not None and _strongly_names_item(
+        task, {"label": active[resolved]}
+    ):
+        return actions
     best, _ = _best_item(_words(task), ctx.active_items)
     if _strongly_names_item(task, best):
         return actions
@@ -1403,15 +1424,43 @@ def _recover_new_recurrence(actions: list, ctx) -> list:
         if re.search(r"\bafter (?:i |it )?(?:finish|complete)", ctx.message, re.I)
         else "fixed"
     )
+    count_match = re.search(
+        r"\b(?:stop|end) after (\d+) (?:times?|occurrences?)\b",
+        ctx.message,
+        re.IGNORECASE,
+    )
     return [
         Capture(
             task=task,
             raw=ctx.message,
             repeat=f"every:{int(match.group(1))}:{match.group(2).lower()}",
             repeat_anchor=anchor,
-            repeat_count=action.count,
+            repeat_count=(
+                action.count
+                or (int(count_match.group(1)) if count_match else None)
+            ),
         )
     ]
+
+
+def _literal_reminder_offsets(message: str) -> list[int] | None:
+    """Recover Hob's explicit multiple-offset reminder grammar from text."""
+    low = message.lower()
+    if "remind" not in low or "before" not in low:
+        return None
+    hours = re.search(r"\b(an?|one|two|three|four|five|six|seven|eight|nine|ten|\d+) hours?\b", low)
+    minutes = re.findall(r"\b(\d+) minutes?\b", low)
+    values: list[int] = []
+    if hours:
+        word = hours.group(1)
+        number_words = {
+            "a": 1, "an": 1, "one": 1, "two": 2, "three": 3,
+            "four": 4, "five": 5, "six": 6, "seven": 7,
+            "eight": 8, "nine": 9, "ten": 10,
+        }
+        values.append(60 * number_words.get(word, int(word) if word.isdigit() else 0))
+    values.extend(int(value) for value in minutes)
+    return _offsets(values) if values else None
 
 
 def _drop_redundant_new_recur(actions: list, message: str) -> list:
@@ -1447,6 +1496,11 @@ def reconcile(actions: list, ctx) -> Plan:
     actions = _drop_redundant_new_recur(actions, ctx.message)
     actions = _recover_new_recurrence(actions, ctx)
     actions = _merge_new_capture_constraints(actions, ctx)
+    literal_offsets = _literal_reminder_offsets(ctx.message)
+    if literal_offsets is not None:
+        for action in actions:
+            if isinstance(action, Schedule):
+                action.reminder_offsets = literal_offsets
     low = ctx.message.strip().lower()
     queries = [action for action in actions if isinstance(action, Query)]
     outlook_words = re.search(
@@ -1455,6 +1509,7 @@ def reconcile(actions: list, ctx) -> Plan:
         r"(?:this week|by))\b",
         low,
     )
+    explanation_words = is_explanation_question(low)
     deviation = re.search(
         r"\b(?:replan|got interrupted|was interrupted|meeting ran (?:long|over)|"
         r"lost \d+ (?:minutes?|hours?)|running \d+ (?:minutes?|hours?) late)\b",
@@ -1465,7 +1520,18 @@ def reconcile(actions: list, ctx) -> Plan:
         r"snooze)\b",
         low,
     )
-    if outlook_words:
+    if explanation_words:
+        model_explanation = next(
+            (query for query in queries if query.kind == "explain"), None
+        )
+        actions = [
+            Query(
+                kind="explain",
+                term=model_explanation.term if model_explanation else None,
+                constraint=ctx.message,
+            )
+        ]
+    elif outlook_words:
         actions = [Query(kind="outlook", constraint=ctx.message)]
     elif deviation and not explicit_item_change:
         actions = [

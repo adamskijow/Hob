@@ -364,10 +364,10 @@ class Amend:
 
 @dataclass
 class Query:
-    kind: str  # today | date | all | overdue | week | search | done | tag | plan | outlook
+    kind: str  # today | date | all | overdue | week | search | done | tag | plan | outlook | explain
     when: When | None = None  # typed date intent, for kind=date
     date: str | None = None  # ISO, resolved by the core for kind=date
-    term: str | None = None  # free-text search keywords, for kind=search
+    term: str | None = None  # search words or displayed explanation target
     tag: str | None = None  # project / list name, for kind=tag
     constraint: str | None = None  # time/energy/context for a planning request
 

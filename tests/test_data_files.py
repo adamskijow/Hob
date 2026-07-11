@@ -116,3 +116,33 @@ def test_portable_export_preserves_adopted_plan_sessions(tmp_path):
         import_export(str(export), str(replacement))
     with SqliteStore(str(replacement)) as unchanged:
         assert unchanged.active_plan("2026-07-11").id == "p1"
+
+
+def test_portable_export_preserves_bounded_grounded_explanation_context(tmp_path):
+    source = tmp_path / "source.db"
+    replacement = tmp_path / "replacement.db"
+    decision = {
+        "version": 1,
+        "kind": "plan",
+        "start_day": "2026-07-11",
+        "end_day": "2026-07-11",
+        "preferences": {"default_duration_minutes": 30},
+        "calendar": {"authorized_days": 1, "total_days": 1},
+        "items": [{
+            "id": "a1",
+            "label": "portable task",
+            "outcome": "deferred",
+            "reason": "does not fit the remaining free time",
+            "remaining_minutes": 30,
+        }],
+    }
+    with SqliteStore(str(source)) as store:
+        store.set_meta("last_planning_decision", json.dumps(decision))
+        exported = store.export_data()
+    with SqliteStore(str(replacement)) as store:
+        store.import_data(exported)
+        restored = json.loads(store.get_meta("last_planning_decision"))
+
+    assert restored == decision
+    rendered = json.dumps(restored)
+    assert "event title" not in rendered and "telegram" not in rendered

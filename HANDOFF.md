@@ -31,6 +31,11 @@ snapshot.
   tests, compile, a signed native build, both plist lints, and the 72/72 14B
   real-model corpus. Ubuntu and macOS CI pass on verification head `4543f73`.
   The copied-data/VoiceOver drill remains pending for the stacked draft.
+- **Grounded explanation in progress:** `agent/v1-grounded-explanations` adds a
+  typed, read-only planning explanation artifact and natural “why?” / “what
+  would make it fit?” follow-ups. 384 deterministic tests, compile, native,
+  plist, and the 75/75 14B corpus pass locally; CI and live disagreement-repair
+  gates remain.
 
 ## What is built
 
@@ -98,6 +103,13 @@ daemon command can retry or reversibly quarantine a failed row. Inbox recovery
 preserves transactional mutation safety, while outbound recovery states the
 remote duplicate-delivery edge. Its audit is in
 `docs/audits/v1-queue-recovery.md`.
+
+The stacked grounded-explanation increment preserves the latest plan/outlook's
+deterministic blocks, remaining effort, risk reasons, visible assumptions, and
+aggregate Calendar coverage. Natural references are model-assisted but locally
+validated, all explanatory claims come from the artifact, literal questions
+work through a model outage, and suggested repairs mutate nothing. Its audit is
+in `docs/audits/v1-grounded-explanations.md`.
 
 ## How development goes here
 

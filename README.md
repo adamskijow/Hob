@@ -54,6 +54,11 @@ and a stated time budget. The local EventKit bridge strips event titles and
 passes only opaque busy intervals to Hob. The model explains the resulting
 timeline but cannot create overlaps or invent capacity. Replanning shows what
 changed from the previous proposal, and no task is moved automatically.
+After a plan or outlook, ask "why did the audit not fit?" or "what would make it
+fit?". The model understands the follow-up, while the answer is rendered only
+from recorded deterministic blocks, risks, and visible assumptions. It suggests
+explicit options but changes nothing until you ask for a normal task, setting,
+or proposal change.
 
 ## Getting started
 

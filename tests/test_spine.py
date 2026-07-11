@@ -1223,6 +1223,10 @@ def test_status_reports_execution_evidence_without_private_text(
         )
         store.adopt_plan("p1", "2026-07-11T08:05:00")
         store.set_meta("first_plan_adopted_at", "2026-07-11T08:05:00")
+        store.set_meta(
+            "last_planning_decision",
+            "private-event-title-must-not-appear",
+        )
     cfg = SimpleNamespace(
         db_path=str(db),
         telegram_token_source="test",
@@ -1251,3 +1255,241 @@ def test_status_reports_execution_evidence_without_private_text(
     assert "first_plan=yes adopted_runs=1" in output
     assert "runs=active:1" in output and "states=planned:1" in output
     assert "secret" not in output and "private constraint" not in output
+    assert "private-event-title-must-not-appear" not in output
+
+
+def test_plan_explanation_is_grounded_read_only_and_discoverable():
+    from app import LAST_DECISION_KEY
+
+    llm = FakeLlm([
+        {
+            "actions": [{
+                "type": "query",
+                "kind": "plan",
+                "constraint": "40 minutes",
+            }]
+        },
+        {
+            "actions": [{
+                "type": "query",
+                "kind": "explain",
+                "term": "SR audit",
+                "constraint": "what would make the SR audit fit?",
+            }]
+        },
+    ])
+    svc, store = service(llm)
+    for item in store.open_items():
+        item.duration_minutes = 60
+        store.update_item(item)
+
+    plan = svc.handle(msg("I only have 40 minutes; plan my day"))
+    before_items = [item.to_dict() for item in store.open_items()]
+    before_runs = store.execution_metrics()["runs"]
+    snapshot = store.get_meta(LAST_DECISION_KEY)
+    out = svc.handle(msg("what would make the SR audit fit?", 2))
+
+    assert "ask \"why did this not fit?\"" in plan
+    assert "40m remains in the stated budget" in plan
+    assert "450m is physically open inside the profile" in plan
+    assert '"review SR audit" was deferred' in out
+    assert "does not fit the stated time budget" in out
+    assert "a 40m stated budget per day" in out
+    assert "nothing changed" in out and "ask for a new proposal" in out
+    assert [item.to_dict() for item in store.open_items()] == before_items
+    assert store.execution_metrics()["runs"] == before_runs
+    assert store.get_meta(LAST_DECISION_KEY) == snapshot
+    assert store.last_batch() == []
+
+
+def test_literal_explanation_backstop_works_during_model_outage():
+    from app import LAST_DECISION_KEY
+
+    class Down:
+        def complete_json(self, prompt, schema, temperature=0.0):
+            raise OSError("model unavailable")
+
+    svc, store = service(FakeLlm({"actions": []}))
+    store.set_meta(
+        LAST_DECISION_KEY,
+        json.dumps({
+            "version": 1,
+            "kind": "plan",
+            "start_day": "2026-06-29",
+            "end_day": "2026-06-29",
+            "preferences": {"default_duration_minutes": 30},
+            "calendar": {"authorized_days": 0, "total_days": 1},
+            "items": [{
+                "id": "a3",
+                "label": "review SR audit",
+                "outcome": "deferred",
+                "reason": "does not fit the remaining free time",
+                "remaining_minutes": 30,
+            }],
+        }),
+    )
+    svc._llm = Down()
+
+    out = svc.handle(msg("why didn't it fit?"))
+
+    assert '"review SR audit" was deferred' in out
+    assert "does not fit the remaining free time" in out
+
+
+def test_outlook_replaces_decision_context_without_calendar_detail():
+    from app import LAST_DECISION_KEY
+    from core.feasibility import CalendarSnapshot
+
+    class Calendar:
+        def snapshot(self, start, end):
+            return CalendarSnapshot("authorized", detail="private event title")
+
+    svc, store = service(FakeLlm({"actions": []}))
+    svc._calendar = Calendar()
+
+    svc._answer_outlook("what fits this week?")
+    raw = store.get_meta(LAST_DECISION_KEY)
+    snapshot = json.loads(raw)
+
+    assert snapshot["kind"] == "outlook"
+    assert snapshot["start_day"] == "2026-06-29"
+    assert snapshot["calendar"] == {"authorized_days": 7, "total_days": 7}
+    assert snapshot["items"]
+    assert "private event title" not in raw
+
+
+def test_missing_or_corrupt_explanation_context_gives_onboarding_path():
+    from app import LAST_DECISION_KEY
+
+    svc, store = service(FakeLlm({
+        "actions": [{"type": "query", "kind": "explain"}]
+    }))
+    out = svc.handle(msg("why this plan?"))
+    assert 'ask "plan my day" or use /outlook' in out
+
+    store.set_meta(LAST_DECISION_KEY, "not-json")
+    svc._llm = FakeLlm({
+        "actions": [{"type": "query", "kind": "explain"}]
+    })
+    out = svc.handle(msg("why this plan?", 2))
+    assert 'ask "plan my day" or use /outlook' in out
+
+
+def test_split_plan_snapshot_keeps_partial_block_and_remainder():
+    from app import LAST_DECISION_KEY
+
+    llm = FakeLlm([
+        {
+            "actions": [{
+                "type": "query",
+                "kind": "plan",
+                "constraint": "60 minutes",
+            }]
+        },
+        {
+            "headline": "one bounded block",
+            "picks": [{"id": "a1", "reason": "it uses the available hour"}],
+        },
+    ])
+    svc, store = service(llm)
+    for item in store.open_items():
+        if item.id == "a1":
+            item.duration_minutes = 120
+            item.splittable = True
+        else:
+            item.status = "done"
+        store.update_item(item)
+
+    svc.handle(msg("plan my day; I only have 60 minutes"))
+    snapshot = json.loads(store.get_meta(LAST_DECISION_KEY))
+
+    assert len(snapshot["items"]) == 1
+    item = snapshot["items"][0]
+    assert item["outcome"] == "partial"
+    assert item["blocks"] and item["remaining_minutes"] == 60
+    assert item["reason"] == "partially scheduled within the stated time budget"
+
+
+def test_help_teaches_grounded_explanation_without_expanding_setup():
+    svc, _ = service(FakeLlm({"actions": []}))
+
+    out = svc.handle(msg("/help"))
+
+    assert 'ask "why did this not fit?"' in out
+    assert "explanations change nothing" in out
+
+
+def test_outlook_risk_explanation_preserves_partial_work_and_is_read_only():
+    from app import LAST_DECISION_KEY
+
+    svc, store = service(FakeLlm({
+        "actions": [{
+            "type": "query",
+            "kind": "explain",
+            "term": "SR audit",
+            "constraint": "why did the SR audit not fit?",
+        }]
+    }))
+    for item in store.open_items():
+        if item.id == "a3":
+            item.duration_minutes = 600
+            item.deadline_date = "2026-06-29"
+            item.splittable = True
+        else:
+            item.status = "done"
+        store.update_item(item)
+
+    outlook = svc.handle(msg("/outlook"))
+    before = [item.to_dict() for item in store.open_items()]
+    snapshot = json.loads(store.get_meta(LAST_DECISION_KEY))
+    out = svc.handle(msg("why did the SR audit not fit?", 2))
+
+    assert "at risk:" in outlook
+    assert snapshot["kind"] == "outlook"
+    assert snapshot["items"][0]["outcome"] == "risk"
+    assert '"review SR audit" was scheduled' in out
+    assert "but it was at risk" in out
+    assert "recorded deadline: 2026-06-29" in out
+    assert "nothing changed" in out
+    assert [item.to_dict() for item in store.open_items()] == before
+
+
+def test_explanation_uses_decision_time_facts_after_task_changes():
+    from app import LAST_DECISION_KEY
+
+    svc, store = service(FakeLlm({
+        "actions": [{
+            "type": "query",
+            "kind": "explain",
+            "term": "original report",
+            "constraint": "why did the original report not fit?",
+        }]
+    }))
+    store.set_meta(
+        LAST_DECISION_KEY,
+        json.dumps({
+            "version": 1,
+            "kind": "plan",
+            "start_day": "2026-06-29",
+            "end_day": "2026-06-29",
+            "preferences": {"default_duration_minutes": 30},
+            "calendar": {"authorized_days": 0, "total_days": 1},
+            "items": [{
+                "id": "a1",
+                "label": "original report",
+                "outcome": "deferred",
+                "reason": "does not fit the stated time budget",
+                "remaining_minutes": 90,
+            }],
+        }),
+    )
+    changed = store.get_item("a1")
+    changed.task = "renamed later"
+    changed.duration_minutes = 5
+    store.update_item(changed)
+
+    out = svc.handle(msg("why did the original report not fit?"))
+
+    assert '"original report" was deferred' in out
+    assert "90m remaining" in out
+    assert "renamed later" not in out and "5m" not in out
