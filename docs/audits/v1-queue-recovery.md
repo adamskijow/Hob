@@ -9,6 +9,17 @@ Release status: implemented on a stacked draft branch. It is not deployable
 before v0.9 and time correctness, and it is not release-proven until the manual
 failure drill below passes against a copied production database.
 
+## Automated evidence
+
+- Feature commit `c6c0c50`: 358 deterministic tests and compile check pass.
+- The complete 14B real-model corpus passes 72/72. Queue recovery adds no new
+  model behavior, and this full gate checks for accidental cross-layer change.
+- The signed EventKit app builds, and both launchd plists pass `plutil -lint`.
+- The feature diff passes whitespace and forbidden em-dash checks. Ruff is not
+  installed in the locked project environment and is not claimed as evidence.
+- Ubuntu/macOS CI on the stacked PR head and the copied-data/VoiceOver operator
+  drill remain pending.
+
 ## Product decision
 
 Hob continues to retry transient failures automatically and preserve queue

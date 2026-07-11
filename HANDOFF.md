@@ -27,10 +27,10 @@ snapshot.
   daemon-stop lease, failed-outbox accounting, and poison-row regressions. Its
   copied-data and VoiceOver operator drill is still pending, and it is not
   deployable ahead of either parent branch.
-- **Current deterministic gate:** 358 tests and compile check pass on the queue
-  stack. The parent time-correctness head has a signed native build, 72/72
-  exact-head real-model eval, and green Ubuntu/macOS CI. Those exact-head model,
-  native, and CI gates remain to run for this branch.
+- **Current queue gate:** Feature commit `c6c0c50` passes 358 deterministic
+  tests, compile, a signed native build, both plist lints, and the 72/72 14B
+  real-model corpus. Ubuntu/macOS CI and the copied-data/VoiceOver drill remain
+  pending for the stacked draft.
 
 ## What is built
 
