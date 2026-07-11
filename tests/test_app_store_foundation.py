@@ -81,6 +81,40 @@ def test_xcode_shell_consumes_store_bundle_and_sandbox_configuration():
     assert (XCODE_PROJECT / "xcshareddata" / "xcschemes" / "Hob.xcscheme").is_file()
 
 
+def test_foundation_model_tool_inherits_the_parent_sandbox_only():
+    with (
+        FOUNDATION / "AppStore" / "HobFoundationBridge.entitlements"
+    ).open("rb") as fh:
+        entitlements = plistlib.load(fh)
+
+    assert entitlements == {
+        "com.apple.security.app-sandbox": True,
+        "com.apple.security.inherit": True,
+    }
+
+    project = (XCODE_PROJECT / "project.pbxproj").read_text(encoding="utf-8")
+    assert 'productType = "com.apple.product-type.tool"' in project
+    assert "HobFoundationBridge in Embed Model Tool" in project
+    assert "CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO" in project
+    assert 'OTHER_CODE_SIGN_FLAGS = "$(inherited) -i $(PRODUCT_BUNDLE_IDENTIFIER)"' in project
+    assert "SKIP_INSTALL = YES" in project
+
+
+def test_model_readiness_requires_a_bounded_correlated_generation_probe():
+    controller = (
+        FOUNDATION
+        / "Sources"
+        / "HobMacShell"
+        / "FoundationModelController.swift"
+    ).read_text(encoding="utf-8")
+
+    assert '"command": "probe"' in controller
+    assert "Date().addingTimeInterval(30)" in controller
+    assert "data.count <= 100_000" in controller
+    assert 'object["requestID"] as? String == requestID' in controller
+    assert 'status == "available" ? .available : .unavailable' in controller
+
+
 def test_background_helper_is_sandboxed_and_shares_only_required_storage():
     with (FOUNDATION / "AppStore" / "HobAgent.entitlements").open("rb") as fh:
         entitlements = plistlib.load(fh)

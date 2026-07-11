@@ -48,6 +48,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
           test -x "$RUNNER_TEMP/hob-macapp-derived/Build/Products/Debug/Hob.app/Contents/Library/LoginItems/HobAgent.app/Contents/MacOS/HobAgent"
+          test -x "$RUNNER_TEMP/hob-macapp-derived/Build/Products/Debug/Hob.app/Contents/Library/LoginItems/HobAgent.app/Contents/MacOS/HobFoundationBridge"
 
       - name: Test
         run: uv run pytest

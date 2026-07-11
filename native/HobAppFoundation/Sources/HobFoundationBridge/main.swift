@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
 import Foundation
-import HobAppCore
 
 #if canImport(FoundationModels)
 import FoundationModels

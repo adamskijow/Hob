@@ -41,6 +41,11 @@ application shell. It is still not an App Store archive:
   experience. Both targets resolve storage only through the protected App Group.
   Registration stays locked while the helper is health-only, so this foundation
   cannot falsely claim background delivery.
+- `HobAgent.app` embeds the signed `HobFoundationBridge` command tool. The tool
+  has only Apple's sandbox-inheritance entitlements, is signed with a stable
+  identifier, and is launched by the sandboxed app. Setup calls its bounded
+  built-in generation probe only after the owner chooses Check On-Device Model.
+  Reported framework availability alone never marks setup ready.
 
 The Store targets intentionally contain no Ollama, uv, Homebrew, launchctl,
 shell installer, inbound network server, or arbitrary filesystem entitlement.
@@ -57,14 +62,17 @@ shell installer, inbound network server, or arbitrary filesystem entitlement.
   and notarized development-export checks.
 
 The app and helper targets, bundle placement, consent UI, App Group resolver,
-and unsigned CI packaging gate now exist. Developer-account registration,
+embedded model tool, real-generation readiness UI, and unsigned CI packaging
+gate now exist. Developer-account registration,
 distribution signing, runtime embedding, and lifecycle rehearsals remain open.
 
 ### B. First-run success
 
 - Explain Apple Intelligence eligibility before asking for other credentials.
 - Require a privacy-safe generation probe before calling the model ready; a
-  framework availability flag alone is insufficient.
+  framework availability flag alone is insufficient. The bounded, correlated,
+  30-second probe and actionable unavailable, timeout, missing-tool, and invalid
+  response states now exist. A distribution-signed device rehearsal remains.
 - Create the Telegram bot/token and owner-pairing journey without Terminal.
 - Confirm timezone, schedule, Calendar choice, notification behavior, and
   background operation.
