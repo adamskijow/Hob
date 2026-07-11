@@ -91,7 +91,9 @@ the nudge clock without moving the task.
 Forward any message to Hob (a "grab milk?" text from someone) and it becomes a
 task credited to the sender; react to a reminder with a thumbs-up to complete it
 (thumbs-down drops it); and each morning's digest is pinned in the chat,
-replacing yesterday's pin.
+replacing yesterday's pin. A photo or other media caption follows the same text
+capture path. Unsupported media such as an uncaptioned voice message receives a
+short text explanation instead of disappearing silently.
 
 ## Notes and waiting-on
 

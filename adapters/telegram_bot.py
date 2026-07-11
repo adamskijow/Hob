@@ -260,6 +260,8 @@ class TelegramAdapter:
             message = getattr(update, "edited_message", None)
             edited = message is not None
         text = getattr(message, "text", None) if message is not None else None
+        if text is None and message is not None:
+            text = getattr(message, "caption", None)
         kind = "noop"
         payload: dict = {}
         if message is not None and text is not None:
@@ -275,6 +277,13 @@ class TelegramAdapter:
                 "reply_to": getattr(replied, "message_id", None),
                 "edited": edited,
                 "forwarded_from": _forward_name(message),
+            }
+        elif message is not None:
+            kind = "unsupported"
+            payload = {
+                "chat_id": message.chat.id,
+                "chat_type": getattr(message.chat, "type", None),
+                "user_id": getattr(getattr(message, "from_user", None), "id", None),
             }
         else:
             reaction = getattr(update, "message_reaction", None)
@@ -332,7 +341,14 @@ class TelegramAdapter:
         if entry.kind == "message":
             await self._dispatch(InboundMessage(**payload), entry.key)
             return
-        if entry.kind == "reaction" and self._reaction_handler is not None:
+        if entry.kind == "unsupported":
+            reply = (
+                "hob only works in a private chat with its owner."
+                if payload.get("chat_type") not in {None, "private"}
+                else "i can read text and media captions, but not this message "
+                "type yet. send the task as text."
+            )
+        elif entry.kind == "reaction" and self._reaction_handler is not None:
             reply = self._reaction_handler(
                 int(payload["message_id"]),
                 list(payload.get("emojis", [])),

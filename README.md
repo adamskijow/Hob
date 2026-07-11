@@ -117,8 +117,9 @@ Talk to it like a person:
   overdue", "what did i finish this week", "what am i waiting on".
 - "for the wedding: book the caterer, order flowers" files a tagged project;
   "add a note to the vet one: gate code is 4412" sticks a note.
-- Forward someone's message to capture it, edit a message to correct it, or use
-  `/today`, `/list`, `/settings`, `/undo`, `/help`.
+- Forward someone's message or a media caption to capture it, edit a message to
+  correct it, or use `/today`, `/list`, `/settings`, `/undo`, `/help`. Media Hob
+  cannot read receives a text fallback rather than silence.
 - Ask "plan my day", "plan tomorrow", "I have 30 minutes before I leave", or
   "my afternoon is gone" for an overlap-checked timeline and a diff from the
   prior proposal. Named future days use their own availability window.
