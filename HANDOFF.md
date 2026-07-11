@@ -11,22 +11,23 @@ snapshot.
 - **Live and in daily use.** Runs as a `launchd` daemon on macOS, with
   [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive. Model:
   `qwen2.5:14b-instruct` (7b works; 14b is more reliable on dense messages).
-- **Released:** v0.9.0. It adds a deterministic weekly capacity outlook,
+- **Released:** v0.9.1. v0.9 adds a deterministic weekly capacity outlook,
   explicit working days, plan-aware EOD, first-adoption coaching, accessible
   media fallback, and privacy-safe activation metrics. Schema remains 10.
-- **Green:** `uv run pytest` (345 passing), native bridge build, and the
+- **Green:** `uv run pytest` (347 passing), native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
-  evals.interpreter_eval`, 72/72). Ubuntu and macOS CI pass on exact release
-  feature head `e9f1c7d` in run `29165242422`.
+  evals.interpreter_eval`, 73/73). The v0.9.1 patch head passed Ubuntu and macOS
+  CI in run `29165920137`.
 - **Live v0.9:** release commit `c656459` passed exact Ubuntu/macOS CI in run
   `29165341007`, was tagged and published as v0.9.0, backed up, and deployed by
   graceful launchd restart. Status is healthy on schema 10 with clean queues and
   14B. The first real `/outlook` delivered without changing adopted-plan state.
-- **v0.9 patch candidate:** `agent/fix-nevermind-retraction` fixes the live
+- **v0.9.1 patch:** PR #7 fixes the live
   screenshot case where an immediate “Nevermind I'm good” became chitchat and
   left the unwanted capture scheduled. Only an exact standalone phrase plus a
   mutation batch at most 15 minutes old can trigger undo; stale or task-bearing
-  variants fail safe. Local gates pass at 347 tests and 73/73 model cases.
+  variants fail safe. Its exact feature head passed 347 tests and 73/73 model
+  cases before merge.
 - **Live v0.8 evidence:** the exact launchd database contains one active and one
   superseded run, three canceled old sessions, one started and two planned
   revised sessions. The direct nudge reply produced `started`, not completion;
