@@ -43,8 +43,9 @@ snapshot.
   live Telegram credential preflight, a verified pre-migration backup, and
   rollback-aware launchd replacement. 393 deterministic tests, compile, the
   75/75 14B corpus, signed native build, plists, and a read-only live status
-  probe pass. Clean-install, update, reboot, sleep, rollback, VoiceOver, and CI
-  remain, and it is stacked on draft PR #4.
+  probe pass. Ubuntu/macOS CI pass on feature head `138838f` in run
+  `29162824498`. Clean-install, update, reboot, sleep, rollback, and VoiceOver
+  remain, and it is stacked in draft PR #5 on draft PR #4.
 
 ## What is built
 

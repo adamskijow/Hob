@@ -56,6 +56,11 @@ the Keychain credential.
 - Read-only `service status` against the live released agent reports the actual
   released checkout and database, healthy loaded state, and the different
   candidate checkout without changing or restarting either service.
+- GitHub Actions run
+  [29162824498](https://github.com/adamskijow/Hob/actions/runs/29162824498)
+  passes Ubuntu and macOS at exact feature head
+  `138838f1853f0ea5126afd1b23373a43958168f9`. The macOS job includes the
+  signed EventKit build and complete test step.
 
 ## Release gates
 
