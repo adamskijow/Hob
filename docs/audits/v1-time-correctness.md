@@ -68,7 +68,10 @@ silently invent a local time during a daylight-saving transition.
 
 ## Evidence
 
-The complete Python suite passes 350 tests and compileall succeeds. Both plist
-files validate, and the signed EventKit bridge builds locally on macOS. The
-exact-head real-model result, stacked PR CI, and manual clean-install evidence
-are pending the publish checkpoint.
+The complete Python suite passes 350 tests and compileall succeeds. The complete
+72-case real-model corpus passes on `qwen2.5:14b-instruct`. Both plist files
+validate, and the signed EventKit bridge builds locally on macOS. Draft PR #2
+targets the v0.9 branch; GitHub Actions run `29158009704` passes on Ubuntu and
+macOS, including the native build. On the development Mac, system discovery
+returns `America/New_York`, matching `/etc/localtime`. Manual clean-install,
+system-zone-change, and EventKit transition evidence remain pending.
