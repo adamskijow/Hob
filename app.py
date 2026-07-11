@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import sqlite3
 import sys
@@ -78,6 +79,16 @@ from adapters.keychain import (
     delete_telegram_token,
     get_telegram_token,
     set_telegram_token,
+)
+from adapters.launchd import (
+    LaunchdError,
+    install_launch_agent,
+    installed_definition,
+    launch_agent_payload,
+    restart_service,
+    service_paths,
+    service_status,
+    uninstall_launch_agent,
 )
 from adapters.llm_ollama import OllamaLlm
 from adapters.scheduler import DigestScheduler
@@ -2829,7 +2840,18 @@ async def _run_daemon(cfg: Config, store: SqliteStore) -> None:
     await asyncio.gather(telegram.run(), scheduler.run())
 
 
-def _doctor() -> int:
+def _telegram_credentials_ready(token: str) -> bool:
+    """Verify the credential without printing its URL, value, or bot identity."""
+    try:
+        import telegram
+
+        asyncio.run(telegram.Bot(token=token).get_me())
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _doctor(*, check_database: bool = True) -> int:
     """Preflight: check the environment a fresh install needs before first run."""
     print("hob doctor")
     try:
@@ -2845,17 +2867,30 @@ def _doctor() -> int:
 
     ok = True
     if cfg.telegram_enabled:
-        print(f"  OK   Telegram token loaded from {cfg.telegram_token_source}")
+        if _telegram_credentials_ready(cfg.telegram_token):
+            print(
+                "  OK   Telegram credentials accepted "
+                f"(loaded from {cfg.telegram_token_source})"
+            )
+        else:
+            print(
+                "  FAIL Telegram credentials rejected or unreachable; "
+                "check the token and network"
+            )
+            ok = False
     else:
         print("  WARN Telegram token not found: create a bot with @BotFather and "
               "run `python app.py token set`")
         ok = False
-    try:
-        SqliteStore(cfg.db_path).close()
-        print(f"  OK   database writable: {cfg.db_path}")
-    except Exception as exc:  # noqa: BLE001
-        print(f"  FAIL database not writable: {cfg.db_path}: {exc}")
-        ok = False
+    if check_database:
+        try:
+            SqliteStore(cfg.db_path).close()
+            print(f"  OK   database writable: {cfg.db_path}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  FAIL database not writable: {cfg.db_path}: {exc}")
+            ok = False
+    else:
+        print("  INFO database verification waits until the daemon is stopped")
     llm = OllamaLlm(cfg.model, cfg.ollama_host)
     try:
         if _model_ready(llm, cfg.model):
@@ -2878,8 +2913,152 @@ def _doctor() -> int:
         print("  WARN calendar: run `python app.py calendar authorize`")
     else:
         print(f"  WARN calendar: {snapshot.status}")
-    print("all good" if ok else "problems found (see above)")
+    if ok and check_database:
+        print("all good")
+    elif ok:
+        print("external checks good; database check is pending")
+    else:
+        print("problems found (see above)")
     return 0 if ok else 1
+
+
+def _service_command(cfg: Config, argv: list[str]) -> int:
+    """Install and operate Hob's per-user macOS LaunchAgent."""
+    usage = "usage: python app.py service [install|status|restart|uninstall]"
+    action = argv[1] if len(argv) > 1 else "status"
+    if len(argv) > 2 or action not in {"install", "status", "restart", "uninstall"}:
+        print(usage, file=sys.stderr)
+        return 2
+    if sys.platform != "darwin":
+        print("hob: durable service installation requires macOS", file=sys.stderr)
+        return 1
+    root = Path(__file__).resolve().parent
+    home = Path.home()
+    paths = service_paths(home)
+    uid = os.getuid()
+
+    if action == "status":
+        loaded, detail = service_status(uid=uid)
+        print(f"hob service: {'loaded' if loaded else 'not loaded'} ({detail})")
+        print(f"  definition: {paths.plist}")
+        try:
+            installed = installed_definition(paths)
+        except LaunchdError as exc:
+            print(f"  FAIL definition: {exc}")
+            return 1
+        if installed is None:
+            print(f"  candidate checkout: {root}")
+            print(f"  candidate data: {Path(cfg.db_path).expanduser().resolve()}")
+        else:
+            print(f"  checkout: {installed.checkout}")
+            print(f"  data: {installed.database}")
+            if installed.checkout != str(root):
+                print(f"  INFO command is running from a different checkout: {root}")
+            if installed.contains_token:
+                print("  FAIL definition contains HOB_TELEGRAM_TOKEN; reinstall it")
+                return 1
+        print(f"  log: {paths.log_path}")
+        if not paths.plist.exists():
+            print("  next: run `python app.py service install`")
+        return 0 if loaded else 1
+
+    if action == "restart":
+        try:
+            restart_service(uid=uid)
+        except LaunchdError as exc:
+            print(f"hob: service restart failed: {exc}", file=sys.stderr)
+            return 1
+        print("hob: service restarted")
+        return 0
+
+    if action == "uninstall":
+        try:
+            removed = uninstall_launch_agent(paths, uid=uid)
+        except LaunchdError as exc:
+            print(f"hob: service uninstall failed: {exc}", file=sys.stderr)
+            return 1
+        print("hob: service uninstalled" if removed else "hob: service was not installed")
+        print(f"hob: data retained at {Path(cfg.db_path).expanduser().resolve()}")
+        print("hob: Telegram credential retained in Keychain")
+        return 0
+
+    if _doctor(check_database=False) != 0:
+        print("hob: service install stopped; fix doctor failures first", file=sys.stderr)
+        return 1
+    uv = shutil.which("uv")
+    if not uv:
+        print("hob: service install requires uv on PATH", file=sys.stderr)
+        return 1
+    payload = launch_agent_payload(
+        cfg,
+        root=root,
+        uv_path=Path(uv).resolve(),
+        home=home,
+    )
+    backup_path: Path | None = None
+
+    def backup_data() -> None:
+        nonlocal backup_path
+        database = Path(cfg.db_path).expanduser().resolve()
+        with database_lease(str(database)):
+            if database.exists() and database.stat().st_size:
+                directory = paths.data_dir / "Backups"
+                directory.mkdir(parents=True, exist_ok=True)
+                stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+                backup_path = directory / f"hob-before-service-{stamp}.db"
+                source = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+                target = sqlite3.connect(backup_path)
+                try:
+                    source.backup(target)
+                    target.commit()
+                    integrity = target.execute("PRAGMA integrity_check").fetchone()[0]
+                    if integrity != "ok":
+                        raise sqlite3.DatabaseError(
+                            f"pre-update backup failed verification: {integrity}"
+                        )
+                except Exception:
+                    target.close()
+                    source.close()
+                    backup_path.unlink(missing_ok=True)
+                    backup_path = None
+                    raise
+                finally:
+                    if source:
+                        source.close()
+                    if target:
+                        target.close()
+            with SqliteStore(str(database)) as store:
+                healthy, detail = store.integrity_check()
+                if not healthy:
+                    raise sqlite3.DatabaseError(
+                        f"database failed post-migration verification: {detail}"
+                    )
+
+    try:
+        updated = install_launch_agent(
+            payload,
+            paths,
+            uid=uid,
+            before_replace=backup_data,
+        )
+    except (
+        LaunchdError,
+        DatabaseBusyError,
+        OSError,
+        ValueError,
+        sqlite3.DatabaseError,
+    ) as exc:
+        print(f"hob: service install failed safely: {exc}", file=sys.stderr)
+        if backup_path is not None:
+            print(f"hob: verified pre-migration backup retained at {backup_path}")
+        return 1
+    print(f"hob: service {'updated' if updated else 'installed'} and loaded")
+    print(f"hob: definition {paths.plist}")
+    if backup_path is not None:
+        print(f"hob: verified pre-update backup {backup_path}")
+    print("hob: send the bot /start to pair, then finish the five-step setup")
+    print("hob: Calendar remains optional; use `python app.py calendar authorize`")
+    return 0
 
 
 def _status(cfg: Config) -> int:
@@ -3258,6 +3437,8 @@ def main(argv: list[str] | None = None) -> int:
         return _calendar_command(cfg, argv)
     if argv and argv[0] == "queue":
         return _queue_command(cfg, argv)
+    if argv and argv[0] == "service":
+        return _service_command(cfg, argv)
     if argv and argv[0] == "status":
         return _status(cfg)
 

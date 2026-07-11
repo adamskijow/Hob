@@ -38,6 +38,13 @@ snapshot.
   corpus, and Ubuntu/macOS CI in run `29161761127`. Fresh-owner VoiceOver and
   five live disagreement-repair checks remain, and it is not deployable ahead
   of its parent branches.
+- **Durable install in progress:** `agent/v1-durable-install` replaces manual
+  plist editing with secret-free `service install/status/restart/uninstall`,
+  live Telegram credential preflight, a verified pre-migration backup, and
+  rollback-aware launchd replacement. 393 deterministic tests, compile, the
+  75/75 14B corpus, signed native build, plists, and a read-only live status
+  probe pass. Clean-install, update, reboot, sleep, rollback, VoiceOver, and CI
+  remain, and it is stacked on draft PR #4.
 
 ## What is built
 
@@ -112,6 +119,12 @@ aggregate Calendar coverage. Natural references are model-assisted but locally
 validated, all explanatory claims come from the artifact, literal questions
 work through a model outage, and suggested repairs mutate nothing. Its audit is
 in `docs/audits/v1-grounded-explanations.md`.
+
+The stacked durable-install increment generates the exact per-user LaunchAgent,
+validates live dependencies, stops the daemon before migration, preserves a raw
+verified backup, and restores the prior loaded definition on failure. Uninstall
+keeps data and credentials. Its audit is in
+`docs/audits/v1-durable-install.md`.
 
 ## How development goes here
 

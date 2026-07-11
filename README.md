@@ -63,12 +63,18 @@ or proposal change.
 ## Getting started
 
 One command installs [uv](https://docs.astral.sh/uv/) and
-[Ollama](https://ollama.com/) if missing, syncs deps, pulls the model, and runs
-the preflight:
+[Ollama](https://ollama.com/) if missing, syncs dependencies, pulls the model,
+checks live Telegram credentials, and installs Hob as a reboot-safe macOS user
+service once every required check passes:
 
 ```
 scripts/setup.sh                  # honors HOB_MODEL; safe to re-run
 ```
+
+Bot creation is the one step Hob cannot perform for you. If the first run pauses
+for a missing token, create the bot with @BotFather, run `uv run python app.py
+token set`, then rerun setup. It will not install a crash-looping or unreachable
+service and it never writes the token into a plist.
 
 Or do it by hand (needs uv and a local Ollama with a JSON-capable instruct model):
 
@@ -78,6 +84,20 @@ uv sync                           # venv, Python 3.12, deps
 uv run python app.py doctor       # preflight: token, ollama, model, config, db
 uv run python app.py              # start hob
 ```
+
+For durable operation and local inspection:
+
+```
+uv run python app.py service install
+uv run python app.py service status
+uv run python app.py service restart
+uv run python app.py service uninstall
+```
+
+Install is idempotent. It stops an existing agent before database migration,
+takes and verifies a pre-migration backup, validates the generated plist, and
+restores the previous loaded definition if installation fails. Uninstall keeps
+the database, backups, logs, and Keychain credential.
 
 On macOS, setup also builds Hob's signed Calendar bridge. Calendar access is a
 separate, explicit step:

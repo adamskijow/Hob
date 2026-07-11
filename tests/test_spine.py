@@ -1258,6 +1258,33 @@ def test_status_reports_execution_evidence_without_private_text(
     assert "private-event-title-must-not-appear" not in output
 
 
+def test_doctor_rejects_unverified_telegram_credentials(monkeypatch, tmp_path, capsys):
+    import app
+    from config import Config
+    from core.feasibility import CalendarSnapshot
+
+    cfg = Config.from_env({
+        "HOB_TELEGRAM_TOKEN": "syntactically-present",
+        "HOB_TIMEZONE": "UTC",
+        "HOB_DB_PATH": str(tmp_path / "doctor.db"),
+    })
+    monkeypatch.setattr(app.Config, "from_env", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(app, "_telegram_credentials_ready", lambda token: False)
+    monkeypatch.setattr(app, "_model_ready", lambda llm, model: True)
+    monkeypatch.setattr(
+        app,
+        "EventKitCalendar",
+        lambda *args: type("Calendar", (), {
+            "status": lambda self: CalendarSnapshot("disabled")
+        })(),
+    )
+
+    assert app._doctor() == 1
+    output = capsys.readouterr().out
+    assert "Telegram credentials rejected or unreachable" in output
+    assert "syntactically-present" not in output
+
+
 def test_plan_explanation_is_grounded_read_only_and_discoverable():
     from app import LAST_DECISION_KEY
 
