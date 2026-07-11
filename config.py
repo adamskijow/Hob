@@ -45,6 +45,7 @@ class Config:
     calendar_bridge: str
     work_start: str
     work_end: str
+    work_days: tuple[int, ...]
     breaks: tuple[tuple[str, str], ...]
     default_duration_minutes: int
     transition_buffer_minutes: int
@@ -97,6 +98,9 @@ class Config:
             calendar_bridge=src.get("HOB_CALENDAR_BRIDGE", "").strip(),
             work_start=_range(src.get("HOB_WORK_HOURS", "09:00-17:30"))[0],
             work_end=_range(src.get("HOB_WORK_HOURS", "09:00-17:30"))[1],
+            work_days=_work_days(
+                src.get("HOB_WORK_DAYS", "mon,tue,wed,thu,fri")
+            ),
             breaks=_breaks(src.get("HOB_BREAKS", "12:00-13:00")),
             default_duration_minutes=_integer(
                 src.get("HOB_DEFAULT_DURATION", "30"),
@@ -177,6 +181,24 @@ def _breaks(value: str) -> tuple[tuple[str, str], ...]:
     if not value.strip():
         return ()
     return tuple(_range(part) for part in value.split(","))
+
+
+def _work_days(value: str) -> tuple[int, ...]:
+    names = {
+        "mon": 0, "monday": 0,
+        "tue": 1, "tues": 1, "tuesday": 1,
+        "wed": 2, "wednesday": 2,
+        "thu": 3, "thur": 3, "thurs": 3, "thursday": 3,
+        "fri": 4, "friday": 4,
+        "sat": 5, "saturday": 5,
+        "sun": 6, "sunday": 6,
+    }
+    parts = [part.strip().lower() for part in value.split(",") if part.strip()]
+    if not parts or any(part not in names for part in parts):
+        raise ConfigError(
+            "HOB_WORK_DAYS must be comma-separated weekdays such as mon,tue,wed"
+        )
+    return tuple(sorted({names[part] for part in parts}))
 
 
 def _db_path(src: dict, *, preserve_legacy: bool) -> str:

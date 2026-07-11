@@ -153,6 +153,7 @@ def test_plan_runs_preserve_split_sessions_adoption_and_replacement():
     assert [session.status for session in s.plan_sessions("p1")] == [
         "planned", "planned"
     ]
+    assert s.adopted_plan("2026-07-11").id == "p1"
 
     second = PlanRun(
         "p2", "2026-07-11", "proposed", "lost an hour", "2026-07-11T08:10:00"
@@ -167,8 +168,26 @@ def test_plan_runs_preserve_split_sessions_adoption_and_replacement():
     assert replacement_before["runs"]["p1"]["status"] == "active"
     assert s.get_plan_run("p1").status == "superseded"
     assert s.active_plan("2026-07-11").id == "p2"
+    assert s.adopted_plan("2026-07-11").id == "p2"
     s.restore_plan_state(replacement_before)
     assert s.active_plan("2026-07-11").id == "p1"
+
+
+def test_adopted_plan_keeps_completed_run_available_for_evening_review():
+    s = mem()
+    run = PlanRun(
+        "p1",
+        "2026-07-11",
+        "completed",
+        "plan",
+        "2026-07-11T08:00:00",
+        adopted_at="2026-07-11T08:05:00",
+        ended_at="2026-07-11T17:00:00",
+    )
+    s.save_plan_run(run, [])
+
+    assert s.active_plan("2026-07-11") is None
+    assert s.adopted_plan("2026-07-11").id == "p1"
 
 
 def test_plan_session_due_and_task_lifecycle_sync_are_deterministic():
@@ -248,13 +267,16 @@ def test_export_and_backup_include_user_data(tmp_path):
     s = SqliteStore(source)
     s.add_item(make_item("a1", "portable task"))
     s.set_meta("wake_time", "08:00")
+    s.set_meta("work_days", "mon,tue,wed,thu,fri")
 
     exported = s.export_data()
     assert exported["items"][0]["task"] == "portable task"
     assert exported["meta"]["wake_time"] == "08:00"
+    assert exported["meta"]["work_days"] == "mon,tue,wed,thu,fri"
 
     s.backup(backup)
     copied = SqliteStore(backup)
+    assert copied.get_meta("work_days") == "mon,tue,wed,thu,fri"
     assert copied.get_item("a1").task == "portable task"
     copied.close()
     s.close()
@@ -334,3 +356,39 @@ def test_outbox_dedupe_and_delivery_state():
     sent = s.outbound_for_key("digest:today")
     assert sent.status == "sent"
     assert sent.telegram_message_id == 99
+
+
+def test_execution_metrics_are_privacy_safe_and_track_adoption_and_nudges():
+    s = mem()
+    s.add_item(make_item("a1", "secret task label"))
+    run = PlanRun(
+        "p1", "2026-07-11", "proposed", "private constraint",
+        "2026-07-11T08:00:00",
+    )
+    session = PlanSession(
+        "p1:s1", "p1", "a1", "secret task label",
+        "2026-07-11T09:00:00", "2026-07-11T09:30:00",
+    )
+    s.save_plan_run(run, [session])
+    s.adopt_plan("p1", "2026-07-11T08:05:00")
+    s.mark_plan_session_notified("p1:s1", "2026-07-11T09:00:00")
+    outbound = s.enqueue_outbound(
+        "plan-session:p1:s1:2026-07-11T09:00:00",
+        1,
+        "message",
+        "private nudge text",
+        "2026-07-11T09:00:00",
+    )
+    s.mark_outbound_sent(outbound.id, "2026-07-11T09:00:01", 7)
+
+    metrics = s.execution_metrics()
+
+    assert metrics == {
+        "runs": {"active": 1},
+        "sessions": {"planned": 1},
+        "adopted_runs": 1,
+        "latest_adopted_at": "2026-07-11T08:05:00",
+        "notified_sessions": 1,
+        "nudge_delivery": {"sent": 1},
+    }
+    assert "secret" not in repr(metrics) and "private" not in repr(metrics)

@@ -489,6 +489,30 @@ def test_new_recurrence_misclassified_as_series_edit_is_recovered():
     assert dropped_count.mutations[0].recurrence["anchor"] == "completion"
     assert dropped_count.mutations[0].recurrence["count"] == 5
 
+    redundant_edit = reconcile(
+        [
+            Capture(
+                task="check the filters every 2 weeks after I finish",
+                raw=(
+                    "check the filters every 2 weeks after I finish, "
+                    "stop after 5 times"
+                ),
+                repeat="every:2:week",
+            ),
+            Recur(target="a2", op="stop", end=When(kind="offset", n=5)),
+        ],
+        ctx(
+            ACTIVE,
+            message=(
+                "check the filters every 2 weeks after I finish, "
+                "stop after 5 times"
+            ),
+        ),
+    )
+    assert [mutation.kind for mutation in redundant_edit.mutations] == ["capture"]
+    assert redundant_edit.mutations[0].recurrence["anchor"] == "completion"
+    assert redundant_edit.mutations[0].recurrence["count"] == 5
+
 
 def test_resume_retargets_to_the_only_waiting_item():
     from core.models import Resume
@@ -733,6 +757,22 @@ def test_effort_and_buffer_settings_parse_and_validate_minutes():
     assert not invalid.settings and invalid.pending
 
 
+def test_work_days_setting_parses_ranges_every_day_exclusions_and_invalid():
+    for raw, expected in (
+        ("weekdays", "mon,tue,wed,thu,fri"),
+        ("monday through saturday", "mon,tue,wed,thu,fri,sat"),
+        ("every day except sunday", "mon,tue,wed,thu,fri,sat"),
+        ("weekends", "sat,sun"),
+        ("not weekends", "mon,tue,wed,thu,fri"),
+        ("weekdays and saturday", "mon,tue,wed,thu,fri,sat"),
+        ("monday through friday but not wednesday", "mon,tue,thu,fri"),
+    ):
+        plan = reconcile([Setting(key="work_days", raw=raw)], ctx())
+        assert plan.settings[0].value == expected
+    invalid = reconcile([Setting(key="work_days", raw="never")], ctx())
+    assert not invalid.settings and invalid.pending[0].key == "work_days"
+
+
 def test_query_today_and_all():
     plan = reconcile([Query(kind="today")], ctx(ACTIVE))
     assert plan.queries[0].kind == "today"
@@ -770,6 +810,22 @@ def test_plan_query_resolves_named_day_and_refuses_past_day():
         [Query(kind="today")], ctx(ACTIVE, message="what is on my plan?")
     )
     assert status.queries[0].kind == "plan_status"
+
+
+def test_outlook_literal_backstop_corrects_flat_week_query():
+    plan = reconcile(
+        [Query(kind="week")],
+        ctx(ACTIVE, message="what won't fit this week?"),
+    )
+    assert len(plan.queries) == 1
+    assert plan.queries[0].kind == "outlook"
+    assert "fit this week" in plan.queries[0].constraint
+
+    deadline = reconcile(
+        [Query(kind="outlook")],
+        ctx(ACTIVE, message="can I finish everything by Friday?"),
+    )
+    assert deadline.queries[0].date == "2026-07-03"
 
 
 def test_plan_actions_have_literal_consent_backstops():

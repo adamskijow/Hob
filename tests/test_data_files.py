@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: MIT
 import json
+import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -9,9 +11,18 @@ from adapters.data_files import (
     import_export,
     restore_database,
 )
+from core.version import __version__
 from adapters.store_sqlite import SqliteStore
 from core.models import PlanRun, PlanSession, RecurrenceRule
 from tests.test_store import make_item
+
+
+def test_runtime_and_package_versions_cannot_drift():
+    project = tomllib.loads(
+        (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    )
+
+    assert project["project"]["version"] == __version__
 
 
 def test_verified_restore_safety_backs_up_current_database(tmp_path):

@@ -141,7 +141,7 @@ ACTION_SCHEMA = {
                         "setting",
                         {"key": {"type": "string", "enum": [
                             "wake_time", "eod_time", "work_hours", "break_window",
-                            "default_duration", "transition_buffer"
+                            "work_days", "default_duration", "transition_buffer"
                         ]},
                          "raw": _STR},
                         ["type", "key", "raw"],
@@ -188,7 +188,8 @@ ACTION_SCHEMA = {
                         "query",
                         {"kind": {"type": "string", "enum": [
                             "today", "date", "all", "overdue", "week", "search",
-                            "done", "tag", "waiting", "plan", "plan_status"]},
+                            "done", "tag", "waiting", "plan", "plan_status",
+                            "outlook"]},
                          "when": _WHEN, "term": _STR, "tag": _STR,
                          "constraint": _STR},
                         ["type", "kind"],
@@ -293,11 +294,13 @@ the task is DONE, use complete instead.
 - setting: change a preference, not a task. Fields: type "setting", key \
 ("wake_time" = morning digest; "eod_time" = evening recap; "work_hours" = \
 the bounds Hob may plan inside; "break_window" = protected daily break; \
+"work_days" = weekdays on which Hob may plan flexible work; \
 "default_duration" = the estimate for tasks with no stated duration; \
 "transition_buffer" = open minutes kept between commitments), raw \
 (the literal time words). Use for "send the digest at 8", "plan work from 9 \
 to 5", "protect lunch from noon to 1", "assume tasks take 45 minutes", \
-"leave 10 minutes between things", or "remove my lunch break".
+"leave 10 minutes between things", "plan work Monday through Friday", \
+or "remove my lunch break".
 - prioritize: change the importance of an item ALREADY on the list. Fields: type \
 "prioritize", target (item number), level ("high", "normal", or "low"), \
 confidence. Use it when the user re-ranks an existing item: "make the prez deck \
@@ -333,9 +336,12 @@ left for the wedding" -> kind tag, tag "wedding"), "waiting" (what is parked on 
 other people; "what am i waiting on"), "plan" (the user wants help choosing or \
 replanning what to do: "plan my day", "what should I do next", "I have 40 \
 minutes and low energy"), "plan_status" (report the plan already adopted: \
-"what is on my plan", "what am I doing now", "what is next on the plan"). \
+"what is on my plan", "what am I doing now", "what is next on the plan"), \
+"outlook" (read-only seven-day capacity and deadline fit: "am I overloaded \
+this week", "what will not fit", "can I finish everything by Friday"). \
 For plan, set when when a day is named and set constraint to the user's relevant \
-time, energy, location, exclusions, or other planning words; otherwise null.
+time, energy, location, exclusions, or other planning words; otherwise null. \
+For outlook, put any what-if capacity words in constraint.
 - bulk: act on MANY items at once with ONE action; never list them individually. \
 Fields: type "bulk", op ("complete", "drop", or "reschedule"), scope, when (op \
 reschedule only: a date intent for the destination), except (ids to LEAVE OUT \

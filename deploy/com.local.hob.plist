@@ -30,6 +30,7 @@
     <key>HOB_KEEP_ALIVE</key>     <string>-1</string>
     <key>HOB_CALENDAR_ENABLED</key><string>true</string>
     <key>HOB_WORK_HOURS</key>      <string>09:00-17:30</string>
+    <key>HOB_WORK_DAYS</key>       <string>mon,tue,wed,thu,fri</string>
     <key>HOB_BREAKS</key>          <string>12:00-13:00</string>
     <key>HOB_DEFAULT_DURATION</key><string>30</string>
     <key>HOB_TRANSITION_BUFFER</key><string>0</string>

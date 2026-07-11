@@ -68,7 +68,9 @@ minimal diff.
 The planning profile is also meta state, but changes flow through typed Setting
 actions and the ordinary action log so `/undo`, backup, and export preserve the
 same contract as task edits. Feasibility receives validated default-duration and
-transition-buffer values. Generated plan order becomes typed conversational
+transition-buffer values plus explicit working days. Upgraded profiles with no
+working-day choice retain the old all-days behavior and label that assumption
+until the owner chooses. Generated plan order becomes typed conversational
 focus for 15 minutes; deterministic reference resolution uses that visible order
 for ordinal follow-ups. A `start` action changes focus only and states that the
 task was not completed.
@@ -91,6 +93,14 @@ export/import and status without exposing task text.
 First-run onboarding is a small persisted state machine at the edge. Each step
 sets the normal pending Setting question, so model outages, invalid answers, and
 restarts retain the question without creating a parallel interpretation path.
+
+The pure weekly forecast composes up to seven daily feasibility passes without
+a new database model. It carries remaining effort and simulated prerequisite
+state in memory, reserves adopted sessions and opaque Calendar periods, and
+returns typed days, risks, leftovers, and assumptions. The edge renders that
+result as a read-only capacity answer. No forecast allocation enters plan,
+task, action, reminder, or Calendar state. Named boundaries such as "by Friday"
+are resolved by the deterministic date core.
 
 The Swift EventKit bridge is a signed background app because Calendar permission
 belongs to a stable macOS bundle identity. Apple exposes reads through a full-

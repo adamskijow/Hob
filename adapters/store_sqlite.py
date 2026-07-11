@@ -490,6 +490,15 @@ class SqliteStore:
         ).fetchone()
         return self._row_to_plan_run(row) if row else None
 
+    def adopted_plan(self, day: str) -> PlanRun | None:
+        row = self._conn.execute(
+            "SELECT * FROM plan_runs WHERE day=? AND adopted_at IS NOT NULL "
+            "AND status IN ('active','completed') "
+            "ORDER BY adopted_at DESC, id DESC LIMIT 1",
+            (day,),
+        ).fetchone()
+        return self._row_to_plan_run(row) if row else None
+
     def expire_plans(self, before_day: str, ended_at: str) -> int:
         with self._lock:
             rows = self._conn.execute(
@@ -962,6 +971,36 @@ class SqliteStore:
             "SELECT COUNT(*) FROM inbox WHERE status = 'pending' AND last_error IS NOT NULL"
         ).fetchone()[0]
         return pending_in, pending_out, failed
+
+    def execution_metrics(self) -> dict:
+        """Privacy-safe adoption and nudge evidence for local status output."""
+        run_rows = self._conn.execute(
+            "SELECT status, COUNT(*) AS n FROM plan_runs GROUP BY status"
+        ).fetchall()
+        session_rows = self._conn.execute(
+            "SELECT status, COUNT(*) AS n FROM plan_sessions GROUP BY status"
+        ).fetchall()
+        adopted = self._conn.execute(
+            "SELECT COUNT(*), MAX(adopted_at) FROM plan_runs "
+            "WHERE adopted_at IS NOT NULL"
+        ).fetchone()
+        notified = self._conn.execute(
+            "SELECT COUNT(*) FROM plan_sessions WHERE notified_at IS NOT NULL"
+        ).fetchone()[0]
+        nudge_rows = self._conn.execute(
+            "SELECT status, COUNT(*) AS n FROM outbox "
+            "WHERE dedupe_key LIKE 'plan-session:%' GROUP BY status"
+        ).fetchall()
+        return {
+            "runs": {row["status"]: row["n"] for row in run_rows},
+            "sessions": {row["status"]: row["n"] for row in session_rows},
+            "adopted_runs": adopted[0],
+            "latest_adopted_at": adopted[1],
+            "notified_sessions": notified,
+            "nudge_delivery": {
+                row["status"]: row["n"] for row in nudge_rows
+            },
+        }
 
     def integrity_check(self) -> tuple[bool, str]:
         rows = self._conn.execute("PRAGMA integrity_check").fetchall()

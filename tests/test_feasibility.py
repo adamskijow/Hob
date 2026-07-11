@@ -93,6 +93,46 @@ def test_future_day_uses_that_days_full_window_not_todays_clock():
     assert plan.blocks[0].start.strftime("%Y-%m-%d %H:%M") == "2026-07-12 09:00"
 
 
+def test_non_workday_rejects_flexible_work_but_keeps_fixed_commitment_visible():
+    tasks = [
+        item("a1", "flexible work", duration_minutes=30),
+        item(
+            "a2", "fixed saturday call", due_date="2026-07-11",
+            due_time="10:00", duration_minutes=30, schedule_kind="fixed",
+        ),
+    ]
+
+    plan = build_day_plan(
+        tasks,
+        CalendarSnapshot("unavailable"),
+        NOW,
+        PlanPreferences(work_days=(0, 1, 2, 3, 4), breaks=()),
+    )
+
+    assert [block.item_id for block in plan.blocks] == ["a2"]
+    assert any("not a configured planning day" in warning for warning in plan.warnings)
+    assert any("outside working hours" in warning for warning in plan.warnings)
+    assert any(item.item_id == "a1" for item in plan.deferred)
+
+
+def test_past_timed_commitment_is_never_floated_to_a_later_day():
+    task = item(
+        "a1", "missed call", due_date="2026-07-10", due_time="15:00",
+        duration_minutes=30, schedule_kind="fixed",
+    )
+
+    plan = build_day_plan(
+        [task],
+        CalendarSnapshot("unavailable"),
+        NOW,
+        PlanPreferences(breaks=()),
+    )
+
+    assert plan.blocks == []
+    assert plan.deferred[0].reason == "stated time has passed; it was not moved"
+    assert "2026-07-10 15:00" in plan.warnings[0]
+
+
 def test_explicit_default_duration_and_transition_buffer_shape_the_plan():
     tasks = [item("a1", "first"), item("a2", "second")]
     plan = build_day_plan(
@@ -161,6 +201,20 @@ def test_replanning_constraints_parse_literal_day_changes():
     assert prefs.latest_time == "12:00"
     assert parse_plan_preferences("free after 2 before 5").earliest_time == "14:00"
     assert parse_plan_preferences("free after 2 before 5").latest_time == "17:00"
+    assert parse_plan_preferences("mornings only this week").latest_time == "12:00"
+    assert parse_plan_preferences(
+        "mornings are all I have this week"
+    ).latest_time == "12:00"
+    assert parse_plan_preferences("only afternoons").earliest_time == "13:00"
+    assert parse_plan_preferences(
+        "all I have is afternoons"
+    ).earliest_time == "13:00"
+    assert parse_plan_preferences(
+        "I have 5 hours this week"
+    ).budget_scope == "horizon"
+    assert parse_plan_preferences(
+        "I have 2 hours each day this week"
+    ).budget_scope == "day"
 
 
 def test_splittable_work_uses_real_gaps_without_overlaps():

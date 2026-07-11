@@ -339,7 +339,7 @@ class Amend:
 
 @dataclass
 class Query:
-    kind: str  # today | date | all | overdue | week | search | done | tag | plan
+    kind: str  # today | date | all | overdue | week | search | done | tag | plan | outlook
     when: When | None = None  # typed date intent, for kind=date
     date: str | None = None  # ISO, resolved by the core for kind=date
     term: str | None = None  # free-text search keywords, for kind=search

@@ -192,6 +192,11 @@ CASES = [
              ("work_hours", "09:00-17:00")
          ],
          "NL setting (working hours)"),
+    Case("plan flexible work Monday through Friday",
+         lambda p: [(s.key, s.value) for s in p.settings] == [
+             ("work_days", "mon,tue,wed,thu,fri")
+         ],
+         "NL setting (working days)"),
     Case("protect lunch from noon to 1",
          lambda p: [(s.key, s.value) for s in p.settings] == [
              ("break_window", "12:00-13:00")
@@ -247,6 +252,14 @@ CASES = [
     Case("what is on my plan?",
          lambda p: len(p.queries) == 1 and p.queries[0].kind == "plan_status",
          "adopted plan status query"),
+    Case("am I overloaded this week if mornings are all I have?",
+         lambda p: len(p.queries) == 1 and p.queries[0].kind == "outlook"
+         and not p.mutations,
+         "weekly capacity what-if is a read-only outlook"),
+    Case("what won't fit this week?",
+         lambda p: len(p.queries) == 1 and p.queries[0].kind == "outlook"
+         and not p.mutations,
+         "weekly fit question is a read-only outlook"),
     Case("meeting ran over, I got interrupted; replan",
          lambda p: len(p.queries) == 1 and p.queries[0].kind == "plan"
          and not p.mutations,

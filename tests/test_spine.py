@@ -9,7 +9,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app import MessageService
-from core.models import Item
+from core.models import Item, PlanRun, PlanSession
 from adapters.store_sqlite import SqliteStore
 from adapters.telegram_bot import InboundMessage
 from tests.fakes import FakeClock, FakeLlm
@@ -340,6 +340,7 @@ def test_work_hours_and_break_are_chat_configurable_and_undoable():
         {
             "actions": [
                 {"type": "setting", "key": "work_hours", "raw": "9 to 5"},
+                {"type": "setting", "key": "work_days", "raw": "monday through saturday"},
                 {"type": "setting", "key": "break_window", "raw": "noon to 1"},
             ]
         }
@@ -347,15 +348,18 @@ def test_work_hours_and_break_are_chat_configurable_and_undoable():
     store = SqliteStore(":memory:")
     clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
     svc = MessageService(store, clock, llm, "America/New_York")
-    out = svc.handle(msg("plan work from 9 to 5 and protect lunch noon to 1"))
-    assert "09:00-17:00" in out and "12:00-13:00" in out
+    out = svc.handle(msg("plan Monday through Saturday from 9 to 5 and protect lunch noon to 1"))
+    assert "09:00-17:00" in out and "12:00-13:00" in out and "mon,tue" in out
     assert store.get_meta("work_hours") == "09:00-17:00"
+    assert store.get_meta("work_days") == "mon,tue,wed,thu,fri,sat"
     assert store.get_meta("breaks") == "12:00-13:00"
     settings = svc.handle(msg("/settings", message_id=2))
     assert "planning hours: 09:00-17:00" in settings
+    assert "planning days: mon,tue,wed,thu,fri,sat" in settings
     assert "protected breaks: 12:00-13:00" in settings
-    assert "2 change" in svc.handle(msg("/undo", message_id=3))
+    assert "3 change" in svc.handle(msg("/undo", message_id=3))
     assert store.get_meta("work_hours") == "" and store.get_meta("breaks") == ""
+    assert store.get_meta("work_days") == ""
 
 
 def test_default_effort_and_buffer_are_visible_and_undoable_together():
@@ -387,6 +391,7 @@ def test_fresh_start_runs_resumable_guided_setup_to_completion():
 
     llm = FakeLlm([
         {"actions": [{"type": "setting", "key": "work_hours", "raw": "9 to 5"}]},
+        {"actions": [{"type": "setting", "key": "work_days", "raw": "weekdays"}]},
         {"actions": [{"type": "setting", "key": "break_window", "raw": "no break"}]},
         {"actions": [{"type": "setting", "key": "default_duration", "raw": "45 minutes"}]},
         {"actions": [{"type": "setting", "key": "transition_buffer", "raw": "10 minutes"}]},
@@ -396,24 +401,26 @@ def test_fresh_start_runs_resumable_guided_setup_to_completion():
     svc = MessageService(store, clock, llm, "America/New_York")
 
     start = svc.handle(InboundMessage("/start", 10, 1, 1, user_id=42))
-    assert "setup 1/4" in start and store.get_meta(ONBOARDING_STAGE_KEY) == "work_hours"
+    assert "setup 1/5" in start and store.get_meta(ONBOARDING_STAGE_KEY) == "work_hours"
     assert store.get_meta("pending")
     assert store.get_meta(INSTALL_VERSION_KEY) == __version__
     assert store.get_meta(RELEASE_NOTICE_KEY) == __version__
 
     first = svc.handle(InboundMessage("plan work from 9 to 5", 10, 2, 2, user_id=42))
-    assert "setup 2/4" in first and store.get_meta("work_hours") == "09:00-17:00"
-    second = svc.handle(InboundMessage("no break", 10, 3, 3, user_id=42))
-    assert "setup 3/4" in second and store.get_meta("breaks") == "none"
-    third = svc.handle(InboundMessage("assume 45 minutes", 10, 4, 4, user_id=42))
-    assert "setup 4/4" in third and store.get_meta("default_duration") == "45"
-    done = svc.handle(InboundMessage("leave 10 minutes", 10, 5, 5, user_id=42))
+    assert "setup 2/5" in first and store.get_meta("work_hours") == "09:00-17:00"
+    second = svc.handle(InboundMessage("weekdays", 10, 3, 3, user_id=42))
+    assert "setup 3/5" in second and store.get_meta("work_days") == "mon,tue,wed,thu,fri"
+    third = svc.handle(InboundMessage("no break", 10, 4, 4, user_id=42))
+    assert "setup 4/5" in third and store.get_meta("breaks") == "none"
+    fourth = svc.handle(InboundMessage("assume 45 minutes", 10, 5, 5, user_id=42))
+    assert "setup 5/5" in fourth and store.get_meta("default_duration") == "45"
+    done = svc.handle(InboundMessage("leave 10 minutes", 10, 6, 6, user_id=42))
     assert "setup complete" in done
     assert store.get_meta("transition_buffer") == "10"
     assert store.get_meta(ONBOARDING_DONE_KEY)
     assert store.get_meta(ONBOARDING_STAGE_KEY) == ""
     assert store.get_meta("pending") == ""
-    settings = svc.handle(InboundMessage("/settings", 10, 6, 6, user_id=42))
+    settings = svc.handle(InboundMessage("/settings", 10, 7, 7, user_id=42))
     assert "default estimate: 45m" in settings
     assert "transition buffer: 10m" in settings
     assert "setup: complete" in settings
@@ -429,15 +436,50 @@ def test_setup_resumes_after_restart_and_can_skip_or_cancel():
     clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
     restarted = MessageService(store, clock, FakeLlm({"actions": []}), "America/New_York")
     resumed = restarted.handle(InboundMessage("/setup", 10, 1, 1, user_id=42))
-    assert "setup 2/4" in resumed
+    assert "setup 3/5" in resumed
     skipped = restarted.handle(InboundMessage("skip", 10, 2, 2, user_id=42))
-    assert "setup 3/4" in skipped
+    assert "setup 4/5" in skipped
     canceled = restarted.handle(InboundMessage("cancel setup", 10, 3, 3, user_id=42))
     assert "setup paused" in canceled
     assert store.get_meta(ONBOARDING_STAGE_KEY) == "default_duration"
     assert store.get_meta("pending") == ""
     resumed_again = restarted.handle(InboundMessage("/setup", 10, 4, 4, user_id=42))
-    assert "setup 3/4" in resumed_again
+    assert "setup 4/5" in resumed_again
+
+
+def test_workday_onboarding_skip_records_displayed_default():
+    from app import INSTALL_VERSION_KEY, ONBOARDING_STAGE_KEY
+    from core.version import __version__
+
+    store = SqliteStore(":memory:")
+    store.set_meta("telegram_owner_user_id", "42")
+    store.set_meta(INSTALL_VERSION_KEY, __version__)
+    store.set_meta(ONBOARDING_STAGE_KEY, "work_days")
+    svc = MessageService(
+        store,
+        FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ)),
+        FakeLlm({"actions": []}),
+        "America/New_York",
+    )
+
+    prompt = svc.handle(InboundMessage("/setup", 10, 1, 1, user_id=42))
+    assert 'skip" keeps mon,tue,wed,thu,fri' in prompt
+    svc.handle(InboundMessage("skip", 10, 2, 2, user_id=42))
+    assert store.get_meta("work_days") == "mon,tue,wed,thu,fri"
+
+
+def test_upgraded_profile_keeps_all_days_until_owner_chooses():
+    svc, store = service(FakeLlm({"actions": [{
+        "type": "query", "kind": "outlook", "constraint": None,
+    }]}))
+    store.set_meta("telegram_owner_user_id", "42")
+
+    settings = svc.handle(msg("/settings"))
+    outlook = svc.handle(msg("am I overloaded this week?", 2))
+
+    assert "planning days: mon,tue,wed,thu,fri,sat,sun (legacy all-days default" in settings
+    assert "Sat 7/4:" in outlook and "not a planning day" not in outlook
+    assert "keeps the prior all-days behavior" in outlook
 
 
 def test_returning_owner_start_does_not_force_setup():
@@ -446,7 +488,7 @@ def test_returning_owner_start_does_not_force_setup():
     clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
     svc = MessageService(store, clock, FakeLlm({"actions": []}), "America/New_York")
     out = svc.handle(InboundMessage("/start", 10, 1, 1, user_id=42))
-    assert "hi, i am hob" in out and "setup 1/4" not in out
+    assert "hi, i am hob" in out and "setup 1/5" not in out
 
 
 def test_recovery_commands_refuse_ambiguous_legacy_database(monkeypatch, tmp_path):
@@ -819,6 +861,63 @@ def test_plan_my_day_is_reasoned_read_only_and_validates_ids():
     assert focus["items"] and focus["items"][0]["context"] == "plan"
 
 
+def test_week_outlook_is_read_only_uses_profile_days_and_checks_each_calendar_day():
+    from core.feasibility import CalendarSnapshot
+
+    class Calendar:
+        def __init__(self):
+            self.calls = []
+
+        def snapshot(self, start, end):
+            self.calls.append((start, end))
+            return CalendarSnapshot("authorized")
+
+    calendar = Calendar()
+    llm = FakeLlm({"actions": [{
+        "type": "query", "kind": "outlook", "constraint": "mornings only"
+    }]})
+    svc, store = service(llm)
+    svc._calendar = calendar
+    before = [item.to_dict() for item in store.open_items()]
+
+    out = svc.handle(msg("am I overloaded this week if mornings are all I have?"))
+
+    assert "week outlook" in out and "read-only load test" in out
+    assert "Sat 7/4: not a planning day" in out
+    assert "calendar: 7/7 day(s) checked" in out
+    assert len(calendar.calls) == 7
+    assert [item.to_dict() for item in store.open_items()] == before
+    assert store.last_batch() == []
+
+
+def test_outlook_by_friday_uses_friday_as_the_capacity_boundary():
+    from core.feasibility import CalendarSnapshot
+
+    class Calendar:
+        def __init__(self):
+            self.calls = []
+
+        def snapshot(self, start, end):
+            self.calls.append((start, end))
+            return CalendarSnapshot("authorized")
+
+    calendar = Calendar()
+    llm = FakeLlm({"actions": [{
+        "type": "query",
+        "kind": "outlook",
+        "when": {"kind": "weekday", "day": "fri"},
+        "constraint": "by Friday",
+    }]})
+    svc, _ = service(llm)
+    svc._calendar = calendar
+
+    out = svc.handle(msg("can I finish everything by Friday?"))
+
+    assert "week outlook 2026-06-29 to 2026-07-03" in out
+    assert "calendar: 5/5 day(s) checked" in out
+    assert len(calendar.calls) == 5
+
+
 def test_plan_my_day_uses_injected_calendar_availability():
     from core.feasibility import BusyPeriod, CalendarSnapshot
 
@@ -929,6 +1028,7 @@ def test_future_plan_can_be_adopted_run_completed_and_undone():
 
     adopted = svc.handle(msg("use this plan", 2))
     assert "adopted" in adopted and "tasks and calendar are unchanged" in adopted
+    assert "first-run tip" in adopted and "replace my plan with this" in adopted
     assert store.active_plan("2026-06-30").id == proposal.id
     assert store.get_meta("first_plan_adopted_at")
     assert svc.handle(msg("use this plan", 2)) == ""
@@ -974,6 +1074,7 @@ def test_active_plan_requires_explicit_replacement_and_cancel_is_undoable():
     assert store.active_plan("2026-06-29").id == original.id
     replaced = svc.handle(msg("replace my plan with this", 5))
     assert "replaced" in replaced
+    assert "first-run tip" not in replaced
     assert store.active_plan("2026-06-29").id == proposal.id
     canceled = svc.handle(msg("cancel my plan", 6))
     assert "canceled" in canceled and store.active_plan("2026-06-29") is None
@@ -1087,3 +1188,65 @@ def test_query_today_lists_items():
 
     assert "today:" in out
     assert "1: review SR audit" in out  # overdue rolls in first
+
+
+def test_status_reports_execution_evidence_without_private_text(
+    tmp_path, monkeypatch, capsys
+):
+    from types import SimpleNamespace
+
+    import app
+
+    db = tmp_path / "hob.db"
+    with SqliteStore(str(db)) as store:
+        store.add_item(Item(
+            id="a1",
+            raw_text="secret task label",
+            task="secret task label",
+            due_date=None,
+            due_time=None,
+            status="open",
+            source="capture",
+            created_at="2026-07-11T08:00:00",
+            updated_at="2026-07-11T08:00:00",
+        ))
+        store.save_plan_run(
+            PlanRun(
+                "p1", "2026-07-11", "proposed", "private constraint",
+                "2026-07-11T08:00:00",
+            ),
+            [PlanSession(
+                "p1:s1", "p1", "a1", "secret task label",
+                "2026-07-11T09:00:00", "2026-07-11T09:30:00",
+            )],
+        )
+        store.adopt_plan("p1", "2026-07-11T08:05:00")
+        store.set_meta("first_plan_adopted_at", "2026-07-11T08:05:00")
+    cfg = SimpleNamespace(
+        db_path=str(db),
+        telegram_token_source="test",
+        allowed_telegram_user_id=None,
+        work_start="09:00",
+        work_end="17:30",
+        work_days=(0, 1, 2, 3, 4),
+        default_duration_minutes=30,
+        transition_buffer_minutes=0,
+        model="test-model",
+        ollama_host="http://localhost:11434",
+        calendar_bridge="",
+        calendar_enabled=False,
+    )
+    monkeypatch.setattr(app, "_model_ready", lambda llm, model: True)
+    monkeypatch.setattr(
+        app,
+        "EventKitCalendar",
+        lambda *args: SimpleNamespace(
+            status=lambda: SimpleNamespace(status="disabled")
+        ),
+    )
+
+    assert app._status(cfg) == 0
+    output = capsys.readouterr().out
+    assert "first_plan=yes adopted_runs=1" in output
+    assert "runs=active:1" in output and "states=planned:1" in output
+    assert "secret" not in output and "private constraint" not in output

@@ -76,7 +76,7 @@ def test_resume_from_saved_offset():
     assert store.get_meta(OFFSET_KEY) == "13"
 
 
-def test_non_text_update_advances_without_reply():
+def test_non_text_update_gets_accessible_fallback_and_advances():
     store = SqliteStore(":memory:")
     # update with no text (e.g. a photo); message present but text None
     no_text = SimpleNamespace(
@@ -88,8 +88,39 @@ def test_non_text_update_advances_without_reply():
 
     asyncio.run(adapter.poll_once())
 
-    assert bot.sent == []  # nothing to echo
+    assert bot.sent == [(
+        1,
+        "I can read text and media captions, but not this message type yet. "
+        "Send the task as text.",
+    )]
     assert store.get_meta(OFFSET_KEY) == "6"  # but offset still advanced
+
+
+def test_media_caption_uses_the_normal_message_path():
+    store = SqliteStore(":memory:")
+    captioned = SimpleNamespace(
+        update_id=6,
+        message=SimpleNamespace(
+            text=None,
+            caption="buy milk tomorrow",
+            message_id=6,
+            chat=SimpleNamespace(id=1, type="private"),
+            from_user=SimpleNamespace(id=7),
+        ),
+    )
+    bot = FakeBot([[captioned]])
+    seen = []
+    adapter = TelegramAdapter(
+        store,
+        lambda message: seen.append(message) or "got it",
+        bot=bot,
+    )
+
+    asyncio.run(adapter.poll_once())
+
+    assert seen[0].text == "buy milk tomorrow"
+    assert seen[0].user_id == 7 and seen[0].chat_type == "private"
+    assert bot.sent == [(1, "Got it")]
 
 
 def test_handler_returning_none_sends_nothing():

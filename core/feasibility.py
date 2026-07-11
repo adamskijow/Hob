@@ -37,8 +37,10 @@ class CalendarSnapshot:
 class PlanPreferences:
     work_start: str = "09:00"
     work_end: str = "17:30"
+    work_days: tuple[int, ...] = (0, 1, 2, 3, 4, 5, 6)
     breaks: tuple[tuple[str, str], ...] = (("12:00", "13:00"),)
     budget_minutes: int | None = None
+    budget_scope: str = "day"  # day | horizon
     earliest_time: str | None = None
     latest_time: str | None = None
     energy: str | None = None
@@ -129,6 +131,7 @@ def parse_plan_preferences(
     *,
     work_start: str = "09:00",
     work_end: str = "17:30",
+    work_days: tuple[int, ...] = (0, 1, 2, 3, 4, 5, 6),
     breaks: tuple[tuple[str, str], ...] = (("12:00", "13:00"),),
     default_duration_minutes: int = DEFAULT_DURATION_MINUTES,
     transition_buffer_minutes: int = 0,
@@ -165,13 +168,37 @@ def parse_plan_preferences(
         "afternoon gone", "afternoon is gone", "afternoon's gone", "no afternoon",
     )):
         latest = min(filter(None, (latest, "12:00")))
+    if re.search(
+        r"\b(?:mornings?|before noon) only\b|"
+        r"\bonly (?:mornings?|before noon)\b|"
+        r"\bmornings? (?:is|are) all i have\b|"
+        r"\ball i have (?:is|are) mornings?\b",
+        low,
+    ):
+        latest = min(filter(None, (latest, "12:00")))
+    if re.search(
+        r"\bafternoons? only\b|\bonly afternoons?\b|"
+        r"\bafternoons? (?:is|are) all i have\b|"
+        r"\ball i have (?:is|are) afternoons?\b",
+        low,
+    ):
+        earliest = max(filter(None, (earliest, "13:00")))
 
     energy = "low" if re.search(r"\b(low|little|tired|drained)\s+energy\b|\bexhausted\b", low) else None
+    budget_scope = (
+        "horizon"
+        if budget is not None
+        and re.search(r"\b(?:this|the|over the|for the) week\b", low)
+        and not re.search(r"\b(?:per|each) day\b|\bdaily\b", low)
+        else "day"
+    )
     return PlanPreferences(
         work_start=work_start,
         work_end=work_end,
+        work_days=work_days,
         breaks=breaks,
         budget_minutes=budget,
+        budget_scope=budget_scope,
         earliest_time=earliest,
         latest_time=latest,
         energy=energy,
@@ -315,6 +342,9 @@ def build_day_plan(
     tzinfo = now.tzinfo
     work_start = _at(target, preferences.work_start, tzinfo)
     work_end = _at(target, preferences.work_end, tzinfo)
+    working_day = target.weekday() in preferences.work_days
+    if not working_day:
+        work_end = work_start
     if preferences.earliest_time:
         work_start = max(work_start, _at(target, preferences.earliest_time, tzinfo))
     if preferences.latest_time:
@@ -331,7 +361,11 @@ def build_day_plan(
         calendar_status=snapshot.status,
     )
     if work_end <= horizon_start:
-        plan.warnings.append("no working time remains inside the requested window")
+        plan.warnings.append(
+            "not a configured planning day"
+            if not working_day
+            else "no working time remains inside the requested window"
+        )
 
     buffer = timedelta(minutes=max(0, preferences.transition_buffer_minutes))
     protected = list(snapshot.busy)
@@ -361,6 +395,20 @@ def build_day_plan(
     candidates: list[Item] = []
     for item in items:
         if item.due_date and item.due_date > target.isoformat():
+            continue
+        if item.due_date and item.due_time and item.due_date < target.isoformat():
+            plan.deferred.append(
+                DeferredItem(
+                    item.id,
+                    item.task,
+                    "stated time has passed; it was not moved",
+                    item.duration_minutes or preferences.default_duration_minutes,
+                )
+            )
+            plan.warnings.append(
+                f'missed stated time: "{item.task}" was at '
+                f"{item.due_date} {item.due_time}"
+            )
             continue
         if item.waiting_since:
             plan.deferred.append(DeferredItem(item.id, item.task, "waiting on someone else", item.duration_minutes or preferences.default_duration_minutes))

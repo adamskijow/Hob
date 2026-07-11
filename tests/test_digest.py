@@ -11,7 +11,7 @@ from core.digest import (
     render_digest,
     select_digest_items,
 )
-from core.models import Item
+from core.models import Item, PlanRun, PlanSession
 from adapters.store_sqlite import SqliteStore
 from tests.fakes import FakeClock
 from core.version import __version__
@@ -170,6 +170,74 @@ def test_eod_service_lists_on_deck_or_skips():
     assert quiet.calls == []  # nothing on deck: no message, day still marked
 
 
+def test_eod_reviews_adopted_sessions_without_inferring_completion():
+    from app import EODService
+
+    store = SqliteStore(":memory:")
+    store.set_meta("chat_id", "42")
+    finished = item("a1", "finished block")
+    finished.status = "done"
+    open_task = item("a2", "unfinished block")
+    canceled = item("a3", "canceled block", due="2026-07-15")
+    for task in (finished, open_task, canceled):
+        store.add_item(task)
+    run = PlanRun(
+        "p1", "2026-06-29", "active", "plan", "2026-06-29T08:00:00-04:00",
+        adopted_at="2026-06-29T08:05:00-04:00",
+    )
+    store.save_plan_run(run, [
+        PlanSession(
+            "p1:s1", "p1", "a1", finished.task,
+            "2026-06-29T09:00:00-04:00", "2026-06-29T09:30:00-04:00",
+            status="done",
+        ),
+        PlanSession(
+            "p1:s2", "p1", "a2", open_task.task,
+            "2026-06-29T10:00:00-04:00", "2026-06-29T10:30:00-04:00",
+            status="planned",
+        ),
+        PlanSession(
+            "p1:s3", "p1", "a3", canceled.task,
+            "2026-06-29T11:00:00-04:00", "2026-06-29T11:30:00-04:00",
+            status="canceled",
+        ),
+        PlanSession(
+            "p1:s4", "p1", "missing", "missing block",
+            "2026-06-29T12:00:00-04:00", "2026-06-29T12:30:00-04:00",
+            status="planned",
+        ),
+    ])
+    send = FakeSend()
+
+    asyncio.run(EODService(store, FakeClock(at(20, 30)), send).fire())
+
+    text = send.calls[0][1]
+    assert "explicitly done:\n- finished block" in text
+    assert "still open from the adopted plan:\n- unfinished block (10:00-10:30)" in text
+    assert "canceled block" not in text
+    assert "plan references no longer in the task store:\n- missing block" in text
+    assert "elapsed sessions are not marked complete" in text
+    assert store.get_item("a2").status == "open"
+
+
+def test_eod_falls_back_to_task_recap_when_plan_state_cannot_be_read(monkeypatch):
+    from app import EODService
+
+    store = SqliteStore(":memory:")
+    store.set_meta("chat_id", "42")
+    store.add_item(item("a1", "safe fallback"))
+    monkeypatch.setattr(
+        store,
+        "adopted_plan",
+        lambda day: (_ for _ in ()).throw(RuntimeError("bad plan state")),
+    )
+    send = FakeSend()
+
+    assert asyncio.run(EODService(store, FakeClock(at(20, 30)), send).fire())
+    assert "what got done today?" in send.calls[0][1]
+    assert "1: safe fallback" in send.calls[0][1]
+
+
 def test_render_stale_nudge():
     out = render_digest(
         [item("a1", "x", due="2026-06-26", created="2026-06-26T08:00:00")],
@@ -255,6 +323,7 @@ def test_upgraded_owner_gets_one_digest_discovery_note_but_fresh_install_does_no
     asyncio.run(service.fire())
 
     assert "new in hob" in sent.calls[0][1]
+    assert "check planning days in /settings" in sent.calls[0][1]
     assert "new in hob" not in sent.calls[1][1]
     assert upgraded.get_meta(RELEASE_NOTICE_KEY) == __version__
 
