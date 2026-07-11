@@ -24,6 +24,43 @@ _RANGE_RE = re.compile(
 _KEEP_ALIVE_RE = re.compile(r"^(-?\d+|\d+(\.\d+)?[smh])$")
 
 
+def _valid_timezone(value: str | None) -> str | None:
+    candidate = (value or "").strip().lstrip(":")
+    if not candidate or candidate.startswith("/"):
+        return None
+    try:
+        ZoneInfo(candidate)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+    return candidate
+
+
+def _system_timezone(
+    environ: dict | None = None,
+    localtime: Path = Path("/etc/localtime"),
+    timezone_file: Path = Path("/etc/timezone"),
+) -> str:
+    """Best-effort IANA zone for a real install, with a deterministic fallback."""
+    src = os.environ if environ is None else environ
+    configured = _valid_timezone(src.get("TZ"))
+    if configured:
+        return configured
+    try:
+        resolved = str(localtime.resolve(strict=True))
+    except OSError:
+        resolved = ""
+    marker = "/zoneinfo/"
+    if marker in resolved:
+        linked = _valid_timezone(resolved.split(marker, 1)[1])
+        if linked:
+            return linked
+    try:
+        file_value = _valid_timezone(timezone_file.read_text(encoding="utf-8"))
+    except OSError:
+        file_value = None
+    return file_value or "UTC"
+
+
 class ConfigError(Exception):
     """Raised when configuration values are missing or malformed."""
 
@@ -57,6 +94,7 @@ class Config:
     @classmethod
     def from_env(cls, env: dict | None = None) -> "Config":
         src = os.environ if env is None else env
+        timezone_default = _system_timezone() if env is None else "UTC"
         environment_token = src.get("HOB_TELEGRAM_TOKEN", "").strip()
         keychain_token = (
             get_telegram_token() if env is None and not environment_token else None
@@ -88,7 +126,7 @@ class Config:
             allowed_telegram_user_id=allowed_user,
             model=src.get("HOB_MODEL", "qwen2.5:7b-instruct").strip(),
             wake_time=src.get("HOB_WAKE_TIME", "07:00").strip(),
-            timezone=src.get("HOB_TIMEZONE", "UTC").strip(),
+            timezone=src.get("HOB_TIMEZONE", timezone_default).strip(),
             db_path=_db_path(src, preserve_legacy=env is None),
             ollama_host=src.get("HOB_OLLAMA_HOST", "http://localhost:11434").strip(),
             keep_alive=src.get("HOB_KEEP_ALIVE", "-1").strip(),

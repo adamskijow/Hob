@@ -18,6 +18,10 @@ snapshot.
   a deterministic weekly capacity outlook, working days, plan-aware EOD, first-
   adoption coaching, and privacy-safe activation metrics. It must not merge or
   deploy until the live v0.8 adoption/replan/nudge loop is dogfooded.
+- **Stacked 1.0 readiness:** `agent/v1-time-correctness` derives the real Mac
+  timezone, exposes it during setup, removes the template's regional default,
+  and gives DST gaps/repeats explicit planning, reminder, and digest policies.
+  It is not deployable ahead of v0.9.
 - **Green:** `uv run pytest` (345 passing), native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
   evals.interpreter_eval`, 72/72). Ubuntu and macOS PR checks pass.

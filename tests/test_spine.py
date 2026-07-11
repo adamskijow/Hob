@@ -401,6 +401,7 @@ def test_fresh_start_runs_resumable_guided_setup_to_completion():
     svc = MessageService(store, clock, llm, "America/New_York")
 
     start = svc.handle(InboundMessage("/start", 10, 1, 1, user_id=42))
+    assert "times use America/New_York" in start
     assert "setup 1/5" in start and store.get_meta(ONBOARDING_STAGE_KEY) == "work_hours"
     assert store.get_meta("pending")
     assert store.get_meta(INSTALL_VERSION_KEY) == __version__

@@ -39,6 +39,7 @@ from core.feasibility import (
     parse_plan_preferences,
 )
 from core.forecast import build_week_forecast
+from core.local_time import wall_datetime, wall_time_status
 from core.models import (
     SOURCE_CAPTURE,
     STATUS_DONE,
@@ -442,7 +443,16 @@ class MessageService:
             self._store.set_meta(ONBOARDING_STAGE_KEY, stage)
         prompt = self._setup_prompt(stage)
         intro = self._welcome() + "\n\n" if include_welcome else ""
-        return intro + prompt + '\nYou can also say "cancel setup" at any step.'
+        timezone_note = (
+            f"times use {self._timezone}. if that is wrong, pause setup and "
+            "set HOB_TIMEZONE before continuing.\n"
+        )
+        return (
+            intro
+            + timezone_note
+            + prompt
+            + '\nYou can also say "cancel setup" at any step.'
+        )
 
     def _finish_onboarding(self) -> str:
         self._store.set_meta(ONBOARDING_STAGE_KEY, "")
@@ -2352,8 +2362,21 @@ class ReminderService:
         for item in self._store.due_reminders(threshold, now, earliest):
             text = f'reminder: "{item.task}" at {item.due_time}'
             due_at = f"{item.due_date}T{item.due_time}"
+            due_wall = wall_datetime(
+                date.fromisoformat(item.due_date),
+                item.due_time,
+                self._clock.now().tzinfo,
+            )
+            wall_status = wall_time_status(due_wall)
             if not item.snooze_until and due_at < missed_cutoff:
                 text = f'missed reminder: "{item.task}" was due at {item.due_time}'
+            if not item.snooze_until and wall_status == "nonexistent":
+                text = (
+                    f'missed reminder: "{item.task}" was set for '
+                    f"{item.due_time}, which the clock skipped for daylight saving"
+                )
+            elif not item.snooze_until and wall_status == "ambiguous":
+                text += " (this time occurs twice today; using the first occurrence)"
             if item.snooze_until:
                 text = f'reminder (snoozed): "{item.task}" at {item.due_time}'
             if item.note:
@@ -2426,9 +2449,12 @@ class ReminderService:
                 due_offsets: list[int] = []
                 text = f'reminder (snoozed): "{item.task}" at {item.due_time}'
             else:
-                due_at = datetime.fromisoformat(
-                    f"{item.due_date}T{item.due_time}"
-                ).replace(tzinfo=current.tzinfo)
+                due_at = wall_datetime(
+                    date.fromisoformat(item.due_date),
+                    item.due_time,
+                    current.tzinfo,
+                )
+                wall_status = wall_time_status(due_at)
                 if due_at < current - self._grace:
                     continue
                 due_offsets = [
@@ -2441,6 +2467,15 @@ class ReminderService:
                     continue
                 chosen = min(due_offsets)
                 text = f'reminder: "{item.task}" at {item.due_time}'
+                if wall_status == "nonexistent":
+                    text = (
+                        f'missed reminder: "{item.task}" was set for '
+                        f"{item.due_time}, which the clock skipped for daylight saving"
+                    )
+                elif wall_status == "ambiguous":
+                    text += (
+                        " (this time occurs twice today; using the first occurrence)"
+                    )
             if item.note:
                 text += f" ({item.note})"
             try:

@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 
+from core.local_time import wall_datetime, wall_time_status
 from core.models import Item
 
 DEFAULT_DURATION_MINUTES = 30
@@ -95,12 +96,8 @@ class DayPlan:
         }
 
 
-def _clock(value: str) -> time:
-    return time.fromisoformat(value)
-
-
 def _at(day: date, value: str, tzinfo) -> datetime:
-    return datetime.combine(day, _clock(value), tzinfo=tzinfo)
+    return wall_datetime(day, value, tzinfo)
 
 
 def _parse_spoken_time(raw: str) -> str | None:
@@ -430,6 +427,27 @@ def build_day_plan(
     for item in candidates:
         if item.due_date == target.isoformat() and item.due_time:
             start = _at(target, item.due_time, tzinfo)
+            local_status = wall_time_status(start)
+            if local_status != "valid":
+                problem = (
+                    "does not exist because the clock moves forward"
+                    if local_status == "nonexistent"
+                    else "occurs twice because the clock moves backward"
+                )
+                plan.deferred.append(
+                    DeferredItem(
+                        item.id,
+                        item.task,
+                        f"stated time {problem}; it was not moved",
+                        item.duration_minutes
+                        or preferences.default_duration_minutes,
+                    )
+                )
+                plan.warnings.append(
+                    f'daylight-saving conflict: "{item.task}" at '
+                    f"{item.due_time} {problem}; clarify the time"
+                )
+                continue
             end = start + timedelta(
                 minutes=item.duration_minutes or preferences.default_duration_minutes
             )

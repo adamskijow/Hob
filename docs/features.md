@@ -30,6 +30,9 @@ without a duration, and transition minutes between commitments. Setup state and
 its pending question are transactional local metadata, so the flow resumes after
 a restart. Every step can be skipped, the whole flow can be paused, and `/setup`
 resumes it later.
+Setup states the effective IANA timezone before asking for work hours. A real
+install defaults to the Mac's timezone rather than UTC; `HOB_TIMEZONE` remains
+an explicit override, and `/settings` keeps the result inspectable.
 `/settings` shows setup progress, Calendar readiness, every resulting value, and
 whether the first plan has actually been adopted.
 
@@ -67,6 +70,10 @@ off, "push it to friday" moves it, all anchored to the message you replied to.
 Reminder messages also have Done, Snooze 10, and Drop buttons. Slow local-model
 turns show Telegram's typing state, and long lists are split safely across
 Telegram's message limit.
+On a daylight-saving transition, Hob never pretends an unsafe local time is
+ordinary. A fixed time that is skipped or repeated is left unplanned with a
+plain-language conflict. A skipped reminder catches up with an explanation; a
+repeated-hour reminder says it uses the first occurrence and remains once-only.
 
 ## Conversational focus and edits
 

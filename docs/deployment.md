@@ -44,7 +44,6 @@ and `HOB_KEEP_ALIVE`:
     <key>HOB_ALLOWED_TELEGRAM_USER_ID</key> <string>123456789</string>
     <key>HOB_MODEL</key>          <string>qwen2.5:7b-instruct</string>
     <key>HOB_WAKE_TIME</key>      <string>07:00</string>
-    <key>HOB_TIMEZONE</key>       <string>America/New_York</string>
     <key>HOB_DB_PATH</key>        <string>/Users/you/Library/Application Support/Hob/hob.db</string>
     <key>HOB_WORK_DAYS</key>      <string>mon,tue,wed,thu,fri</string>
   </dict>
@@ -59,6 +58,12 @@ The Telegram token lives in the user's macOS Keychain, not in the plist. The
 explicit owner id is recommended for unattended installs. If omitted, the first private
 `/start` pairs the database to that Telegram user. Group chats are always
 rejected.
+
+When `HOB_TIMEZONE` is absent, a real install reads the Mac's IANA system
+timezone. The launchd template deliberately leaves it unset so moving the
+template to another region cannot silently keep New York time. Set an explicit
+IANA value only when Hob should intentionally differ from the system. Doctor,
+`/settings`, and guided setup expose the effective zone.
 
 Build the local Calendar bridge once from the checkout, then explicitly grant
 access while logged into the same macOS user account that owns the LaunchAgent:
