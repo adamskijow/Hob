@@ -26,11 +26,11 @@ snapshot.
   privacy-safe queue status/history, explicit reversible retry/quarantine, a
   daemon-stop lease, failed-outbox accounting, and poison-row regressions. Its
   copied-data and VoiceOver operator drill is still pending, and it is not
-  deployable ahead of either parent branch.
+  deployable ahead of either parent branch. Draft PR #3 contains the stack.
 - **Current queue gate:** Feature commit `c6c0c50` passes 358 deterministic
   tests, compile, a signed native build, both plist lints, and the 72/72 14B
-  real-model corpus. Ubuntu/macOS CI and the copied-data/VoiceOver drill remain
-  pending for the stacked draft.
+  real-model corpus. Ubuntu and macOS CI pass on verification head `4543f73`.
+  The copied-data/VoiceOver drill remains pending for the stacked draft.
 
 ## What is built
 

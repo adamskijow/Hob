@@ -17,8 +17,9 @@ failure drill below passes against a copied production database.
 - The signed EventKit app builds, and both launchd plists pass `plutil -lint`.
 - The feature diff passes whitespace and forbidden em-dash checks. Ruff is not
   installed in the locked project environment and is not claimed as evidence.
-- Ubuntu/macOS CI on the stacked PR head and the copied-data/VoiceOver operator
-  drill remain pending.
+- Draft PR #3 passes Ubuntu and macOS CI on verification head `4543f73`,
+  including the macOS EventKit build. The copied-data/VoiceOver operator drill
+  remains pending.
 
 ## Product decision
 
