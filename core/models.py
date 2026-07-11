@@ -140,6 +140,34 @@ class OutboxEntry:
     telegram_message_id: int | None = None
 
 
+@dataclass
+class PlanRun:
+    """A persisted proposal or explicitly adopted version of one day."""
+
+    id: str
+    day: str
+    status: str  # proposed | active | superseded | canceled | completed | expired
+    constraint: str
+    generated_at: str
+    adopted_at: str | None = None
+    ended_at: str | None = None
+
+
+@dataclass
+class PlanSession:
+    """One preserved block in a plan run, including split-work segments."""
+
+    id: str
+    run_id: str
+    item_id: str
+    label: str
+    start: str
+    end: str
+    segment: int = 1
+    status: str = "proposed"  # proposed | planned | started | done | canceled
+    notified_at: str | None = None
+
+
 # Actions: the model's proposal, parsed from forced JSON. The core validates and
 # reconciles these before anything touches the store. Capture and Unknown are
 # used from Phase 5; the rest come online in Phase 7.
@@ -269,6 +297,14 @@ class Start:
     """Choose an item as the next focus without falsely completing it."""
 
     target: str
+    confidence: float = 1.0
+
+
+@dataclass
+class PlanAction:
+    """Explicitly adopt, replace, or cancel persisted plan sessions."""
+
+    op: str  # adopt | replace | cancel
     confidence: float = 1.0
 
 

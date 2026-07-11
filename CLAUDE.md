@@ -80,11 +80,11 @@ Reuse this "cold decide, hot deliver" pattern for other voice, never for facts.
    screenshots and were reproduced this way.
 2. **Implement**, keeping the core pure and the fix deterministic where it is
    about correctness.
-3. **`uv run pytest`** (currently 304 passing). Add a unit test for any new core
+3. **`uv run pytest`** (currently 319 passing). Add a unit test for any new core
    behavior.
 4. **Run the eval** against the real model and add a case for the new behavior:
    `HOB_MODEL=qwen2.5:14b-instruct uv run python -m evals.interpreter_eval`
-   (currently 63/63). The eval is the real-model regression net; keep it green.
+   (currently 69/69). The eval is the real-model regression net; keep it green.
 5. **Deploy** by restarting the daemon (see Ops). Confirm the fix live.
 
 ## Ops (this is a live daemon)
@@ -105,7 +105,7 @@ Reuse this "cold decide, hot deliver" pattern for other voice, never for facts.
 ## Data and schema
 
 SQLite (`adapters/store_sqlite.py`). Schema is versioned by `PRAGMA
-user_version` (`SCHEMA_VERSION`, currently 9) with stepped `ALTER TABLE`
+user_version` (`SCHEMA_VERSION`, currently 10) with stepped `ALTER TABLE`
 migrations in `_migrate`. To add an item column: bump the version, add a
 migration step, and extend `_ITEM_COLS`, `add_item`, `update_item`,
 `_row_to_item`, and the `Item` dataclass. A restart migrates the live db.

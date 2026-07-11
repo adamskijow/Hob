@@ -3,7 +3,7 @@ import asyncio
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from app import DigestService
+from app import DigestService, INSTALL_VERSION_KEY, RELEASE_NOTICE_KEY
 from core.digest import (
     digest_nudge_item,
     digest_owed,
@@ -14,6 +14,7 @@ from core.digest import (
 from core.models import Item
 from adapters.store_sqlite import SqliteStore
 from tests.fakes import FakeClock
+from core.version import __version__
 
 TZ = ZoneInfo("America/New_York")
 
@@ -241,3 +242,27 @@ def test_digest_service_no_chat_id_does_not_send_or_persist():
 
     assert send.calls == []
     assert store.last_digest() is None
+
+
+def test_upgraded_owner_gets_one_digest_discovery_note_but_fresh_install_does_not():
+    upgraded = SqliteStore(":memory:")
+    upgraded.set_meta("chat_id", "42")
+    upgraded.add_item(item("a1", "real task"))
+    sent = FakeSend()
+    service = DigestService(upgraded, FakeClock(at(7, 0)), sent)
+
+    asyncio.run(service.fire())
+    asyncio.run(service.fire())
+
+    assert "new in hob" in sent.calls[0][1]
+    assert "new in hob" not in sent.calls[1][1]
+    assert upgraded.get_meta(RELEASE_NOTICE_KEY) == __version__
+
+    fresh = SqliteStore(":memory:")
+    fresh.set_meta("chat_id", "42")
+    fresh.set_meta(INSTALL_VERSION_KEY, __version__)
+    fresh.set_meta(RELEASE_NOTICE_KEY, __version__)
+    fresh.add_item(item("a1", "first task"))
+    fresh_send = FakeSend()
+    asyncio.run(DigestService(fresh, FakeClock(at(7, 0)), fresh_send).fire())
+    assert "new in hob" not in fresh_send.calls[0][1]

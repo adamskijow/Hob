@@ -118,16 +118,21 @@ Talk to it like a person:
   "add a note to the vet one: gate code is 4412" sticks a note.
 - Forward someone's message to capture it, edit a message to correct it, or use
   `/today`, `/list`, `/settings`, `/undo`, `/help`.
-- Ask "plan my day", "what should I do next?", "I have 30 minutes before I
-  leave", or "my afternoon is gone" for an overlap-checked timeline and a diff
-  from the prior proposal. Hob proposes; it does not move anything until asked.
+- Ask "plan my day", "plan tomorrow", "I have 30 minutes before I leave", or
+  "my afternoon is gone" for an overlap-checked timeline and a diff from the
+  prior proposal. Named future days use their own availability window.
+- Say "use this plan" to adopt every block as a local session, including split
+  work. `/plan` or "what is on my plan?" shows the active version. A revised
+  proposal requires "replace my plan with this"; "cancel my plan" and `/undo`
+  are safe. Adoption never changes task dates or writes Calendar events.
 - Say "plan work from 9 to 5" or "protect lunch from noon to 1" to change the
   planning frame in chat. `/settings` shows the live values.
 - Say "assume tasks take 45 minutes" or "leave 10 minutes between things" to
   make unstated effort and breathing room explicit. Hob never learns hidden
   preferences from behavior; it uses only settings you can inspect and undo.
 - After a plan, "start the second one" follows the plan order you just saw and
-  focuses that task without falsely marking it complete.
+  focuses that task without falsely marking it complete. Adopted order remains
+  available after ordinary conversational focus expires.
 - Add or edit constraints naturally: "the audit is due Friday", "this takes 45
   minutes", "do it after the numbers", "split it into two sessions", "prefer
   mornings", or "remind me an hour and 10 minutes before".
@@ -180,6 +185,7 @@ Backup files are integrity-checked after writing. Restore and import validate a
 candidate in isolation, save the current database beside it, and only then swap
 the data file atomically. If both a legacy checkout database and the app-data
 database exist, data commands refuse to guess; set `HOB_DB_PATH` explicitly.
+Portable export and verified restore include proposal and adopted-plan sessions.
 
 ## Reliability
 

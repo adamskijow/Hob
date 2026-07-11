@@ -8,6 +8,7 @@ from core.models import (
     Complete,
     Drop,
     InterpreterContext,
+    PlanAction,
     Prioritize,
     Query,
     Recur,
@@ -477,6 +478,17 @@ def test_new_recurrence_misclassified_as_series_edit_is_recovered():
     assert mutation.recurrence["anchor"] == "completion"
     assert mutation.recurrence["count"] == 5
 
+    dropped_count = reconcile(
+        [Capture(
+            task="check the filters",
+            raw="check the filters every 2 weeks after I finish, stop after 5 times",
+            repeat="every:2:week",
+        )],
+        ctx(message="check the filters every 2 weeks after I finish, stop after 5 times"),
+    )
+    assert dropped_count.mutations[0].recurrence["anchor"] == "completion"
+    assert dropped_count.mutations[0].recurrence["count"] == 5
+
 
 def test_resume_retargets_to_the_only_waiting_item():
     from core.models import Resume
@@ -733,6 +745,60 @@ def test_query_date_from_intent():
     plan = reconcile([Query(kind="date", when=When(kind="tomorrow"))], ctx(ACTIVE))
     assert plan.queries[0].kind == "date"
     assert plan.queries[0].date == "2026-06-30"
+
+
+def test_plan_query_resolves_named_day_and_refuses_past_day():
+    tomorrow = reconcile(
+        [Query(kind="plan", when=When(kind="tomorrow"), constraint="plan tomorrow")],
+        ctx(ACTIVE, message="plan tomorrow"),
+    )
+    assert tomorrow.queries[0].kind == "plan"
+    assert tomorrow.queries[0].date == "2026-06-30"
+    yesterday = reconcile(
+        [Query(kind="plan", when=When(kind="yesterday"))],
+        ctx(ACTIVE, message="plan yesterday"),
+    )
+    assert not yesterday.queries
+    assert "today or later" in yesterday.questions[0]
+    misclassified = reconcile(
+        [Query(kind="date", when=When(kind="tomorrow"))],
+        ctx(ACTIVE, message="plan tomorrow"),
+    )
+    assert misclassified.queries[0].kind == "plan"
+    assert misclassified.queries[0].date == "2026-06-30"
+    status = reconcile(
+        [Query(kind="today")], ctx(ACTIVE, message="what is on my plan?")
+    )
+    assert status.queries[0].kind == "plan_status"
+
+
+def test_plan_actions_have_literal_consent_backstops():
+    for message, expected in (
+        ("use this plan", "adopt"),
+        ("replace my plan with this", "replace"),
+        ("cancel my plan", "cancel"),
+    ):
+        plan = reconcile([Unknown()], ctx(ACTIVE, message=message))
+        assert plan.plan_action == expected
+    low = reconcile(
+        [PlanAction(op="adopt", confidence=0.2)],
+        ctx(ACTIVE, message="maybe use it"),
+    )
+    assert low.plan_action is None and low.questions
+
+
+def test_session_nudge_interruption_becomes_replan_not_anchored_task_mutation():
+    plan = reconcile(
+        [Reschedule(target="a2", time="10:00")],
+        ctx(
+            ACTIVE,
+            message="meeting ran over, I got interrupted; replan",
+            replied={"id": "a2", "label": "call the pool guy"},
+        ),
+    )
+    assert not plan.mutations
+    assert len(plan.queries) == 1 and plan.queries[0].kind == "plan"
+    assert "interrupted" in plan.queries[0].constraint
 
 
 def test_query_today_intent_is_today_query():

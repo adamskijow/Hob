@@ -13,6 +13,7 @@ import getpass
 import json
 import logging
 import os
+import re
 import signal
 import sqlite3
 import sys
@@ -47,6 +48,8 @@ from core.models import (
     DigestItem,
     InterpreterContext,
     Item,
+    PlanRun,
+    PlanSession,
     RecurrenceRule,
     Unknown,
 )
@@ -102,7 +105,9 @@ HELP = (
     'effort, fixed times, dependencies, preferred windows, and reminder offsets '
     'the same way: "the deck is due friday and takes 90 minutes". after the '
     'calendar bridge is connected, plans avoid calendar conflicts. say "plan '
-    'work from 9 to 5" or "protect lunch noon to 1" to set the daily frame.'
+    'work from 9 to 5" or "protect lunch noon to 1" to set the daily frame. '
+    'say "use this plan" to adopt local sessions; /plan shows the active '
+    'version. adoption never moves tasks or writes calendar events.'
 )
 
 # meta key for the single user's chat id, learned from inbound messages.
@@ -127,6 +132,9 @@ DEFAULT_DURATION_KEY = "default_duration"
 TRANSITION_BUFFER_KEY = "transition_buffer"
 ONBOARDING_STAGE_KEY = "onboarding_stage"
 ONBOARDING_DONE_KEY = "onboarding_complete"
+INSTALL_VERSION_KEY = "install_version"
+RELEASE_NOTICE_KEY = "release_notice_version"
+FIRST_PLAN_ADOPTED_KEY = "first_plan_adopted_at"
 ONBOARDING_STEPS = (
     "work_hours",
     "break_window",
@@ -481,6 +489,9 @@ class MessageService:
             return denial or ""
         # Learn where to send proactive messages only after owner authorization.
         self._store.set_meta(CHAT_ID_KEY, str(msg.chat_id))
+        self._store.expire_plans(
+            self._clock.today().isoformat(), self._clock.now().isoformat()
+        )
         if msg.edited:
             return self._handle_edit(msg)
         if low == "/start":
@@ -491,11 +502,11 @@ class MessageService:
                 and not self._store.get_meta(ONBOARDING_DONE_KEY)
                 and not self._store.open_items()
             )
-            return (
-                self._begin_onboarding(include_welcome=True)
-                if fresh
-                else self._welcome()
-            )
+            if fresh:
+                self._store.set_meta(INSTALL_VERSION_KEY, __version__)
+                self._store.set_meta(RELEASE_NOTICE_KEY, __version__)
+                return self._begin_onboarding(include_welcome=True)
+            return self._welcome()
         if low in ("/setup", "/onboarding"):
             return self._begin_onboarding()
         if low in {"cancel setup", "stop setup", "/cancelsetup"}:
@@ -513,6 +524,8 @@ class MessageService:
             return self._list()
         if low == "/settings":
             return self._settings()
+        if low in {"/plan", "/next"}:
+            return self._answer_plan_status()
         if low == "/undo":
             return self._undo()
         # A destructive bulk held back for confirmation: apply it on yes, drop it
@@ -600,19 +613,37 @@ class MessageService:
         conversational subject; otherwise nothing."""
         raw = self._store.get_meta(FOCUS_KEY)
         if not raw:
-            return []
+            return self._active_plan_focus()
         try:
             data = json.loads(raw)
         except (TypeError, json.JSONDecodeError):
-            return []
+            return self._active_plan_focus()
         try:
             ts = datetime.fromisoformat(data.get("ts", ""))
         except ValueError:
-            return []
+            return self._active_plan_focus()
         age = self._clock.now() - ts
         if age > timedelta(minutes=FOCUS_TTL_MINUTES):
-            return []
+            return self._active_plan_focus()
         return data.get("items", [])
+
+    def _active_plan_focus(self) -> list[dict]:
+        run = self._store.active_plan(self._clock.today().isoformat())
+        if run is None:
+            return []
+        focused = []
+        seen: set[str] = set()
+        for session in self._store.plan_sessions(run.id):
+            if session.status not in {"planned", "started"}:
+                continue
+            item = self._store.get_item(session.item_id)
+            if item is None or item.status != STATUS_OPEN or item.id in seen:
+                continue
+            seen.add(item.id)
+            focused.append(
+                {"id": item.id, "label": item.task, "context": "plan"}
+            )
+        return focused[:10]
 
     def _save_focus(self, applied: list[tuple[str, Item]]) -> None:
         """Remember what this message touched (drops excluded: a dropped item is
@@ -781,7 +812,7 @@ class MessageService:
             return self._undo()
         batch_id = (
             self._store.next_batch_id()
-            if plan.mutations or plan.settings
+            if plan.mutations or plan.settings or plan.plan_action
             else None
         )
         applied = self._apply(plan.mutations, message_id, batch_id=batch_id)
@@ -792,6 +823,10 @@ class MessageService:
             self._apply_setting(s, message_id, batch_id) for s in plan.settings
         ]
         answers += setting_answers
+        if plan.plan_action:
+            answers.append(
+                self._apply_plan_action(plan.plan_action, message_id, batch_id)
+            )
         # Persist this turn's clarifications for the next message; "" clears any
         # that were just resolved or superseded.
         self._store.set_meta(
@@ -876,6 +911,80 @@ class MessageService:
         if s.key == "transition_buffer":
             return f"ok, i will leave {s.value} minutes between commitments."
         return "ok"
+
+    def _apply_plan_action(
+        self, op: str, message_id: str, batch_id: str | None
+    ) -> str:
+        """Change local execution state only after an explicit user action."""
+        now = self._clock.now().isoformat()
+        if op == "cancel":
+            run = self._store.active_plan(self._clock.today().isoformat())
+            run = run or self._store.active_plan()
+            if run is None:
+                return "there is no adopted plan to cancel. tasks and calendar are unchanged."
+            before, after = self._store.cancel_plan(run.id, now)
+            reply = (
+                f"canceled the adopted plan for {run.day}. "
+                "tasks and calendar are unchanged."
+            )
+        else:
+            run = self._store.latest_proposed_plan()
+            if run is None:
+                return 'there is no current proposal to adopt; ask "plan my day" first.'
+            sessions = self._store.plan_sessions(run.id)
+            if not sessions:
+                return (
+                    f"the {run.day} proposal has no sessions to adopt. "
+                    "tasks and calendar are unchanged."
+                )
+            active = self._store.active_plan(run.day)
+            if active is not None and op != "replace":
+                return (
+                    f"you already have an adopted plan for {run.day}. "
+                    'say "replace my plan with this" to switch explicitly.'
+                )
+            before, after = self._store.adopt_plan(run.id, now)
+            sessions = self._store.plan_sessions(run.id)
+            planned = [session for session in sessions if session.status == "planned"]
+            if not planned:
+                self._store.restore_plan_state(before)
+                return (
+                    f"nothing in the {run.day} proposal is still open to adopt. "
+                    "ask me to replan."
+                )
+            tasks = len({session.item_id for session in planned})
+            verb = "replaced" if active is not None else "adopted"
+            reply = (
+                f"{verb} the {run.day} plan: {len(planned)} session(s) across "
+                f"{tasks} task(s). tasks and calendar are unchanged; ask "
+                '"what is on my plan" anytime.'
+            )
+            skipped = len(sessions) - len(planned)
+            if skipped:
+                reply += f" {skipped} stale session(s) were left out."
+            items = [
+                item
+                for session in planned
+                for item in [self._store.get_item(session.item_id)]
+                if item is not None and item.status == STATUS_OPEN
+            ]
+            self._save_focus_items(items, context="plan", limit=10)
+            if not self._store.get_meta(FIRST_PLAN_ADOPTED_KEY):
+                self._store.set_meta(FIRST_PLAN_ADOPTED_KEY, now)
+        self._store.append_actions(
+            [
+                ActionLogEntry(
+                    batch_id=batch_id or self._store.next_batch_id(),
+                    ts=now,
+                    action_type="plan",
+                    item_id=f"plan:{run.id}",
+                    before_json=json.dumps(before),
+                    after_json=json.dumps(after),
+                    inbound_message_id=message_id,
+                )
+            ]
+        )
+        return reply
 
     def _apply_confirmed(self, data: list, message_id: str) -> str:
         """Apply the mutations that were held back, now that the user confirmed."""
@@ -1105,6 +1214,7 @@ class MessageService:
                     item.repeat = recurrence.to_legacy(rule)
             item.updated_at = ts
             self._store.update_item(item)
+            self._store.sync_plan_sessions(item, m.kind, ts)
             entries.append(
                 ActionLogEntry(
                     batch_id=batch_id,
@@ -1129,16 +1239,25 @@ class MessageService:
 
     def _revert(self, batch) -> None:
         settings = [entry for entry in batch if entry.action_type == "setting"]
-        items = [entry for entry in batch if entry.action_type != "setting"]
+        plans = [entry for entry in batch if entry.action_type == "plan"]
+        items = [
+            entry
+            for entry in batch
+            if entry.action_type not in {"setting", "plan"}
+        ]
         for entry in reversed(settings):
             key = entry.item_id.removeprefix("setting:")
             before = json.loads(entry.before_json) if entry.before_json else None
             self._store.set_meta(key, before or "")
+        for entry in reversed(plans):
+            if entry.before_json:
+                self._store.restore_plan_state(json.loads(entry.before_json))
         for op in plan_undo(items):
             if op.kind == "delete":
                 self._store.delete_item(op.item_id)
             else:
                 self._store.update_item(op.item)
+                self._store.sync_plan_sessions(op.item)
         self._store.mark_batch_undone(batch[0].batch_id)
 
     def _restore_batch(self, batch: list[ActionLogEntry]) -> None:
@@ -1149,6 +1268,10 @@ class MessageService:
                 value = json.loads(entry.after_json) if entry.after_json else ""
                 self._store.set_meta(key, value or "")
                 continue
+            if entry.action_type == "plan":
+                if entry.after_json:
+                    self._store.restore_plan_state(json.loads(entry.after_json))
+                continue
             if not entry.after_json:
                 continue
             item = Item.from_dict(json.loads(entry.after_json))
@@ -1156,6 +1279,7 @@ class MessageService:
                 self._store.add_item(item)
             else:
                 self._store.update_item(item)
+            self._store.sync_plan_sessions(item)
         self._store.mark_batch_redone(batch[0].batch_id)
 
     def _handle_edit(self, msg: InboundMessage) -> str:
@@ -1180,6 +1304,8 @@ class MessageService:
 
     def _answer_query(self, q: QueryIntent) -> str:
         today = self._clock.today().isoformat()
+        if q.kind == "plan_status":
+            return self._answer_plan_status()
         if q.kind == "done":  # already-finished items (closed, so no positions)
             items = self._store.done_since(q.date or today)
             if not items:
@@ -1189,7 +1315,19 @@ class MessageService:
         ordered = ordered_open(open_items, today)
         pos = {i.id: n for n, i in enumerate(ordered, start=1)}
         if q.kind == "plan":
-            return self._answer_plan(q.constraint or "plan my day", open_items)
+            short = (q.constraint or "").strip().lower()
+            if (
+                self._store.active_plan(today) is not None
+                and re.fullmatch(
+                    r"(?:what(?:'s| is) next|what should i do next|"
+                    r"what am i doing(?: now)?|current plan)[?!.]?",
+                    short,
+                )
+            ):
+                return self._answer_plan_status()
+            return self._answer_plan(
+                q.constraint or "plan my day", open_items, q.date or today
+            )
         if q.kind == "all":
             items, title = ordered, "all open:"
         elif q.kind == "overdue":
@@ -1238,11 +1376,83 @@ class MessageService:
             f"{pos[i.id]}: {i.task}{marks(i)}" for i in items
         )
 
+    def _answer_plan_status(self) -> str:
+        today = self._clock.today().isoformat()
+        run = self._store.active_plan(today) or self._store.active_plan()
+        if run is None:
+            proposal = self._store.latest_proposed_plan()
+            if proposal is not None:
+                return (
+                    f"the {proposal.day} plan is still a proposal. "
+                    'say "use this plan" to adopt it explicitly.'
+                )
+            return 'no adopted plan. ask "plan my day" to make a proposal.'
+        sessions = self._store.plan_sessions(run.id)
+        visible = [
+            session
+            for session in sessions
+            if session.status not in {"canceled"}
+        ]
+        if not visible:
+            return f"the {run.day} plan has no remaining sessions."
+        now = self._clock.now().isoformat()
+        by_id: dict[str, Item] = {}
+        for session in visible:
+            item = self._store.get_item(session.item_id)
+            if item is not None:
+                by_id[item.id] = item
+        self._save_focus_items(
+            [by_id[s.item_id] for s in visible if s.item_id in by_id],
+            context="plan",
+            limit=10,
+        )
+        lines = [f"adopted plan for {run.day}:"]
+        numbers: dict[str, int] = {}
+        for session in visible:
+            if session.item_id not in numbers:
+                numbers[session.item_id] = len(numbers) + 1
+                prefix = f"{numbers[session.item_id]}:"
+            else:
+                prefix = "  ↳"
+            state = {
+                "done": " [done]",
+                "started": " [started]",
+            }.get(session.status, "")
+            current = " [now]" if session.start <= now < session.end else ""
+            lines.append(
+                f"{prefix} {session.start[11:16]}–{session.end[11:16]} "
+                f"{session.label}{state}{current}"
+            )
+        remaining = [
+            session
+            for session in visible
+            if session.status in {"planned", "started"} and session.end > now
+        ]
+        if remaining:
+            next_session = min(
+                remaining,
+                key=lambda session: (
+                    0
+                    if session.status == "started" or session.start <= now < session.end
+                    else 1,
+                    session.start,
+                ),
+            )
+            lines.append(
+                f'next: "{next_session.label}" at {next_session.start[11:16]}.'
+            )
+        else:
+            lines.append("no remaining session today.")
+        return "\n".join(lines)
+
     def _answer_start(self, item_id: str) -> str:
         item = self._store.get_item(item_id)
         if item is None or item.status != STATUS_OPEN:
             return "that planned item is no longer open; ask me to replan."
         self._save_focus_items([item], context="current", limit=1)
+        session = self._store.start_plan_session(
+            item_id, self._clock.now().isoformat()
+        )
         effort = (
             item.duration_minutes
             or self._minutes_setting(
@@ -1253,9 +1463,15 @@ class MessageService:
             )
         )
         estimate = " estimate" if item.duration_minutes is None else ""
+        planned = (
+            f" planned {session.start[11:16]}-{session.end[11:16]}."
+            if session is not None
+            else ""
+        )
         return (
             f'next: "{item.task}" ({effort}m{estimate}). '
-            "i have not marked it done; tell me when you finish or need a replan."
+            f"i have not marked it done;{planned} tell me when you finish or "
+            "need a replan."
         )
 
     @staticmethod
@@ -1322,10 +1538,21 @@ class MessageService:
             return default
         return value if minimum <= value <= maximum else default
 
-    def _answer_plan(self, constraint: str, open_items: list[Item]) -> str:
+    def _answer_plan(
+        self, constraint: str, open_items: list[Item], target_iso: str
+    ) -> str:
         """Build a read-only timeline; the model can explain but cannot schedule."""
         now = self._clock.now()
-        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        target = date.fromisoformat(target_iso)
+        day_start = now.replace(
+            year=target.year,
+            month=target.month,
+            day=target.day,
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
         day_end = day_start + timedelta(days=1)
         if self._calendar is None:
             snapshot = CalendarSnapshot("unavailable", detail="calendar adapter not configured")
@@ -1375,15 +1602,58 @@ class MessageService:
             ),
         )
         previous = None
-        try:
-            previous = json.loads(self._store.get_meta(LAST_PLAN_KEY) or "null")
-        except (TypeError, json.JSONDecodeError):
-            pass
+        active = self._store.active_plan(target_iso)
+        if active is not None:
+            previous = {
+                "day": active.day,
+                "blocks": [
+                    {
+                        "item_id": session.item_id,
+                        "start": session.start,
+                        "end": session.end,
+                    }
+                    for session in self._store.plan_sessions(active.id)
+                    if session.status in {"planned", "started"}
+                ],
+            }
+        else:
+            try:
+                previous = json.loads(
+                    self._store.get_meta(LAST_PLAN_KEY) or "null"
+                )
+            except (TypeError, json.JSONDecodeError):
+                pass
         feasible = build_day_plan(
-            open_items, snapshot, now, preferences, previous=previous
+            open_items,
+            snapshot,
+            now,
+            preferences,
+            previous=previous,
+            target_day=target,
         )
         changes = diff_day_plans(previous, feasible)
         self._store.set_meta(LAST_PLAN_KEY, json.dumps(feasible.to_dict()))
+        run_id = self._store.next_plan_id()
+        run = PlanRun(
+            id=run_id,
+            day=target_iso,
+            status="proposed",
+            constraint=constraint,
+            generated_at=now.isoformat(),
+        )
+        sessions = [
+            PlanSession(
+                id=f"{run_id}:s{number}",
+                run_id=run_id,
+                item_id=block.item_id,
+                label=block.label,
+                start=block.start.isoformat(),
+                end=block.end.isoformat(),
+                segment=block.segment,
+            )
+            for number, block in enumerate(feasible.blocks, start=1)
+        ]
+        self._store.save_plan_run(run, sessions)
 
         by_id = {item.id: item for item in open_items}
         self._save_focus_items(
@@ -1414,7 +1684,7 @@ class MessageService:
             try:
                 out = self._llm.complete_json(
                     PLAN_PROMPT.format(
-                        today=self._clock.today().isoformat(),
+                        today=target_iso,
                         constraint=constraint,
                         items=json.dumps(timeline, ensure_ascii=False),
                     ),
@@ -1441,7 +1711,8 @@ class MessageService:
                 if item_id in scheduled_ids and reason:
                     reasons[item_id] = reason
 
-        lines = [f"plan: {headline}"]
+        title = "plan" if target_iso == self._clock.today().isoformat() else f"plan for {target_iso}"
+        lines = [f"{title}: {headline}"]
         if snapshot.status == "authorized":
             lines.append(f"calendar checked: {len(snapshot.busy)} busy block(s)")
         elif snapshot.status == "not_determined":
@@ -1490,7 +1761,8 @@ class MessageService:
             lines.append("changed since the last plan:")
             lines.extend(f"- {change}" for change in changes)
         lines.append(
-            f"{feasible.free_minutes}m remains open. nothing moved; tell me what changed and i will replan."
+            f"{feasible.free_minutes}m remains open. nothing moved; tell me what "
+            'changed and i will replan, or say "use this plan" to adopt it.'
         )
         return "\n".join(lines)
 
@@ -1668,6 +1940,17 @@ class MessageService:
             setup = "complete"
         else:
             setup = "not run (/setup)"
+        active = self._store.active_plan(self._clock.today().isoformat())
+        plan_state = (
+            f"active ({active.day}, {len(self._store.plan_sessions(active.id))} sessions)"
+            if active is not None
+            else "none"
+        )
+        activation = (
+            "adopted"
+            if self._store.get_meta(FIRST_PLAN_ADOPTED_KEY)
+            else 'not yet (ask "plan my day")'
+        )
         return (
             f"settings:\ntimezone: {self._timezone}\n"
             f"morning digest: {wake}\n"
@@ -1677,7 +1960,9 @@ class MessageService:
             f"default estimate: {default_duration}m\n"
             f"transition buffer: {transition_buffer}m\n"
             f"calendar: {self._calendar_status()}\n"
-            f"setup: {setup}"
+            f"setup: {setup}\n"
+            f"first plan: {activation}\n"
+            f"adopted plan: {plan_state}"
         )
 
 
@@ -1707,6 +1992,16 @@ class DigestService:
         ordered = select_digest_items(open_items, today)
         waiting = [i for i in open_items if i.waiting_since]
         text = render_digest(ordered, today, waiting)
+        release_notice = (
+            self._store.get_meta(RELEASE_NOTICE_KEY) != __version__
+            and self._store.get_meta(INSTALL_VERSION_KEY) != __version__
+        )
+        if release_notice:
+            text += (
+                f"\n\nnew in hob {__version__}: /setup tunes planning, then ask "
+                '"plan my day" and say "use this plan" when it fits. this note '
+                "appears once."
+            )
         digest = Digest(
             sent_at=self._clock.now().isoformat(),
             items=[DigestItem(id=i.id, label=i.task) for i in ordered],
@@ -1723,6 +2018,8 @@ class DigestService:
             )
         except TypeError:
             sent_id = await self._send(int(chat), text)
+        if release_notice:
+            self._store.set_meta(RELEASE_NOTICE_KEY, __version__)
         self._store.save_digest(digest)
         nudge = digest_nudge_item(ordered, today, waiting)
         if nudge is not None and isinstance(sent_id, int):
@@ -1769,10 +2066,18 @@ class ReminderService:
     3pm" is a heads-up (say, 2:50) rather than only a digest line and not only a
     ping at 3:00 sharp. send is async(chat_id, text)."""
 
-    def __init__(self, store: Store, clock: Clock, send, lead_minutes: int = 0) -> None:
+    def __init__(
+        self,
+        store: Store,
+        clock: Clock,
+        send,
+        lead_minutes: int = 0,
+        plan_send=None,
+    ) -> None:
         self._store = store
         self._clock = clock
         self._send = send
+        self._plan_send = plan_send
         self._lead = timedelta(minutes=max(0, lead_minutes))
         self._grace = timedelta(hours=6)
 
@@ -1780,6 +2085,9 @@ class ReminderService:
         chat = self._store.get_meta(CHAT_ID_KEY)
         if chat is None:
             return
+        self._store.expire_plans(
+            self._clock.today().isoformat(), self._clock.now().isoformat()
+        )
         # Fire when now reaches (due - lead): compare due moments to now + lead.
         # A snoozed item instead fires at its snooze_until (compared to now).
         now = self._clock.now().strftime("%Y-%m-%dT%H:%M")
@@ -1815,6 +2123,33 @@ class ReminderService:
             # ("done", "snooze 20") anchors to the item with no guessing.
             if isinstance(sent_id, int):
                 self._store.record_sent_ref(sent_id, item.id)
+
+        # An explicitly adopted plan authorizes one start nudge per session.
+        # Keep the catch-up window short so waking the Mac does not dump stale
+        # time-block notifications into the chat.
+        current_iso = self._clock.now().isoformat(timespec="seconds")
+        session_earliest = (
+            self._clock.now() - timedelta(minutes=15)
+        ).isoformat(timespec="seconds")
+        for session in self._store.due_plan_sessions(
+            session_earliest, current_iso
+        ):
+            text = (
+                f'plan: "{session.label}" starts now '
+                f"({session.start[11:16]}–{session.end[11:16]}). "
+                "reply done, or tell me what changed and i will replan."
+            )
+            if self._plan_send is not None:
+                sent_id = await self._plan_send(
+                    int(chat),
+                    text,
+                    dedupe_key=f"plan-session:{session.id}:{session.start}",
+                )
+            else:
+                sent_id = await self._send(int(chat), text)
+            self._store.mark_plan_session_notified(session.id, current_iso)
+            if isinstance(sent_id, int):
+                self._store.record_sent_ref(sent_id, session.item_id)
 
         # Tasks with explicit offsets own their reminder cadence instead of using
         # the global lead. If sleep caused several offsets to pass, send only the
@@ -1936,7 +2271,13 @@ async def _run_daemon(cfg: Config, store: SqliteStore) -> None:
         callback_handler=service.handle_callback,
     )
     digest = DigestService(store, clock, telegram.send, pin=telegram.pin)
-    reminder = ReminderService(store, clock, telegram.send_reminder, cfg.reminder_lead)
+    reminder = ReminderService(
+        store,
+        clock,
+        telegram.send_reminder,
+        cfg.reminder_lead,
+        plan_send=telegram.send,
+    )
     eod = EODService(store, clock, telegram.send)
     scheduler = DigestScheduler(
         clock, store, digest.fire, cfg.wake_time, remind=reminder.check,
@@ -2055,6 +2396,17 @@ def _status(cfg: Config) -> int:
             print(
                 f"  INFO planning: hours={work_hours} "
                 f"estimate={default_duration}m buffer={transition_buffer}m"
+            )
+            active_plan = store.active_plan()
+            proposal = store.latest_proposed_plan()
+            active_label = (
+                f"{active_plan.day}/{len(store.plan_sessions(active_plan.id))} sessions"
+                if active_plan is not None
+                else "none"
+            )
+            proposal_label = proposal.day if proposal is not None else "none"
+            print(
+                f"  INFO execution: active={active_label} proposal={proposal_label}"
             )
             ok = ok and healthy
     except Exception as exc:  # noqa: BLE001

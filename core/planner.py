@@ -31,6 +31,7 @@ from core.models import (
     Complete,
     Drop,
     Note,
+    PlanAction,
     Prioritize,
     Query,
     Recur,
@@ -90,7 +91,7 @@ class Mutation:
 @dataclass
 class QueryIntent:
     kind: str  # today | date | all | overdue | week | search | done | tag | plan
-    date: str | None = None  # ISO; for date, or the period start for done
+    date: str | None = None  # ISO; query day, planning day, or done-period start
     term: str | None = None  # search keywords, for kind=search
     tag: str | None = None  # project/list name, for kind=tag
     constraint: str | None = None  # user context for kind=plan
@@ -136,6 +137,7 @@ class Plan:
     undo: bool = False  # the user asked to undo the last change
     settings: list[SettingChange] = field(default_factory=list)
     starts: list[str] = field(default_factory=list)
+    plan_action: str | None = None  # adopt | replace | cancel
     chitchat: str | None = None  # a warm reply to a social pleasantry
 
 
@@ -567,11 +569,19 @@ def _reconcile_capture(
         re.IGNORECASE,
     ):
         repeat_anchor = "completion"
+    literal_count = re.search(
+        r"\b(?:stop|end) after (\d+) (?:times?|occurrences?)\b",
+        message,
+        re.IGNORECASE,
+    )
+    repeat_count = action.repeat_count or (
+        int(literal_count.group(1)) if literal_count else None
+    )
     structured = recurrence.parse(
         repeat,
         anchor=repeat_anchor,
         end_date=repeat_end.date,
-        count=action.repeat_count,
+        count=repeat_count,
     )
     if structured is not None:
         # A recurring task's date is its next occurrence, decided by the rule.
@@ -1056,9 +1066,33 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
 
 def _reconcile_query(action: Query, today: date, ctx, plan: Plan) -> None:
     kind, term = action.kind, action.term
+    if kind == "plan_status":
+        plan.queries.append(QueryIntent(kind="plan_status"))
+        return
     if kind == "plan":
+        resolution = dates.resolve_intent(action.when, today)
+        if resolution.ambiguous:
+            question = "which day should i plan?"
+            plan.questions.append(question)
+            plan.pending.append(
+                Pending(kind="query", question=question, query_kind="plan")
+            )
+            return
+        corrected = dates.named_day_correction(
+            ctx.message, resolution.date, today
+        )
+        if corrected is not None:
+            resolution = dates.DateResolution(date=corrected)
+        target = resolution.date or today.isoformat()
+        if target < today.isoformat():
+            plan.questions.append("i can only build an executable plan for today or later.")
+            return
         plan.queries.append(
-            QueryIntent(kind="plan", constraint=action.constraint or ctx.message)
+            QueryIntent(
+                kind="plan",
+                date=target,
+                constraint=action.constraint or ctx.message,
+            )
         )
         return
     if kind == "done":
@@ -1305,6 +1339,53 @@ def reconcile(actions: list, ctx) -> Plan:
     actions = _fix_everything_but(actions, ctx)
     actions = _recover_new_recurrence(actions, ctx)
     actions = _merge_new_capture_constraints(actions, ctx)
+    low = ctx.message.strip().lower()
+    queries = [action for action in actions if isinstance(action, Query)]
+    deviation = re.search(
+        r"\b(?:replan|got interrupted|was interrupted|meeting ran (?:long|over)|"
+        r"lost \d+ (?:minutes?|hours?)|running \d+ (?:minutes?|hours?) late)\b",
+        low,
+    )
+    explicit_item_change = re.search(
+        r"\b(?:complete|completed|done|drop|cancel the task|move|push|reschedule|"
+        r"snooze)\b",
+        low,
+    )
+    if deviation and not explicit_item_change:
+        actions = [
+            next(
+                (query for query in queries if query.kind == "plan"),
+                Query(kind="plan", constraint=ctx.message),
+            )
+        ]
+    elif re.fullmatch(
+        r"(?:what(?:'s| is) on my plan|show (?:me )?my plan|current plan)[?!.]?",
+        low,
+    ):
+        actions = [Query(kind="plan_status")]
+    elif queries and re.match(r"^(?:plan|map out)\b", low):
+        actions = [
+            Query(
+                kind="plan",
+                when=next((query.when for query in queries if query.when), None),
+                constraint=ctx.message,
+            )
+        ]
+    elif re.fullmatch(
+        r"(?:use|adopt|accept|lock in|follow) (?:this|that|the) plan[.!]?",
+        low,
+    ):
+        actions = [PlanAction(op="adopt", confidence=1.0)]
+    elif re.fullmatch(
+        r"(?:replace|update|swap) (?:my|the|today'?s) plan (?:with )?(?:this|that)[.!]?",
+        low,
+    ):
+        actions = [PlanAction(op="replace", confidence=1.0)]
+    elif re.fullmatch(
+        r"(?:cancel|clear|drop|stop following) (?:my|the|today'?s) plan[.!]?",
+        low,
+    ):
+        actions = [PlanAction(op="cancel", confidence=1.0)]
     if re.search(
         r"\b(waiting on|blocked on|cannot start until|can't start until)\b",
         ctx.message,
@@ -1389,6 +1470,13 @@ def reconcile(actions: list, ctx) -> Plan:
             )
             if target is not None:
                 plan.starts.append(target)
+        elif isinstance(action, PlanAction):
+            if action.confidence < CONFIDENCE_THRESHOLD:
+                plan.questions.append(
+                    f"do you want me to {action.op} the day plan?"
+                )
+            else:
+                plan.plan_action = action.op
         elif isinstance(action, Prioritize):
             _reconcile_prioritize(action, active, by_pos, plan)
         elif isinstance(action, Schedule):

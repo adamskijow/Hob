@@ -73,6 +73,21 @@ focus for 15 minutes; deterministic reference resolution uses that visible order
 for ordinal follow-ups. A `start` action changes focus only and states that the
 task was not completed.
 
+Adoption is separate from proposal. Schema 10 stores `plan_runs` and
+`plan_sessions`; every split block retains its task, time, segment, and state.
+Typed plan actions adopt, replace, or cancel only after explicit language and
+write an action-log state snapshot so undo and edited-message recovery remain
+atomic. Task lifecycle changes synchronize active sessions, while recurring
+completion closes only the occurrence-day session and preserves a future one.
+Adopted order becomes fallback conversational focus after the ordinary
+15-minute focus expires.
+
+Session-start nudges use the durable outbox with a stable session key, but not
+the due-time reminder buttons. The sent message is anchored to its task after
+delivery, so a reply such as "done" stays deterministic without promising a
+snooze that an undated session cannot honor. Plan state is included in portable
+export/import and status without exposing task text.
+
 First-run onboarding is a small persisted state machine at the edge. Each step
 sets the normal pending Setting question, so model outages, invalid answers, and
 restarts retain the question without creating a parallel interpretation path.

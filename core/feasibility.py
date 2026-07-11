@@ -308,9 +308,10 @@ def build_day_plan(
     now: datetime,
     preferences: PlanPreferences,
     previous: dict | None = None,
+    target_day: date | None = None,
 ) -> DayPlan:
     """Build a feasibility-checked plan, explaining every item left out."""
-    target = now.date()
+    target = target_day or now.date()
     tzinfo = now.tzinfo
     work_start = _at(target, preferences.work_start, tzinfo)
     work_end = _at(target, preferences.work_end, tzinfo)
@@ -318,7 +319,11 @@ def build_day_plan(
         work_start = max(work_start, _at(target, preferences.earliest_time, tzinfo))
     if preferences.latest_time:
         work_end = min(work_end, _at(target, preferences.latest_time, tzinfo))
-    horizon_start = max(work_start, _round_up(now))
+    horizon_start = (
+        max(work_start, _round_up(now))
+        if target == now.date()
+        else work_start
+    )
 
     plan = DayPlan(
         day=target.isoformat(),

@@ -11,7 +11,15 @@ from datetime import date, datetime
 from typing import ContextManager, Protocol, runtime_checkable
 
 from core.feasibility import CalendarSnapshot
-from core.models import ActionLogEntry, Digest, InboxEntry, Item, OutboxEntry
+from core.models import (
+    ActionLogEntry,
+    Digest,
+    InboxEntry,
+    Item,
+    OutboxEntry,
+    PlanRun,
+    PlanSession,
+)
 
 
 @runtime_checkable
@@ -65,6 +73,53 @@ class Store(Protocol):
         ...
 
     def open_items(self) -> list[Item]:
+        ...
+
+    # proposed and explicitly adopted day plans
+    def next_plan_id(self) -> str:
+        ...
+
+    def save_plan_run(self, run: PlanRun, sessions: list[PlanSession]) -> None:
+        ...
+
+    def get_plan_run(self, run_id: str) -> PlanRun | None:
+        ...
+
+    def latest_proposed_plan(self, day: str | None = None) -> PlanRun | None:
+        ...
+
+    def active_plan(self, day: str | None = None) -> PlanRun | None:
+        ...
+
+    def expire_plans(self, before_day: str, ended_at: str) -> int:
+        ...
+
+    def plan_sessions(self, run_id: str) -> list[PlanSession]:
+        ...
+
+    def adopt_plan(self, run_id: str, adopted_at: str) -> tuple[dict, dict]:
+        ...
+
+    def cancel_plan(self, run_id: str, ended_at: str) -> tuple[dict, dict]:
+        ...
+
+    def restore_plan_state(self, state: dict) -> None:
+        ...
+
+    def sync_plan_sessions(
+        self, item: Item, action: str | None = None, action_at: str | None = None
+    ) -> None:
+        ...
+
+    def start_plan_session(self, item_id: str, now_iso: str) -> PlanSession | None:
+        ...
+
+    def due_plan_sessions(
+        self, earliest_iso: str, threshold_iso: str
+    ) -> list[PlanSession]:
+        ...
+
+    def mark_plan_session_notified(self, session_id: str, notified_at: str) -> None:
         ...
 
     # action log (append-only, powers /undo)

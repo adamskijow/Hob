@@ -12,7 +12,7 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -26,10 +26,12 @@ from core.models import (
     InboxEntry,
     Item,
     OutboxEntry,
+    PlanRun,
+    PlanSession,
     RecurrenceRule,
 )
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS items (
@@ -108,6 +110,36 @@ CREATE TABLE IF NOT EXISTS outbox (
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_pending
     ON outbox(status, id);
+"""
+
+_PLAN_DDL = """
+CREATE TABLE IF NOT EXISTS plan_runs (
+    id           TEXT PRIMARY KEY,
+    day          TEXT NOT NULL,
+    status       TEXT NOT NULL,
+    constraint_text TEXT NOT NULL,
+    generated_at TEXT NOT NULL,
+    adopted_at   TEXT,
+    ended_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_plan_runs_day_status
+ON plan_runs(day, status, generated_at);
+
+CREATE TABLE IF NOT EXISTS plan_sessions (
+    id          TEXT PRIMARY KEY,
+    run_id      TEXT NOT NULL REFERENCES plan_runs(id) ON DELETE CASCADE,
+    item_id     TEXT NOT NULL,
+    label       TEXT NOT NULL,
+    start       TEXT NOT NULL,
+    end         TEXT NOT NULL,
+    segment     INTEGER NOT NULL DEFAULT 1,
+    status      TEXT NOT NULL,
+    notified_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_plan_sessions_run_start
+ON plan_sessions(run_id, start);
+CREATE INDEX IF NOT EXISTS idx_plan_sessions_due
+ON plan_sessions(status, notified_at, start);
 """
 
 
@@ -204,6 +236,10 @@ class SqliteStore:
                         "UPDATE items SET recurrence_json = ? WHERE id = ?",
                         (json.dumps(asdict(structured)), row["id"]),
                     )
+        if version < 10:
+            # Proposed and explicitly adopted day-plan blocks. These are local
+            # execution state, not task dates and never Calendar events.
+            self._conn.executescript(_PLAN_DDL)
         self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self._conn.commit()
 
@@ -370,6 +406,327 @@ class SqliteStore:
                     value in item.reminded_offsets for value in item.reminder_offsets
                 )
                 self.update_item(item)
+            self._commit()
+
+    # plan runs and sessions ------------------------------------------------
+    def next_plan_id(self) -> str:
+        return f"p{self._next_seq('plan_seq')}"
+
+    def save_plan_run(self, run: PlanRun, sessions: list[PlanSession]) -> None:
+        with self._lock:
+            prior_rows = self._conn.execute(
+                "SELECT id FROM plan_runs WHERE day=? AND status='proposed'",
+                (run.day,),
+            ).fetchall()
+            for prior in prior_rows:
+                self._conn.execute(
+                    "UPDATE plan_runs SET status='superseded', ended_at=? WHERE id=?",
+                    (run.generated_at, prior["id"]),
+                )
+                self._conn.execute(
+                    "UPDATE plan_sessions SET status='canceled' WHERE run_id=?",
+                    (prior["id"],),
+                )
+            self._conn.execute(
+                "INSERT INTO plan_runs "
+                "(id, day, status, constraint_text, generated_at, adopted_at, ended_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (
+                    run.id,
+                    run.day,
+                    run.status,
+                    run.constraint,
+                    run.generated_at,
+                    run.adopted_at,
+                    run.ended_at,
+                ),
+            )
+            self._conn.executemany(
+                "INSERT INTO plan_sessions "
+                "(id, run_id, item_id, label, start, end, segment, status, notified_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                [
+                    (
+                        session.id,
+                        session.run_id,
+                        session.item_id,
+                        session.label,
+                        session.start,
+                        session.end,
+                        session.segment,
+                        session.status,
+                        session.notified_at,
+                    )
+                    for session in sessions
+                ],
+            )
+            self._commit()
+
+    def get_plan_run(self, run_id: str) -> PlanRun | None:
+        row = self._conn.execute(
+            "SELECT * FROM plan_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+        return self._row_to_plan_run(row) if row else None
+
+    def latest_proposed_plan(self, day: str | None = None) -> PlanRun | None:
+        sql = "SELECT * FROM plan_runs WHERE status = 'proposed'"
+        args: tuple = ()
+        if day is not None:
+            sql += " AND day = ?"
+            args = (day,)
+        row = self._conn.execute(
+            sql + " ORDER BY generated_at DESC, id DESC LIMIT 1", args
+        ).fetchone()
+        return self._row_to_plan_run(row) if row else None
+
+    def active_plan(self, day: str | None = None) -> PlanRun | None:
+        sql = "SELECT * FROM plan_runs WHERE status = 'active'"
+        args: tuple = ()
+        if day is not None:
+            sql += " AND day = ?"
+            args = (day,)
+        row = self._conn.execute(
+            sql + " ORDER BY day, adopted_at DESC, id DESC LIMIT 1", args
+        ).fetchone()
+        return self._row_to_plan_run(row) if row else None
+
+    def expire_plans(self, before_day: str, ended_at: str) -> int:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id FROM plan_runs "
+                "WHERE status IN ('active','proposed') AND day < ?",
+                (before_day,),
+            ).fetchall()
+            for row in rows:
+                self._conn.execute(
+                    "UPDATE plan_runs SET status='expired', ended_at=? WHERE id=?",
+                    (ended_at, row["id"]),
+                )
+                self._conn.execute(
+                    "UPDATE plan_sessions SET status='canceled' "
+                    "WHERE run_id=? AND status IN ('proposed','planned','started')",
+                    (row["id"],),
+                )
+            self._commit()
+            return len(rows)
+
+    def plan_sessions(self, run_id: str) -> list[PlanSession]:
+        rows = self._conn.execute(
+            "SELECT * FROM plan_sessions WHERE run_id = ? ORDER BY start, end, id",
+            (run_id,),
+        ).fetchall()
+        return [self._row_to_plan_session(row) for row in rows]
+
+    def _plan_state(self, run_ids: list[str]) -> dict:
+        if not run_ids:
+            return {"runs": {}, "sessions": {}}
+        marks = ",".join("?" for _ in run_ids)
+        runs = self._conn.execute(
+            f"SELECT id, status, adopted_at, ended_at FROM plan_runs WHERE id IN ({marks})",
+            tuple(run_ids),
+        ).fetchall()
+        sessions = self._conn.execute(
+            f"SELECT id, status, notified_at FROM plan_sessions WHERE run_id IN ({marks})",
+            tuple(run_ids),
+        ).fetchall()
+        return {
+            "runs": {
+                row["id"]: {
+                    "status": row["status"],
+                    "adopted_at": row["adopted_at"],
+                    "ended_at": row["ended_at"],
+                }
+                for row in runs
+            },
+            "sessions": {
+                row["id"]: {
+                    "status": row["status"],
+                    "notified_at": row["notified_at"],
+                }
+                for row in sessions
+            },
+        }
+
+    def restore_plan_state(self, state: dict) -> None:
+        with self._lock:
+            for run_id, values in state.get("runs", {}).items():
+                self._conn.execute(
+                    "UPDATE plan_runs SET status=?, adopted_at=?, ended_at=? WHERE id=?",
+                    (
+                        values.get("status"),
+                        values.get("adopted_at"),
+                        values.get("ended_at"),
+                        run_id,
+                    ),
+                )
+            for session_id, values in state.get("sessions", {}).items():
+                self._conn.execute(
+                    "UPDATE plan_sessions SET status=?, notified_at=? WHERE id=?",
+                    (
+                        values.get("status"),
+                        values.get("notified_at"),
+                        session_id,
+                    ),
+                )
+            self._commit()
+
+    def adopt_plan(self, run_id: str, adopted_at: str) -> tuple[dict, dict]:
+        with self._lock:
+            run = self.get_plan_run(run_id)
+            if run is None or run.status != "proposed":
+                raise ValueError("plan proposal is no longer available")
+            prior = self.active_plan(run.day)
+            affected = [run.id] + ([prior.id] if prior and prior.id != run.id else [])
+            before = self._plan_state(affected)
+            if prior and prior.id != run.id:
+                self._conn.execute(
+                    "UPDATE plan_runs SET status='superseded', ended_at=? WHERE id=?",
+                    (adopted_at, prior.id),
+                )
+                self._conn.execute(
+                    "UPDATE plan_sessions SET status='canceled' "
+                    "WHERE run_id=? AND status IN ('planned','started')",
+                    (prior.id,),
+                )
+            self._conn.execute(
+                "UPDATE plan_runs SET status='active', adopted_at=?, ended_at=NULL "
+                "WHERE id=?",
+                (adopted_at, run.id),
+            )
+            self._conn.execute(
+                "UPDATE plan_sessions SET status = CASE WHEN EXISTS ("
+                "SELECT 1 FROM items WHERE items.id=plan_sessions.item_id "
+                "AND items.status='open' AND items.waiting_since IS NULL"
+                ") THEN 'planned' ELSE 'canceled' END WHERE run_id=?",
+                (run.id,),
+            )
+            after = self._plan_state(affected)
+            self._commit()
+            return before, after
+
+    def cancel_plan(self, run_id: str, ended_at: str) -> tuple[dict, dict]:
+        with self._lock:
+            run = self.get_plan_run(run_id)
+            if run is None or run.status != "active":
+                raise ValueError("plan is not active")
+            before = self._plan_state([run_id])
+            self._conn.execute(
+                "UPDATE plan_runs SET status='canceled', ended_at=? WHERE id=?",
+                (ended_at, run_id),
+            )
+            self._conn.execute(
+                "UPDATE plan_sessions SET status='canceled' "
+                "WHERE run_id=? AND status IN ('planned','started')",
+                (run_id,),
+            )
+            after = self._plan_state([run_id])
+            self._commit()
+            return before, after
+
+    def sync_plan_sessions(
+        self, item: Item, action: str | None = None, action_at: str | None = None
+    ) -> None:
+        """Keep active execution state aligned with explicit task lifecycle."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT ps.id, ps.status, ps.run_id, pr.day, pr.status AS run_status "
+                "FROM plan_sessions ps JOIN plan_runs pr ON pr.id=ps.run_id "
+                "WHERE ps.item_id=? AND pr.status IN ('active','completed')",
+                (item.id,),
+            ).fetchall()
+            for row in rows:
+                recurring_completion = (
+                    action == "complete"
+                    and item.status == STATUS_OPEN
+                    and action_at is not None
+                )
+                if item.status == STATUS_DONE or (
+                    action == "complete"
+                    and not recurring_completion
+                ) or (
+                    recurring_completion and row["day"] <= action_at[:10]
+                ):
+                    status = "done"
+                elif (
+                    action in {"drop", "wait", "reschedule", "schedule"}
+                    or item.status != STATUS_OPEN
+                    or item.waiting_since
+                ):
+                    status = "canceled"
+                else:
+                    status = "started" if row["status"] == "started" else "planned"
+                    if row["run_status"] == "completed":
+                        self._conn.execute(
+                            "UPDATE plan_runs SET status='active', ended_at=NULL WHERE id=?",
+                            (row["run_id"],),
+                        )
+                self._conn.execute(
+                    "UPDATE plan_sessions SET label=?, status=? WHERE id=?",
+                    (item.task, status, row["id"]),
+                )
+            run_ids = {row["run_id"] for row in rows}
+            for run_id in run_ids:
+                status_counts = self._conn.execute(
+                    "SELECT status, COUNT(*) AS n FROM plan_sessions "
+                    "WHERE run_id=? GROUP BY status",
+                    (run_id,),
+                ).fetchall()
+                counts = {row["status"]: row["n"] for row in status_counts}
+                remaining = counts.get("planned", 0) + counts.get("started", 0)
+                terminal = sum(counts.values())
+                if remaining == 0 and counts.get("done", 0) == terminal:
+                    self._conn.execute(
+                        "UPDATE plan_runs SET status='completed', ended_at=? "
+                        "WHERE id=? AND status='active'",
+                        (item.updated_at, run_id),
+                    )
+            self._commit()
+
+    def start_plan_session(self, item_id: str, now_iso: str) -> PlanSession | None:
+        row = self._conn.execute(
+            "SELECT ps.* FROM plan_sessions ps "
+            "JOIN plan_runs pr ON pr.id=ps.run_id "
+            "WHERE pr.status='active' AND pr.day=? AND ps.item_id=? "
+            "AND ps.status IN ('planned','started') "
+            "ORDER BY CASE WHEN ps.start<=? AND ps.end>? THEN 0 ELSE 1 END, ps.start "
+            "LIMIT 1",
+            (now_iso[:10], item_id, now_iso, now_iso),
+        ).fetchone()
+        if row is None:
+            return None
+        with self._lock:
+            self._conn.execute(
+                "UPDATE plan_sessions SET status='started', "
+                "notified_at=COALESCE(notified_at, ?) WHERE id=?",
+                (now_iso, row["id"]),
+            )
+            self._commit()
+        values = dict(row)
+        values["status"] = "started"
+        values["notified_at"] = values["notified_at"] or now_iso
+        return PlanSession(**values)
+
+    def due_plan_sessions(
+        self, earliest_iso: str, threshold_iso: str
+    ) -> list[PlanSession]:
+        rows = self._conn.execute(
+            "SELECT ps.* FROM plan_sessions ps "
+            "JOIN plan_runs pr ON pr.id=ps.run_id "
+            "JOIN items i ON i.id=ps.item_id "
+            "WHERE pr.status='active' AND i.status='open' "
+            "AND i.waiting_since IS NULL AND ps.status IN ('planned','started') "
+            "AND ps.notified_at IS NULL AND ps.start BETWEEN ? AND ? "
+            "ORDER BY ps.start, ps.id",
+            (earliest_iso, threshold_iso),
+        ).fetchall()
+        return [self._row_to_plan_session(row) for row in rows]
+
+    def mark_plan_session_notified(self, session_id: str, notified_at: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE plan_sessions SET notified_at=? WHERE id=?",
+                (notified_at, session_id),
+            )
             self._commit()
 
     # action log ------------------------------------------------------------
@@ -629,6 +986,12 @@ class SqliteStore:
         meta_rows = self._conn.execute(
             "SELECT key, value FROM meta ORDER BY key"
         ).fetchall()
+        plan_run_rows = self._conn.execute(
+            "SELECT * FROM plan_runs ORDER BY generated_at, id"
+        ).fetchall()
+        plan_session_rows = self._conn.execute(
+            "SELECT * FROM plan_sessions ORDER BY run_id, start, id"
+        ).fetchall()
         return {
             "schema_version": SCHEMA_VERSION,
             "items": [self._row_to_item(row).to_dict() for row in item_rows],
@@ -642,6 +1005,10 @@ class SqliteStore:
                 for row in digest_rows
             ],
             "meta": {row["key"]: row["value"] for row in meta_rows},
+            "plan_runs": [asdict(self._row_to_plan_run(row)) for row in plan_run_rows],
+            "plan_sessions": [
+                asdict(self._row_to_plan_session(row)) for row in plan_session_rows
+            ],
         }
 
     def import_data(self, data: dict) -> None:
@@ -662,10 +1029,14 @@ class SqliteStore:
         actions = data.get("action_log")
         digests = data.get("digests")
         meta = data.get("meta")
+        plan_runs = data.get("plan_runs", [])
+        plan_sessions = data.get("plan_sessions", [])
         if not isinstance(items, list) or not isinstance(actions, list):
             raise ValueError("export is missing items or action_log")
         if not isinstance(digests, list) or not isinstance(meta, dict):
             raise ValueError("export is missing digests or meta")
+        if not isinstance(plan_runs, list) or not isinstance(plan_sessions, list):
+            raise ValueError("export plan state must be lists")
 
         parsed_items = [Item.from_dict(item) for item in items]
         parsed_actions = [
@@ -687,6 +1058,49 @@ class SqliteStore:
             )
             for entry in digests
         ]
+        parsed_runs = [PlanRun(**entry) for entry in plan_runs]
+        parsed_sessions = [PlanSession(**entry) for entry in plan_sessions]
+        run_by_id = {run.id: run for run in parsed_runs}
+        item_ids = {item.id for item in parsed_items}
+        if len(run_by_id) != len(parsed_runs):
+            raise ValueError("export has duplicate plan run ids")
+        if len({session.id for session in parsed_sessions}) != len(parsed_sessions):
+            raise ValueError("export has duplicate plan session ids")
+        valid_run_statuses = {
+            "proposed", "active", "superseded", "canceled", "completed", "expired"
+        }
+        valid_session_statuses = {
+            "proposed", "planned", "started", "done", "canceled"
+        }
+        active_days: set[str] = set()
+        for run in parsed_runs:
+            try:
+                date.fromisoformat(run.day)
+                datetime.fromisoformat(run.generated_at)
+            except ValueError as exc:
+                raise ValueError("export has invalid plan run dates") from exc
+            if run.status not in valid_run_statuses:
+                raise ValueError("export has invalid plan run status")
+            if run.status == "active":
+                if run.day in active_days:
+                    raise ValueError("export has multiple active plans for one day")
+                active_days.add(run.day)
+        for session in parsed_sessions:
+            run = run_by_id.get(session.run_id)
+            if run is None or session.item_id not in item_ids:
+                raise ValueError("export plan session has an unknown reference")
+            try:
+                start = datetime.fromisoformat(session.start)
+                end = datetime.fromisoformat(session.end)
+            except ValueError as exc:
+                raise ValueError("export has invalid plan session dates") from exc
+            if (
+                session.status not in valid_session_statuses
+                or session.segment < 1
+                or start >= end
+                or session.start[:10] != run.day
+            ):
+                raise ValueError("export has invalid plan session state")
         if any(
             not isinstance(key, str) or not isinstance(value, str)
             for key, value in meta.items()
@@ -698,6 +1112,8 @@ class SqliteStore:
                 "sent_refs",
                 "outbox",
                 "inbox",
+                "plan_sessions",
+                "plan_runs",
                 "digests",
                 "action_log",
                 "items",
@@ -711,6 +1127,11 @@ class SqliteStore:
                 self.save_digest(digest)
             for key, value in meta.items():
                 self.set_meta(key, value)
+            sessions_by_run: dict[str, list[PlanSession]] = {}
+            for session in parsed_sessions:
+                sessions_by_run.setdefault(session.run_id, []).append(session)
+            for run in parsed_runs:
+                self.save_plan_run(run, sessions_by_run.get(run.id, []))
 
     def backup(self, destination: str) -> None:
         """Create a consistent SQLite backup, including any live WAL changes."""
@@ -736,6 +1157,32 @@ class SqliteStore:
         )
 
     # helpers ---------------------------------------------------------------
+    @staticmethod
+    def _row_to_plan_run(row: sqlite3.Row) -> PlanRun:
+        return PlanRun(
+            id=row["id"],
+            day=row["day"],
+            status=row["status"],
+            constraint=row["constraint_text"],
+            generated_at=row["generated_at"],
+            adopted_at=row["adopted_at"],
+            ended_at=row["ended_at"],
+        )
+
+    @staticmethod
+    def _row_to_plan_session(row: sqlite3.Row) -> PlanSession:
+        return PlanSession(
+            id=row["id"],
+            run_id=row["run_id"],
+            item_id=row["item_id"],
+            label=row["label"],
+            start=row["start"],
+            end=row["end"],
+            segment=row["segment"],
+            status=row["status"],
+            notified_at=row["notified_at"],
+        )
+
     @staticmethod
     def _item_values(item: Item) -> tuple:
         structured = item.recurrence or recurrence.parse(item.repeat)

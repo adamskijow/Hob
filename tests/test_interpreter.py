@@ -8,6 +8,7 @@ from core.models import (
     Complete,
     Drop,
     InterpreterContext,
+    PlanAction,
     Query,
     Reschedule,
     Unknown,
@@ -66,6 +67,15 @@ def test_malformed_non_object_response():
 
 def test_action_missing_type_is_unknown():
     assert isinstance(parse_actions({"actions": [{"task": "x"}]})[0], Unknown)
+
+
+def test_plan_action_and_plan_status_parse_as_typed_actions():
+    actions = parse_actions({"actions": [
+        {"type": "plan_action", "op": "replace", "confidence": 0.9},
+        {"type": "query", "kind": "plan_status"},
+    ]})
+    assert isinstance(actions[0], PlanAction) and actions[0].op == "replace"
+    assert isinstance(actions[1], Query) and actions[1].kind == "plan_status"
 
 
 def test_capture_uses_raw_when_task_missing():

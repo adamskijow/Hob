@@ -22,6 +22,7 @@ from core.models import (
     Drop,
     InterpreterContext,
     Note,
+    PlanAction,
     Prioritize,
     Query,
     Recur,
@@ -151,6 +152,13 @@ ACTION_SCHEMA = {
                         ["type", "target"],
                     ),
                     _variant(
+                        "plan_action",
+                        {"op": {"type": "string", "enum": [
+                            "adopt", "replace", "cancel"
+                        ]}, "confidence": _NUM},
+                        ["type", "op"],
+                    ),
+                    _variant(
                         "prioritize",
                         {"target": _STR, "level": _LEVEL, "confidence": _NUM},
                         ["type", "target", "level"],
@@ -180,7 +188,7 @@ ACTION_SCHEMA = {
                         "query",
                         {"kind": {"type": "string", "enum": [
                             "today", "date", "all", "overdue", "week", "search",
-                            "done", "tag", "waiting", "plan"]},
+                            "done", "tag", "waiting", "plan", "plan_status"]},
                          "when": _WHEN, "term": _STR, "tag": _STR,
                          "constraint": _STR},
                         ["type", "kind"],
@@ -299,6 +307,10 @@ exactly; never repurpose a different item because the words look similar.
 Fields: type "start", target, confidence. Use for "start the second one", "work \
 on the first task", or "I will do number 2" when a plan/list is in context. \
 Completed/past-tense wording still uses complete.
+- plan_action: change which proposed day plan is explicitly being followed. \
+Fields: type "plan_action", op ("adopt" for "use this plan" when no plan is \
+active; "replace" for "replace my plan with this"; "cancel" for "cancel my \
+plan"), confidence. Viewing, starting, or completing one task is never adoption.
 - amend: REWORD an EXISTING item's label ("rename the prez task to prep Q3"). \
 Fields: type "amend", target (item id), task (the full new label, keeping what \
 is still true), confidence. To attach extra info WITHOUT changing the label \
@@ -320,8 +332,10 @@ ALREADY finished / completed / got done / knocked out; "what did I finish today"
 left for the wedding" -> kind tag, tag "wedding"), "waiting" (what is parked on \
 other people; "what am i waiting on"), "plan" (the user wants help choosing or \
 replanning what to do: "plan my day", "what should I do next", "I have 40 \
-minutes and low energy"). For plan, set constraint to the user's relevant time, \
-energy, location, exclusions, or other planning words; otherwise null.
+minutes and low energy"), "plan_status" (report the plan already adopted: \
+"what is on my plan", "what am I doing now", "what is next on the plan"). \
+For plan, set when when a day is named and set constraint to the user's relevant \
+time, energy, location, exclusions, or other planning words; otherwise null.
 - bulk: act on MANY items at once with ONE action; never list them individually. \
 Fields: type "bulk", op ("complete", "drop", or "reschedule"), scope, when (op \
 reschedule only: a date intent for the destination), except (ids to LEAVE OUT \
@@ -704,6 +718,13 @@ def _parse_one(action: object):
         target = _str(action.get("target"))
         return Start(target=target, confidence=conf) if target else Unknown(
             note="start without target"
+        )
+    if kind == "plan_action":
+        op = _str(action.get("op"))
+        return (
+            PlanAction(op=op, confidence=conf)
+            if op in {"adopt", "replace", "cancel"}
+            else Unknown(note="plan action without valid operation")
         )
     if kind == "prioritize":
         target = _str(action.get("target"))

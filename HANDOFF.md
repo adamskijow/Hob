@@ -11,12 +11,12 @@ snapshot.
 - **Live and in daily use.** Runs as a `launchd` daemon on macOS, with
   [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive. Model:
   `qwen2.5:14b-instruct` (7b works; 14b is more reliable on dense messages).
-- **Released:** v0.7.0. Guided, resumable onboarding establishes an explicit
-  planning profile; default effort and transition buffers shape feasibility;
-  visible plan order safely anchors follow-up references. Schema remains 9.
-- **Green:** `uv run pytest` (304 passing), native bridge build, and the
+- **Released:** v0.8.0. Date-correct proposals can be explicitly adopted as
+  first-class split sessions, queried as the current plan, safely replaced, and
+  nudged once at session start. Schema is 10.
+- **Green:** `uv run pytest` (319 passing), native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
-  evals.interpreter_eval`, 63/63).
+  evals.interpreter_eval`, 69/69).
 
 ## What is built
 
@@ -58,6 +58,15 @@ effort and transition space are explicit, inspectable, undoable inputs to the
 feasibility core. Plan blocks persist as ordered conversational focus so ordinal
 follow-ups target what was displayed. “Start the second one” focuses work without
 falsely completing it. The increment audit is in `docs/audits/v0.7.md`.
+
+The v0.8 execution layer preserves each proposed block as a local plan session,
+including split work. “Use this plan” explicitly adopts it; an active plan can
+only change through an explicit replacement or cancellation, and none of those
+operations changes task dates or writes Calendar events. Named future days use
+their own availability window. Adopted order remains conversational context,
+task lifecycle and recurrence stay authoritative, stale plans expire safely,
+and durable start nudges retain reply anchoring without reminder controls that
+cannot be honored. The increment audit is in `docs/audits/v0.8.md`.
 
 ## How development goes here
 

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from adapters.calendar_eventkit import EventKitCalendar
@@ -69,6 +69,28 @@ def test_time_budget_is_a_hard_bound_and_unknown_duration_is_visible():
     assert plan.blocks[0].inferred_duration
     assert sum(int((block.end - block.start).total_seconds() / 60) for block in plan.blocks) <= 40
     assert any(deferred.reason == "does not fit the stated time budget" for deferred in plan.deferred)
+
+
+def test_future_day_uses_that_days_full_window_not_todays_clock():
+    task = item(
+        "a1",
+        "tomorrow briefing",
+        due_date="2026-07-12",
+        due_time="09:00",
+        duration_minutes=30,
+        schedule_kind="fixed",
+    )
+
+    plan = build_day_plan(
+        [task],
+        CalendarSnapshot("authorized"),
+        NOW.replace(hour=23, minute=55),
+        PlanPreferences(breaks=()),
+        target_day=date(2026, 7, 12),
+    )
+
+    assert plan.day == "2026-07-12"
+    assert plan.blocks[0].start.strftime("%Y-%m-%d %H:%M") == "2026-07-12 09:00"
 
 
 def test_explicit_default_duration_and_transition_buffer_shape_the_plan():

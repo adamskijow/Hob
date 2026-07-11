@@ -29,13 +29,19 @@ planning hours, protected daily time, the estimate for tasks without a duration,
 and transition minutes between commitments. Setup state and its pending question
 are transactional local metadata, so the flow resumes after a restart. Every
 step can be skipped, the whole flow can be paused, and `/setup` resumes it later.
-`/settings` shows setup progress, Calendar readiness, and every resulting value.
+`/settings` shows setup progress, Calendar readiness, every resulting value, and
+whether the first plan has actually been adopted.
 
 These preferences are explicit rather than inferred from private behavior.
 Natural-language changes use the normal validated setting and action-log path,
 so they are undoable and included in backup/export. Calendar permission remains
 an explicit command on the Mac; Telegram setup reports the state but cannot
 grant private-data access remotely.
+
+An upgraded owner gets one concise note in the existing morning digest for a
+new release. Fresh installs suppress it because `/start` already owns activation;
+successful delivery records the version so the note does not become a recurring
+nag.
 
 ## Asking instead of guessing
 
@@ -105,8 +111,8 @@ intervals such as every 2 weeks are supported as well.
 
 ## Planning and recall
 
-"Plan my day", "what should I do next?", and constraints such as "I have 40
-minutes and low energy" trigger a separate read-only planning pass. A pure,
+"Plan my day", "plan tomorrow", and constraints such as "I have 40 minutes and
+low energy" trigger a separate read-only planning pass. A pure,
 deterministic engine fits work into the remaining day without overlaps. It
 respects opaque Calendar busy periods, working hours, protected breaks, fixed
 times, durations, deadlines, dependencies, earliest starts, preferred windows,
@@ -120,7 +126,8 @@ and reasons. It cannot change times or add work. Hob persists the prior proposal
 so "my afternoon is gone" can show a small plan diff. Nothing moves until you
 explicitly request a change. Calendar event titles never cross the Swift
 EventKit adapter boundary. Without permission or a bridge, the same planner
-falls back to working hours and breaks.
+falls back to working hours and breaks. A named future day uses that day's full
+window and Calendar snapshot; it never silently falls back to today.
 
 Unknown task durations use the visible default estimate. A transition buffer
 expands busy periods only for feasibility math, leaving fixed commitments at
@@ -128,6 +135,16 @@ their stated times and warning when a fixed time cannot honor the buffer. Plan
 order is stored as conversational focus, so "start the second one" resolves to
 the displayed plan rather than a different list order. Starting focuses the task
 and explicitly does not mark it complete.
+
+"Use this plan" explicitly adopts the proposal as local plan sessions,
+preserving every split segment without changing task dates or writing Calendar
+events. `/plan` and natural plan-status questions show the active version. A
+replan is another proposal and cannot replace active sessions until the user
+says "replace my plan with this"; cancellation and undo restore plan state
+atomically. Task completion, dropping, waiting, recurrence rollover, and
+stale-day expiry update sessions deterministically. One durable nudge may fire
+at an adopted session's start; replies remain anchored to the task and retries
+cannot duplicate delivery.
 
 Search is semantic across task wording, the original capture, notes, and project
 tags, with literal search as the failure fallback.
@@ -149,6 +166,7 @@ work from 9 to 5", "protect lunch noon to 1").
 - `/settings` shows timezone, digest/recap times, planning profile, Calendar,
   and setup progress.
 - `/setup` starts or resumes the guided planning-profile setup.
+- `/plan` shows the explicitly adopted plan and its next session.
 - `/undo` reverts your last change (one inbound message is one undoable batch;
   repeat to walk further back).
 - `/help` shows a one-liner.

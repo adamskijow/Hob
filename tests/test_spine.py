@@ -377,7 +377,13 @@ def test_default_effort_and_buffer_are_visible_and_undoable_together():
 
 
 def test_fresh_start_runs_resumable_guided_setup_to_completion():
-    from app import ONBOARDING_DONE_KEY, ONBOARDING_STAGE_KEY
+    from app import (
+        INSTALL_VERSION_KEY,
+        ONBOARDING_DONE_KEY,
+        ONBOARDING_STAGE_KEY,
+        RELEASE_NOTICE_KEY,
+    )
+    from core.version import __version__
 
     llm = FakeLlm([
         {"actions": [{"type": "setting", "key": "work_hours", "raw": "9 to 5"}]},
@@ -392,6 +398,8 @@ def test_fresh_start_runs_resumable_guided_setup_to_completion():
     start = svc.handle(InboundMessage("/start", 10, 1, 1, user_id=42))
     assert "setup 1/4" in start and store.get_meta(ONBOARDING_STAGE_KEY) == "work_hours"
     assert store.get_meta("pending")
+    assert store.get_meta(INSTALL_VERSION_KEY) == __version__
+    assert store.get_meta(RELEASE_NOTICE_KEY) == __version__
 
     first = svc.handle(InboundMessage("plan work from 9 to 5", 10, 2, 2, user_id=42))
     assert "setup 2/4" in first and store.get_meta("work_hours") == "09:00-17:00"
@@ -409,6 +417,7 @@ def test_fresh_start_runs_resumable_guided_setup_to_completion():
     assert "default estimate: 45m" in settings
     assert "transition buffer: 10m" in settings
     assert "setup: complete" in settings
+    assert "first plan: not yet" in settings
 
 
 def test_setup_resumes_after_restart_and_can_skip_or_cancel():
@@ -884,6 +893,92 @@ def test_split_plan_numbers_tasks_not_segments():
     assert "2:" not in out
     focus = json.loads(store.get_meta("focus"))
     assert [entry["id"] for entry in focus["items"]] == ["a1"]
+    proposal = store.latest_proposed_plan("2026-06-29")
+    assert proposal is not None
+    assert [session.segment for session in store.plan_sessions(proposal.id)] == [1, 2]
+
+
+def test_future_plan_can_be_adopted_run_completed_and_undone():
+    llm = FakeLlm([
+        {"actions": [{
+            "type": "query",
+            "kind": "plan",
+            "when": {"kind": "tomorrow"},
+            "constraint": "plan tomorrow",
+        }]},
+        {"headline": "a clean tomorrow", "picks": []},
+        {"actions": [{"type": "unknown"}]},
+        {"actions": [{"type": "complete", "target": "a1", "confidence": 1.0}]},
+    ])
+    store = SqliteStore(":memory:")
+    store.add_item(Item(
+        id="a1", raw_text="write brief", task="write brief",
+        due_date="2026-06-30", due_time="09:00", status="open",
+        source="capture", created_at="2026-06-29T08:00:00",
+        updated_at="2026-06-29T08:00:00", duration_minutes=30,
+        schedule_kind="fixed",
+    ))
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York", breaks=())
+
+    proposal_text = svc.handle(msg("plan tomorrow", 1))
+    proposal = store.latest_proposed_plan("2026-06-30")
+    assert "plan for 2026-06-30" in proposal_text
+    assert proposal is not None and store.active_plan("2026-06-30") is None
+    assert store.get_item("a1").due_date == "2026-06-30"
+
+    adopted = svc.handle(msg("use this plan", 2))
+    assert "adopted" in adopted and "tasks and calendar are unchanged" in adopted
+    assert store.active_plan("2026-06-30").id == proposal.id
+    assert store.get_meta("first_plan_adopted_at")
+    assert svc.handle(msg("use this plan", 2)) == ""
+    status = svc.handle(msg("/plan", 20))
+    assert "adopted plan for 2026-06-30" in status
+    assert "09:00–09:30 write brief" in status
+
+    clock.set(datetime(2026, 6, 30, 9, 5, tzinfo=TZ))
+    done = svc.handle(msg("finished the brief", 3))
+    assert 'done: "write brief"' in done
+    assert store.get_plan_run(proposal.id).status == "completed"
+    assert store.plan_sessions(proposal.id)[0].status == "done"
+    assert "undid 1" in svc.handle(msg("/undo", 4))
+    assert store.get_item("a1").status == "open"
+    assert store.get_plan_run(proposal.id).status == "active"
+    assert store.plan_sessions(proposal.id)[0].status == "planned"
+
+
+def test_active_plan_requires_explicit_replacement_and_cancel_is_undoable():
+    llm = FakeLlm([
+        {"actions": [{"type": "query", "kind": "plan"}]},
+        {"headline": "first pass", "picks": []},
+        {"actions": []},
+        {"actions": [{"type": "query", "kind": "plan", "constraint": "start at 10"}]},
+        {"headline": "revised pass", "picks": []},
+        {"actions": []},
+        {"actions": []},
+        {"actions": []},
+    ])
+    svc, store = service(llm)
+    svc.handle(msg("plan my day", 1))
+    svc.handle(msg("use this plan", 2))
+    original = store.active_plan("2026-06-29")
+    store.set_meta("focus", "")
+    expected_focus = list(dict.fromkeys(
+        session.item_id for session in store.plan_sessions(original.id)
+    ))
+    assert [entry["id"] for entry in svc._context("start the second one").focus] == expected_focus
+    svc.handle(msg("replan, start at 10", 3))
+    proposal = store.latest_proposed_plan("2026-06-29")
+    refused = svc.handle(msg("use this plan", 4))
+    assert "already have an adopted plan" in refused
+    assert store.active_plan("2026-06-29").id == original.id
+    replaced = svc.handle(msg("replace my plan with this", 5))
+    assert "replaced" in replaced
+    assert store.active_plan("2026-06-29").id == proposal.id
+    canceled = svc.handle(msg("cancel my plan", 6))
+    assert "canceled" in canceled and store.active_plan("2026-06-29") is None
+    assert "undid 1" in svc.handle(msg("/undo", 7))
+    assert store.active_plan("2026-06-29").id == proposal.id
 
 
 def test_semantic_search_validates_model_selected_ids():

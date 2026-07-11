@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from app import ReminderService
 from adapters.store_sqlite import SqliteStore
-from core.models import Item
+from core.models import Item, PlanRun, PlanSession
 from tests.fakes import FakeClock
 
 TZ = ZoneInfo("America/New_York")
@@ -211,3 +211,41 @@ def test_wake_after_multiple_offsets_sends_one_latest_catchup():
     asyncio.run(svc.check())
     assert len(send.calls) == 1
     assert s.get_item("a1").reminded_offsets == [60, 10]
+
+
+def test_adopted_session_start_nudge_is_durable_anchored_and_once_only():
+    task = item("a1", "draft brief", None, None)
+    s = store_with([task])
+    run = PlanRun(
+        "p1", "2026-06-30", "proposed", "plan", "2026-06-30T08:00:00-04:00"
+    )
+    session = PlanSession(
+        "p1:s1", "p1", "a1", task.task,
+        "2026-06-30T09:00:00-04:00", "2026-06-30T09:30:00-04:00",
+    )
+    s.save_plan_run(run, [session])
+    s.adopt_plan("p1", "2026-06-30T08:05:00-04:00")
+
+    class Send:
+        def __init__(self):
+            self.calls = []
+
+        async def __call__(self, chat, text, **kwargs):
+            self.calls.append((chat, text, kwargs))
+            return 77
+
+    send = Send()
+    service = ReminderService(
+        s,
+        FakeClock(datetime(2026, 6, 30, 9, 0, tzinfo=TZ)),
+        FakeSend(),
+        plan_send=send,
+    )
+    asyncio.run(service.check())
+    asyncio.run(service.check())
+
+    assert len(send.calls) == 1
+    assert send.calls[0][2]["dedupe_key"].startswith("plan-session:p1:s1")
+    assert "snooze" not in send.calls[0][1]
+    assert s.plan_sessions("p1")[0].notified_at is not None
+    assert s.ref_for(77) == "a1"

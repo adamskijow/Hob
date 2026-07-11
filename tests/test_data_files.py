@@ -10,7 +10,7 @@ from adapters.data_files import (
     restore_database,
 )
 from adapters.store_sqlite import SqliteStore
-from core.models import RecurrenceRule
+from core.models import PlanRun, PlanSession, RecurrenceRule
 from tests.test_store import make_item
 
 
@@ -71,3 +71,37 @@ def test_database_lease_rejects_second_daemon_or_live_restore(tmp_path):
         with pytest.raises(DatabaseBusyError):
             with database_lease(db):
                 pass
+
+
+def test_portable_export_preserves_adopted_plan_sessions(tmp_path):
+    source = tmp_path / "source.db"
+    export = tmp_path / "hob.json"
+    replacement = tmp_path / "replacement.db"
+    with SqliteStore(str(source)) as store:
+        task = make_item("a1", "portable planned task")
+        store.add_item(task)
+        run = PlanRun(
+            "p1", "2026-07-11", "proposed", "plan", "2026-07-11T08:00:00"
+        )
+        store.save_plan_run(run, [PlanSession(
+            "p1:s1", "p1", "a1", task.task,
+            "2026-07-11T09:00:00", "2026-07-11T09:30:00",
+        )])
+        store.adopt_plan("p1", "2026-07-11T08:05:00")
+        export.write_text(json.dumps(store.export_data()), encoding="utf-8")
+
+    import_export(str(export), str(replacement))
+
+    with SqliteStore(str(replacement)) as restored:
+        assert restored.active_plan("2026-07-11").id == "p1"
+        sessions = restored.plan_sessions("p1")
+        assert len(sessions) == 1 and sessions[0].item_id == "a1"
+        assert sessions[0].status == "planned"
+
+    broken = json.loads(export.read_text(encoding="utf-8"))
+    broken["plan_sessions"][0]["item_id"] = "invented"
+    export.write_text(json.dumps(broken), encoding="utf-8")
+    with pytest.raises(ValueError, match="unknown reference"):
+        import_export(str(export), str(replacement))
+    with SqliteStore(str(replacement)) as unchanged:
+        assert unchanged.active_plan("2026-07-11").id == "p1"

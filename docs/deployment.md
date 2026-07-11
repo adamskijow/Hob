@@ -103,6 +103,8 @@ not manage its own log files.
 **Backups and recovery.** Backups include committed WAL changes and are
 integrity-checked after writing. Restore/import verify a candidate in isolation,
 safety-backup current data, and replace the database atomically.
+Schema 10 backups and portable exports include proposed and adopted plan runs
+and every split session.
 The daemon holds an advisory database lease: restore/import will refuse to run
 until the LaunchAgent is stopped, preventing a live process from continuing on
 the replaced file. A second daemon using the same data path is rejected too.
