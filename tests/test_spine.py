@@ -1285,6 +1285,49 @@ def test_doctor_rejects_unverified_telegram_credentials(monkeypatch, tmp_path, c
     assert "syntactically-present" not in output
 
 
+def test_doctor_requires_explicit_acknowledgement_for_experimental_model(
+    monkeypatch, tmp_path, capsys
+):
+    import app
+    from config import Config
+    from core.feasibility import CalendarSnapshot
+
+    base = {
+        "HOB_TELEGRAM_TOKEN": "present",
+        "HOB_MODEL": "qwen2.5:7b-instruct",
+        "HOB_TIMEZONE": "UTC",
+        "HOB_DB_PATH": str(tmp_path / "model-doctor.db"),
+    }
+    cfg = Config.from_env(base)
+    experimental = Config.from_env({
+        **base, "HOB_ALLOW_EXPERIMENTAL_MODEL": "true"
+    })
+    monkeypatch.setattr(app.Config, "from_env", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(app, "_telegram_credentials_ready", lambda token: True)
+    monkeypatch.setattr(app, "_model_ready", lambda llm, model: True)
+    monkeypatch.setattr(app, "_physical_memory_gib", lambda: 24)
+    monkeypatch.setattr(
+        app,
+        "EventKitCalendar",
+        lambda *args: type("Calendar", (), {
+            "status": lambda self: CalendarSnapshot("disabled")
+        })(),
+    )
+
+    assert app._doctor() == 1
+    output = capsys.readouterr().out
+    assert "FAIL unsupported model: qwen2.5:7b-instruct" in output
+    assert "HOB_ALLOW_EXPERIMENTAL_MODEL=true" in output
+
+    monkeypatch.setattr(
+        app.Config, "from_env", classmethod(lambda cls: experimental)
+    )
+    assert app._doctor() == 0
+    output = capsys.readouterr().out
+    assert "WARN experimental model selected" in output
+    assert "release gate covers only qwen2.5:14b-instruct" in output
+
+
 def test_plan_explanation_is_grounded_read_only_and_discoverable():
     from app import LAST_DECISION_KEY
 

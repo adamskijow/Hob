@@ -31,6 +31,10 @@ feeds representative messages through Ollama and asserts the resulting plan:
 HOB_MODEL=qwen2.5:14b-instruct uv run python -m evals.interpreter_eval
 ```
 
+The full corpus must pass on every model Hob claims to support. For 1.0 that is
+only `qwen2.5:14b-instruct`. Smaller or alternate models are experimental even
+when they can emit the required JSON schema.
+
 On Windows, a `tzdata` package is installed under a platform marker so the
 standard-library `zoneinfo` has a timezone database; on the macOS target the OS
 provides it and the marker keeps it off that environment.

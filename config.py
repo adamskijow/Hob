@@ -22,6 +22,7 @@ _RANGE_RE = re.compile(
 # with a unit ("30m", "2h", "1.5h"). A unit-less decimal like "1.5" is rejected
 # (it passes here but ollama would reject it as a bad duration).
 _KEEP_ALIVE_RE = re.compile(r"^(-?\d+|\d+(\.\d+)?[smh])$")
+SUPPORTED_MODEL = "qwen2.5:14b-instruct"
 
 
 def _valid_timezone(value: str | None) -> str | None:
@@ -86,6 +87,7 @@ class Config:
     breaks: tuple[tuple[str, str], ...]
     default_duration_minutes: int
     transition_buffer_minutes: int
+    allow_experimental_model: bool
 
     @property
     def telegram_enabled(self) -> bool:
@@ -124,7 +126,7 @@ class Config:
             telegram_token=telegram_token,
             telegram_token_source=token_source,
             allowed_telegram_user_id=allowed_user,
-            model=src.get("HOB_MODEL", "qwen2.5:7b-instruct").strip(),
+            model=src.get("HOB_MODEL", SUPPORTED_MODEL).strip(),
             wake_time=src.get("HOB_WAKE_TIME", "07:00").strip(),
             timezone=src.get("HOB_TIMEZONE", timezone_default).strip(),
             db_path=_db_path(src, preserve_legacy=env is None),
@@ -147,6 +149,9 @@ class Config:
             transition_buffer_minutes=_integer(
                 src.get("HOB_TRANSITION_BUFFER", "0"),
                 "HOB_TRANSITION_BUFFER",
+            ),
+            allow_experimental_model=_experimental_model_flag(
+                src.get("HOB_ALLOW_EXPERIMENTAL_MODEL", "0")
             ),
         )
         cfg.validate()
@@ -196,6 +201,15 @@ def _boolean(value: str) -> bool:
     if low in {"0", "false", "no", "off"}:
         return False
     raise ConfigError("HOB_CALENDAR_ENABLED must be true or false")
+
+
+def _experimental_model_flag(value: str) -> bool:
+    low = value.strip().lower()
+    if low in {"1", "true", "yes", "on"}:
+        return True
+    if low in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError("HOB_ALLOW_EXPERIMENTAL_MODEL must be true or false")
 
 
 def _integer(value: str, name: str) -> int:

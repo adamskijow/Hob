@@ -5,7 +5,7 @@ from config import Config, ConfigError, _system_timezone
 
 BASE = {
     "HOB_TELEGRAM_TOKEN": "tok",
-    "HOB_MODEL": "qwen2.5:7b-instruct",
+    "HOB_MODEL": "qwen2.5:14b-instruct",
     "HOB_WAKE_TIME": "07:00",
     "HOB_TIMEZONE": "UTC",
     "HOB_DB_PATH": "hob.db",
@@ -22,7 +22,7 @@ def test_valid_config():
 
 def test_defaults_applied():
     c = Config.from_env({"HOME": "/Users/tester"})
-    assert c.model == "qwen2.5:7b-instruct"
+    assert c.model == "qwen2.5:14b-instruct"
     assert c.wake_time == "07:00"
     assert c.db_path == "/Users/tester/Library/Application Support/Hob/hob.db"
     assert c.keep_alive == "-1"  # resident by default
@@ -35,6 +35,19 @@ def test_defaults_applied():
     assert c.breaks == (("12:00", "13:00"),)
     assert c.default_duration_minutes == 30
     assert c.transition_buffer_minutes == 0
+    assert not c.allow_experimental_model
+
+
+def test_experimental_model_override_requires_valid_acknowledgement():
+    cfg = Config.from_env({
+        **BASE,
+        "HOB_MODEL": "qwen2.5:7b-instruct",
+        "HOB_ALLOW_EXPERIMENTAL_MODEL": "true",
+    })
+    assert cfg.model == "qwen2.5:7b-instruct"
+    assert cfg.allow_experimental_model
+    with pytest.raises(ConfigError):
+        Config.from_env({**BASE, "HOB_ALLOW_EXPERIMENTAL_MODEL": "maybe"})
 
 
 def test_system_timezone_prefers_tz_then_localtime_then_timezone_file(tmp_path):

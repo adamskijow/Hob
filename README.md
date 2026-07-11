@@ -79,7 +79,7 @@ service and it never writes the token into a plist.
 Or do it by hand (needs uv and a local Ollama with a JSON-capable instruct model):
 
 ```
-ollama pull qwen2.5:7b-instruct   # or 14b-instruct if you have headroom
+ollama pull qwen2.5:14b-instruct  # the 1.0 supported quality baseline
 uv sync                           # venv, Python 3.12, deps
 uv run python app.py doctor       # preflight: token, ollama, model, config, db
 uv run python app.py              # start hob
@@ -179,7 +179,8 @@ All configuration is environment variables:
 | --- | --- | --- |
 | `HOB_TELEGRAM_TOKEN` | Development override for the Keychain token | (Keychain) |
 | `HOB_ALLOWED_TELEGRAM_USER_ID` | Optional explicit owner id; otherwise first private `/start` pairs | (pair on first start) |
-| `HOB_MODEL` | Ollama model name | `qwen2.5:7b-instruct` |
+| `HOB_MODEL` | Ollama model name | `qwen2.5:14b-instruct` |
+| `HOB_ALLOW_EXPERIMENTAL_MODEL` | Acknowledge an unsupported model override | `false` |
 | `HOB_WAKE_TIME` | Morning digest time, `HH:MM` 24h | `07:00` |
 | `HOB_TIMEZONE` | IANA timezone override, e.g. `America/New_York` | macOS system timezone (`UTC` fallback) |
 | `HOB_DB_PATH` | SQLite file path | `~/Library/Application Support/Hob/hob.db`¹ |
@@ -197,6 +198,23 @@ All configuration is environment variables:
 
 The digest and recap times can also be changed in chat ("send the morning
 digest at 8"), no restart needed.
+
+### Model and hardware contract
+
+Hob 1.0 supports `qwen2.5:14b-instruct`. The complete release corpus passes
+75/75 on that exact model; the 7B variant passes only 53/75 and misclassifies
+several mutating requests, so it is not a supported low-resource mode. Ollama's
+[official artifact](https://ollama.com/library/qwen2.5:14b-instruct) is a 9.0 GB
+Q4_K_M download. Hob recommends at least 24 GiB physical memory to leave room
+for macOS, context, and the resident runtime. That memory recommendation is a
+conservative product inference, not an Ollama minimum. The release corpus was
+run on an Apple M5 Max Mac with 128 GiB; broader hardware latency evidence is
+still a release-candidate gate.
+
+Developers may select another pulled model with `HOB_MODEL`, but doctor and
+durable installation refuse to present it as supported unless
+`HOB_ALLOW_EXPERIMENTAL_MODEL=true` explicitly acknowledges the unvalidated
+override.
 
 ¹ Existing installs with `hob.db` in their working directory keep using it
 until `HOB_DB_PATH` is changed, so upgrading does not strand prior data.

@@ -10,7 +10,8 @@ snapshot.
 
 - **Live and in daily use.** Runs as a `launchd` daemon on macOS, with
   [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive. Model:
-  `qwen2.5:14b-instruct` (7b works; 14b is more reliable on dense messages).
+  `qwen2.5:14b-instruct`, the only 1.0-supported baseline. The 7B variant fails
+  22 of 75 release cases and is experimental only.
 - **Released:** v0.8.0. Date-correct proposals can be explicitly adopted as
   first-class split sessions, queried as the current plan, safely replaced, and
   nudged once at session start. Schema is 10.
@@ -46,6 +47,12 @@ snapshot.
   probe pass. Ubuntu/macOS CI pass on feature head `138838f` in run
   `29162824498`. Clean-install, update, reboot, sleep, rollback, and VoiceOver
   remain, and it is stacked in draft PR #5 on draft PR #4.
+- **Supported-model contract in progress:** `agent/v1-supported-model` makes
+  14B the setup/runtime default, rejects unacknowledged experimental overrides,
+  reports resource expectations, and records the exact 53/75 7B versus 75/75
+  14B evidence. 396 deterministic tests, compile, plists, signed native build,
+  and read-only live installed-model status pass. CI and representative-hardware
+  onboarding/latency checks remain. It is stacked on draft PR #5.
 
 ## What is built
 

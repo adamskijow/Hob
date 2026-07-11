@@ -11,6 +11,7 @@ from adapters.launchd import (
     installed_definition,
     launch_agent_payload,
     service_paths,
+    service_status,
     uninstall_launch_agent,
 )
 from config import Config
@@ -51,6 +52,7 @@ def test_launch_agent_uses_exact_paths_and_never_persists_secret(tmp_path):
     ]
     assert payload["WorkingDirectory"] == str(root)
     assert payload["EnvironmentVariables"]["HOB_ALLOWED_TELEGRAM_USER_ID"] == "12345"
+    assert payload["EnvironmentVariables"]["HOB_MODEL"] == "qwen2.5:14b-instruct"
     assert payload["EnvironmentVariables"]["HOB_TIMEZONE"] == "America/Los_Angeles"
     assert "private-token" not in rendered and "HOB_TELEGRAM_TOKEN" not in rendered
     assert payload["ThrottleInterval"] == 30
@@ -75,6 +77,7 @@ def test_installed_definition_reports_runtime_and_secret_violation(tmp_path):
         "WorkingDirectory": "/released/hob",
         "EnvironmentVariables": {
             "HOB_DB_PATH": "/owner/hob.db",
+            "HOB_MODEL": "qwen2.5:7b-instruct",
             "HOB_TELEGRAM_TOKEN": "unsafe-hand-edit",
         },
     }))
@@ -83,6 +86,7 @@ def test_installed_definition_reports_runtime_and_secret_violation(tmp_path):
 
     assert installed.checkout == "/released/hob"
     assert installed.database == "/owner/hob.db"
+    assert installed.model == "qwen2.5:7b-instruct"
     assert installed.contains_token
 
 
@@ -111,6 +115,24 @@ def test_update_backs_up_definition_and_bootstraps_new_agent(tmp_path):
     assert paths.previous_plist.read_bytes() == old
     assert any("bootout" in call for call in calls)
     assert any("bootstrap" in call for call in calls)
+
+
+def test_service_status_uses_one_top_level_value_per_field():
+    output = """
+state = running
+pid = 42
+last exit code = 0
+state = active
+state = active
+"""
+
+    loaded, detail = service_status(
+        uid=501,
+        run=lambda argv, **kwargs: completed(argv, stdout=output),
+    )
+
+    assert loaded
+    assert detail == "state = running; pid = 42; last exit code = 0"
 
 
 def test_failed_bootstrap_restores_prior_definition(tmp_path):

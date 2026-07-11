@@ -22,7 +22,7 @@ from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from config import Config, ConfigError
+from config import SUPPORTED_MODEL, Config, ConfigError
 from core import recurrence
 from core.digest import (
     digest_nudge_item,
@@ -2851,6 +2851,14 @@ def _telegram_credentials_ready(token: str) -> bool:
         return False
 
 
+def _physical_memory_gib() -> int | None:
+    try:
+        total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (AttributeError, OSError, ValueError):
+        return None
+    return max(1, round(total / (1024 ** 3)))
+
+
 def _doctor(*, check_database: bool = True) -> int:
     """Preflight: check the environment a fresh install needs before first run."""
     print("hob doctor")
@@ -2866,6 +2874,28 @@ def _doctor(*, check_database: bool = True) -> int:
         return 2
 
     ok = True
+    if cfg.model == SUPPORTED_MODEL:
+        print(f"  OK   supported model selected: {cfg.model}")
+    elif cfg.allow_experimental_model:
+        print(
+            f"  WARN experimental model selected: {cfg.model}; "
+            f"the 1.0 release gate covers only {SUPPORTED_MODEL}"
+        )
+    else:
+        print(
+            f"  FAIL unsupported model: {cfg.model}; use {SUPPORTED_MODEL}, or "
+            "set HOB_ALLOW_EXPERIMENTAL_MODEL=true to acknowledge an "
+            "unvalidated override"
+        )
+        ok = False
+    memory = _physical_memory_gib()
+    if memory is not None:
+        label = "OK  " if memory >= 24 else "WARN"
+        print(
+            f"  {label} hardware: {memory} GiB physical memory; the supported "
+            "model artifact is 9.0 GB and 24 GiB is recommended for OS and "
+            "runtime headroom"
+        )
     if cfg.telegram_enabled:
         if _telegram_credentials_ready(cfg.telegram_token):
             print(
@@ -2952,6 +2982,10 @@ def _service_command(cfg: Config, argv: list[str]) -> int:
         else:
             print(f"  checkout: {installed.checkout}")
             print(f"  data: {installed.database}")
+            support = (
+                "supported" if installed.model == SUPPORTED_MODEL else "experimental"
+            )
+            print(f"  model: {installed.model} ({support})")
             if installed.checkout != str(root):
                 print(f"  INFO command is running from a different checkout: {root}")
             if installed.contains_token:
