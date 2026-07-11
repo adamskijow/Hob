@@ -45,6 +45,11 @@ memory may work, but 1.0 will not promise it without a representative rehearsal.
   as supported and identifies the different candidate checkout without restart.
 - The runtime default, setup default, generated plist, doctor, status, README,
   development guide, handoff, and acceptance audit agree on the contract.
+- GitHub Actions run
+  [29163461707](https://github.com/adamskijow/Hob/actions/runs/29163461707)
+  passes Ubuntu and macOS at exact feature head
+  `ce472e1d63dacb68827f225a8162e09d18d2ccb7`. The macOS job includes the
+  signed EventKit bridge and complete test step.
 
 ## Increment audit
 

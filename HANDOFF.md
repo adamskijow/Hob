@@ -51,8 +51,10 @@ snapshot.
   14B the setup/runtime default, rejects unacknowledged experimental overrides,
   reports resource expectations, and records the exact 53/75 7B versus 75/75
   14B evidence. 396 deterministic tests, compile, plists, signed native build,
-  and read-only live installed-model status pass. CI and representative-hardware
-  onboarding/latency checks remain. It is stacked on draft PR #5.
+  and read-only live installed-model status pass. Ubuntu/macOS CI pass on
+  feature head `ce472e1` in run `29163461707`. Representative-hardware
+  onboarding/latency and VoiceOver checks remain. It is draft PR #6 stacked on
+  draft PR #5.
 
 ## What is built
 
