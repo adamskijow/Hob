@@ -133,6 +133,40 @@ def test_past_timed_commitment_is_never_floated_to_a_later_day():
     assert "2026-07-10 15:00" in plan.warnings[0]
 
 
+def test_dst_gap_and_repeated_fixed_times_are_deferred_not_guessed():
+    for now, due_time, expected in (
+        (
+            datetime(2026, 3, 8, 0, 30, tzinfo=TZ),
+            "02:30",
+            "does not exist because the clock moves forward",
+        ),
+        (
+            datetime(2026, 11, 1, 0, 30, tzinfo=TZ),
+            "01:30",
+            "occurs twice because the clock moves backward",
+        ),
+    ):
+        task = item(
+            "a1",
+            "dst call",
+            due_date=now.date().isoformat(),
+            due_time=due_time,
+            duration_minutes=30,
+            schedule_kind="fixed",
+        )
+
+        plan = build_day_plan(
+            [task],
+            CalendarSnapshot("unavailable"),
+            now,
+            PlanPreferences(work_start="00:00", work_end="05:00", breaks=()),
+        )
+
+        assert plan.blocks == []
+        assert expected in plan.deferred[0].reason
+        assert "daylight-saving conflict" in plan.warnings[0]
+
+
 def test_explicit_default_duration_and_transition_buffer_shape_the_plan():
     tasks = [item("a1", "first"), item("a2", "second")]
     plan = build_day_plan(

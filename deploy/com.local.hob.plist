@@ -25,7 +25,6 @@
     <key>HOB_ALLOWED_TELEGRAM_USER_ID</key> <string>123456789</string>
     <key>HOB_MODEL</key>          <string>qwen2.5:14b-instruct</string>
     <key>HOB_WAKE_TIME</key>      <string>07:00</string>
-    <key>HOB_TIMEZONE</key>       <string>America/New_York</string>
     <key>HOB_DB_PATH</key>        <string>/Users/you/Library/Application Support/Hob/hob.db</string>
     <key>HOB_KEEP_ALIVE</key>     <string>-1</string>
     <key>HOB_CALENDAR_ENABLED</key><string>true</string>

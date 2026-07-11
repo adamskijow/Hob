@@ -156,7 +156,7 @@ All configuration is environment variables:
 | `HOB_ALLOWED_TELEGRAM_USER_ID` | Optional explicit owner id; otherwise first private `/start` pairs | (pair on first start) |
 | `HOB_MODEL` | Ollama model name | `qwen2.5:7b-instruct` |
 | `HOB_WAKE_TIME` | Morning digest time, `HH:MM` 24h | `07:00` |
-| `HOB_TIMEZONE` | IANA timezone, e.g. `America/New_York` | `UTC` |
+| `HOB_TIMEZONE` | IANA timezone override, e.g. `America/New_York` | macOS system timezone (`UTC` fallback) |
 | `HOB_DB_PATH` | SQLite file path | `~/Library/Application Support/Hob/hob.db`¹ |
 | `HOB_OLLAMA_HOST` | Ollama endpoint | `http://localhost:11434` |
 | `HOB_KEEP_ALIVE` | How long Ollama keeps the model loaded | `-1` (resident) |

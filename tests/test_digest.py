@@ -91,6 +91,16 @@ def test_exactly_at_wake_time_is_owed():
     assert digest_owed(at(7, 0), "07:00", "2026-06-28") is True
 
 
+def test_digest_dst_gap_catches_up_and_repeated_hour_stays_once_per_day():
+    spring = datetime(2026, 3, 8, 3, 0, tzinfo=TZ)
+    assert digest_owed(spring, "02:30", None)
+
+    first = datetime(2026, 11, 1, 1, 30, tzinfo=TZ, fold=0)
+    second = datetime(2026, 11, 1, 1, 30, tzinfo=TZ, fold=1)
+    assert digest_owed(first, "01:30", None)
+    assert not digest_owed(second, "01:30", "2026-11-01")
+
+
 # Phase 6: digest selection, rendering, delivery -------------------------------
 
 

@@ -106,6 +106,41 @@ def test_old_missed_reminder_is_suppressed_and_recent_one_is_labeled():
     ]
 
 
+def test_dst_gap_reminder_is_labeled_and_repeated_hour_uses_first_once():
+    spring_store = store_with([
+        item("a1", "spring call", "2026-03-08", "02:30")
+    ])
+    spring_send = FakeSend()
+    spring_clock = FakeClock(datetime(2026, 3, 8, 3, 0, tzinfo=TZ))
+    spring = ReminderService(spring_store, spring_clock, spring_send)
+
+    asyncio.run(spring.check())
+    asyncio.run(spring.check())
+
+    assert spring_send.calls == [(
+        42,
+        'missed reminder: "spring call" was set for 02:30, which the clock '
+        "skipped for daylight saving",
+    )]
+
+    fall_store = store_with([
+        item("a1", "fall call", "2026-11-01", "01:30")
+    ])
+    fall_send = FakeSend()
+    fall_clock = FakeClock(datetime(2026, 11, 1, 1, 30, tzinfo=TZ, fold=0))
+    fall = ReminderService(fall_store, fall_clock, fall_send)
+
+    asyncio.run(fall.check())
+    fall_clock.set(datetime(2026, 11, 1, 1, 30, tzinfo=TZ, fold=1))
+    asyncio.run(fall.check())
+
+    assert fall_send.calls == [(
+        42,
+        'reminder: "fall call" at 01:30 (this time occurs twice today; using '
+        "the first occurrence)",
+    )]
+
+
 def test_reminder_does_nothing_without_chat():
     s = store_with([item("a1", "x", "2026-06-30", "15:00")], chat=None)
     send = FakeSend()

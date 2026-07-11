@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 import pytest
 
-from config import Config, ConfigError
+from config import Config, ConfigError, _system_timezone
 
 BASE = {
     "HOB_TELEGRAM_TOKEN": "tok",
@@ -35,6 +35,30 @@ def test_defaults_applied():
     assert c.breaks == (("12:00", "13:00"),)
     assert c.default_duration_minutes == 30
     assert c.transition_buffer_minutes == 0
+
+
+def test_system_timezone_prefers_tz_then_localtime_then_timezone_file(tmp_path):
+    assert _system_timezone({"TZ": "Europe/Paris"}) == "Europe/Paris"
+
+    zone = tmp_path / "zoneinfo" / "America" / "Chicago"
+    zone.parent.mkdir(parents=True)
+    zone.write_text("fixture", encoding="utf-8")
+    localtime = tmp_path / "localtime"
+    localtime.symlink_to(zone)
+    assert _system_timezone(
+        {}, localtime=localtime, timezone_file=tmp_path / "missing"
+    ) == "America/Chicago"
+
+    timezone_file = tmp_path / "timezone"
+    timezone_file.write_text("Asia/Tokyo\n", encoding="utf-8")
+    assert _system_timezone(
+        {"TZ": "invalid"},
+        localtime=tmp_path / "missing",
+        timezone_file=timezone_file,
+    ) == "Asia/Tokyo"
+    assert _system_timezone(
+        {}, localtime=tmp_path / "missing", timezone_file=tmp_path / "also-missing"
+    ) == "UTC"
 
 
 def test_allowed_telegram_user_id():
@@ -72,10 +96,13 @@ def test_missing_token_disables_telegram():
 def test_runtime_config_falls_back_to_keychain(monkeypatch, tmp_path):
     monkeypatch.delenv("HOB_TELEGRAM_TOKEN", raising=False)
     monkeypatch.setenv("HOB_DB_PATH", str(tmp_path / "hob.db"))
+    monkeypatch.delenv("HOB_TIMEZONE", raising=False)
     monkeypatch.setattr("config.get_telegram_token", lambda: "keychain-token")
+    monkeypatch.setattr("config._system_timezone", lambda: "America/Los_Angeles")
     c = Config.from_env()
     assert c.telegram_token == "keychain-token"
     assert c.telegram_token_source == "keychain"
+    assert c.timezone == "America/Los_Angeles"
 
 
 def test_bad_wake_time():
