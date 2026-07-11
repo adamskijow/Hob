@@ -34,6 +34,11 @@ snapshot.
   tomorrow task and immediately retracted it with “Nevermind I'm good”; Hob
   reported one undone change, the item is absent from storage, and queues are
   clean.
+- **Mac App Store track:** ADR 0001 establishes one behavior with Open Local
+  and Store distribution editions. `native/HobAppFoundation` starts the native
+  menu-bar/settings surface, typed setup readiness, bounded Apple Foundation
+  Models seam, and minimum sandbox/Calendar/network boundary. It is a foundation
+  package, not yet a signed Xcode archive or distributable Store app.
 - **Live v0.8 evidence:** the exact launchd database contains one active and one
   superseded run, three canceled old sessions, one started and two planned
   revised sessions. The direct nudge reply produced `started`, not completion;

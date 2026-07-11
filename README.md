@@ -20,6 +20,12 @@ Hob is a personal task agent that understands plain language, powered by a
 local LLM (Ollama) and run as a long-lived daemon on macOS. It is named for the
 ledge at the side of a hearth where a kettle is kept warm and ready.
 
+Hob also has an active [Mac App Store track](docs/app-store.md): a sandboxed,
+no-Terminal edition using Apple's on-device Foundation Models. The released
+Open Local edition remains the working product today; the Store foundation is
+not yet a distributable app. Its architecture and parity rules are recorded in
+[ADR 0001](docs/adr/0001-mac-app-store-edition.md).
+
 ## Why
 
 Some tasks are too small for a calendar and too fleeting to survive until you
