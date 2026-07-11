@@ -14,7 +14,8 @@ snapshot.
 - **Released:** v0.9.1. v0.9 adds a deterministic weekly capacity outlook,
   explicit working days, plan-aware EOD, first-adoption coaching, accessible
   media fallback, and privacy-safe activation metrics. Schema remains 10.
-- **Green:** `uv run pytest` (347 passing), native bridge build, and the
+- **Green:** `uv run pytest` (356 passing), 10 native App Store foundation
+  tests, signed native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
   evals.interpreter_eval`, 73/73). The v0.9.1 patch head passed Ubuntu and macOS
   CI in run `29165920137`.
@@ -45,6 +46,12 @@ snapshot.
   resolves shared data only through the protected App Group. The helper is
   health-only, so the UI deliberately locks registration until the real task
   runtime is connected. See `docs/audits/app-store-background-service.md`.
+- **Store model-readiness increment:** the Xcode bundle now embeds the
+  Foundation Models command tool with Apple's sandbox-inheritance signing
+  boundary. Setup exposes an explicit privacy-safe generation check with a
+  30-second deadline and fails closed on missing, unavailable, timed-out, or
+  malformed responses. A framework availability flag is never enough. See
+  `docs/audits/app-store-model-readiness.md`.
 - **Live v0.8 evidence:** the exact launchd database contains one active and one
   superseded run, three canceled old sessions, one started and two planned
   revised sessions. The direct nudge reply produced `started`, not completion;

@@ -8,6 +8,7 @@ import SwiftUI
 @main
 struct HobMacShell: App {
     @StateObject private var backgroundService = BackgroundServiceController()
+    @StateObject private var foundationModel = FoundationModelController()
 
     private var readiness: AppReadiness {
         AppReadiness(
@@ -15,7 +16,7 @@ struct HobMacShell: App {
             modelBackend: .appleFoundationModels,
             ownerPaired: false,
             backgroundServiceApproved: backgroundService.isDeliveryReady,
-            modelAvailable: false
+            modelAvailable: foundationModel.state.isReady
         )
     }
 
@@ -23,7 +24,8 @@ struct HobMacShell: App {
         Window("Hob Setup", id: "setup") {
             SetupHomeView(
                 readiness: readiness,
-                backgroundService: backgroundService
+                backgroundService: backgroundService,
+                foundationModel: foundationModel
             )
         }
         .defaultSize(width: 680, height: 560)
@@ -36,6 +38,8 @@ struct HobMacShell: App {
             TabView {
                 OnboardingView()
                     .tabItem { Label("Setup", systemImage: "checklist") }
+                ModelReadinessView(controller: foundationModel)
+                    .tabItem { Label("Model", systemImage: "apple.intelligence") }
                 PrivacyView()
                     .tabItem { Label("Privacy", systemImage: "lock.shield") }
                 BackgroundServiceView(controller: backgroundService)
@@ -80,38 +84,86 @@ private struct SetupHomeView: View {
     @Environment(\.scenePhase) private var scenePhase
     let readiness: AppReadiness
     @ObservedObject var backgroundService: BackgroundServiceController
+    @ObservedObject var foundationModel: FoundationModelController
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("A realistic day, renegotiated in chat")
-                    .font(.largeTitle.bold())
-                Text("Set up Hob without Terminal. Nothing runs in the background until you approve it.")
-                    .foregroundStyle(.secondary)
-            }
-            if readiness.canRun {
-                Label("Hob is ready", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-            } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Before Hob can run")
-                        .font(.headline)
-                    ForEach(readiness.blockers, id: \.rawValue) { blocker in
-                        Label(blocker.userMessage, systemImage: "circle")
-                    }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("A realistic day, renegotiated in chat")
+                        .font(.largeTitle.bold())
+                    Text("Set up Hob without Terminal. Nothing runs in the background until you approve it.")
+                        .foregroundStyle(.secondary)
                 }
-                .padding()
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+                if readiness.canRun {
+                    Label("Hob is ready", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                } else {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Before Hob can run")
+                            .font(.headline)
+                        ForEach(readiness.blockers, id: \.rawValue) { blocker in
+                            Label(blocker.userMessage, systemImage: "circle")
+                        }
+                    }
+                    .padding()
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+                }
+                GroupBox("On-device intelligence") {
+                    ModelReadinessContent(controller: foundationModel)
+                }
+                GroupBox("Background delivery") {
+                    BackgroundServiceContent(controller: backgroundService)
+                }
+                GroupBox("Setup journey") {
+                    OnboardingContent()
+                }
             }
-            BackgroundServiceView(controller: backgroundService)
-            OnboardingView()
+            .padding(28)
         }
-        .padding(28)
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 backgroundService.refresh()
             }
         }
+    }
+}
+
+private struct ModelReadinessView: View {
+    @ObservedObject var controller: FoundationModelController
+
+    var body: some View {
+        Form {
+            Section("On-device intelligence") {
+                ModelReadinessContent(controller: controller)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+private struct ModelReadinessContent: View {
+    @ObservedObject var controller: FoundationModelController
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            LabeledContent("Status", value: controller.state.title)
+            Text(controller.state.guidance)
+                .foregroundStyle(.secondary)
+            Text("The readiness check sends only a built-in test phrase to Apple's on-device model. It does not include your tasks, messages, or Calendar data.")
+                .font(.callout)
+            if controller.state == .checking {
+                ProgressView("Checking Apple Intelligence")
+            } else {
+                Button(
+                    controller.state == .notChecked ? "Check On-Device Model" : "Check Again"
+                ) {
+                    controller.check()
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 6)
     }
 }
 
@@ -121,31 +173,43 @@ private struct BackgroundServiceView: View {
     var body: some View {
         Form {
             Section("Background delivery") {
-                LabeledContent("Status", value: controller.state.title)
-                Text(controller.state.guidance)
-                    .foregroundStyle(.secondary)
-                Text("Hob runs in the background only after you choose Turn On. You can turn it off here or in System Settings at any time.")
-                    .font(.callout)
-                if !controller.runtimeAvailable {
-                    Label(
-                        "The signed helper is bundled, but background delivery stays locked until the Hob task runtime is connected.",
-                        systemImage: "hammer"
-                    )
-                    .foregroundStyle(.secondary)
-                }
-                if let error = controller.lastError {
-                    Label(error, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.red)
-                }
-                serviceActions
+                BackgroundServiceContent(controller: controller)
             }
         }
         .formStyle(.grouped)
         .onAppear { controller.refresh() }
     }
 
-    @ViewBuilder
-    private var serviceActions: some View {
+}
+
+private struct BackgroundServiceContent: View {
+    @ObservedObject var controller: BackgroundServiceController
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            LabeledContent("Status", value: controller.state.title)
+            Text(controller.state.guidance)
+                .foregroundStyle(.secondary)
+            Text("Hob runs in the background only after you choose Turn On. You can turn it off here or in System Settings at any time.")
+                .font(.callout)
+            if !controller.runtimeAvailable {
+                Label(
+                    "The signed helper is bundled, but background delivery stays locked until the Hob task runtime is connected.",
+                    systemImage: "hammer"
+                )
+                .foregroundStyle(.secondary)
+            }
+            if let error = controller.lastError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
+            }
+            serviceActions
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 6)
+    }
+
+    @ViewBuilder private var serviceActions: some View {
         switch controller.state {
         case .notRegistered:
             Button("Turn On Background Delivery") { controller.enable() }
@@ -170,19 +234,28 @@ private struct BackgroundServiceView: View {
 private struct OnboardingView: View {
     var body: some View {
         Form {
-            Section("App Store edition") {
-                LabeledContent("Model", value: "Apple on-device")
-                LabeledContent("Task storage", value: "This Mac")
-                LabeledContent("Calendar", value: "Busy times only")
-            }
             Section("Setup journey") {
-                ForEach(OnboardingStep.allCases, id: \.rawValue) { step in
-                    Label(step.title, systemImage: "circle")
-                }
+                OnboardingContent()
             }
         }
         .formStyle(.grouped)
         .padding()
+    }
+}
+
+private struct OnboardingContent: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            LabeledContent("Model", value: "Apple on-device")
+            LabeledContent("Task storage", value: "This Mac")
+            LabeledContent("Calendar", value: "Busy times only")
+            Divider()
+            ForEach(OnboardingStep.allCases, id: \.rawValue) { step in
+                Label(step.title, systemImage: "circle")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 6)
     }
 }
 

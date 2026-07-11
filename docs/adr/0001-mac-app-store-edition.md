@@ -66,6 +66,12 @@ product and distribution boundary while preserving one behavioral authority.
   availability can precede required model-service assets. Unsupported hardware,
   disabled Apple Intelligence, and unavailable assets get an actionable state,
   not a broken chat loop.
+- The Foundation Models adapter is an embedded command tool inside the login
+  item. It carries only `app-sandbox` and `inherit`, disables injected base
+  entitlements, uses a stable signing identifier, and is launched by the
+  sandboxed app. Its readiness request has a generated correlation id, bounded
+  input and output, and a 30-second deadline. Only a completed generation may
+  satisfy model readiness.
 - Telegram transit is disclosed during onboarding and in Store privacy details.
   “Local” never implies that Telegram messages remain on the Mac.
 

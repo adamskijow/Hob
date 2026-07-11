@@ -16,6 +16,10 @@
 		B10000000000000000000005 /* SharedStorage.swift in Agent Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* SharedStorage.swift */; };
 		B10000000000000000000006 /* HobAgent.swift in Agent Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* HobAgent.swift */; };
 		B10000000000000000000007 /* HobAgent.app in Embed Login Items */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* HobAgent.app */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		C10000000000000000000001 /* ModelReadiness.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000001 /* ModelReadiness.swift */; };
+		C10000000000000000000002 /* FoundationModelController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000002 /* FoundationModelController.swift */; };
+		C10000000000000000000003 /* main.swift in Model Tool Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000003 /* main.swift */; };
+		C10000000000000000000004 /* HobFoundationBridge in Embed Model Tool */ = {isa = PBXBuildFile; fileRef = C20000000000000000000005 /* HobFoundationBridge */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -25,6 +29,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = B50000000000000000000001;
 			remoteInfo = HobAgent;
+		};
+		C00000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A70000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C50000000000000000000001;
+			remoteInfo = HobFoundationBridge;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -38,6 +49,17 @@
 				B10000000000000000000007 /* HobAgent.app in Embed Login Items */,
 			);
 			name = "Embed Login Items";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C60000000000000000000003 /* Embed Model Tool */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/MacOS;
+			dstSubfolderSpec = 1;
+			files = (
+				C10000000000000000000004 /* HobFoundationBridge in Embed Model Tool */,
+			);
+			name = "Embed Model Tool";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
@@ -55,6 +77,11 @@
 		B20000000000000000000005 /* HobAgent.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HobAgent.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B20000000000000000000006 /* HobAgent-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = "HobAgent-Info.plist"; path = ../HobAppFoundation/AppStore/HobAgent-Info.plist; sourceTree = "<group>"; };
 		B20000000000000000000007 /* HobAgent.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = HobAgent.entitlements; path = ../HobAppFoundation/AppStore/HobAgent.entitlements; sourceTree = "<group>"; };
+		C20000000000000000000001 /* ModelReadiness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ModelReadiness.swift; path = ../HobAppFoundation/Sources/HobAppCore/ModelReadiness.swift; sourceTree = "<group>"; };
+		C20000000000000000000002 /* FoundationModelController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = FoundationModelController.swift; path = ../HobAppFoundation/Sources/HobMacShell/FoundationModelController.swift; sourceTree = "<group>"; };
+		C20000000000000000000003 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "FoundationBridge-main.swift"; path = ../HobAppFoundation/Sources/HobFoundationBridge/main.swift; sourceTree = "<group>"; };
+		C20000000000000000000004 /* HobFoundationBridge.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = HobFoundationBridge.entitlements; path = ../HobAppFoundation/AppStore/HobFoundationBridge.entitlements; sourceTree = "<group>"; };
+		C20000000000000000000005 /* HobFoundationBridge */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = HobFoundationBridge; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -66,6 +93,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		B30000000000000000000001 /* Agent Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C30000000000000000000001 /* Model Tool Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -93,6 +127,9 @@
 				B20000000000000000000002 /* SharedStorage.swift */,
 				B20000000000000000000003 /* BackgroundServiceController.swift */,
 				B20000000000000000000004 /* HobAgent.swift */,
+				C20000000000000000000001 /* ModelReadiness.swift */,
+				C20000000000000000000002 /* FoundationModelController.swift */,
+				C20000000000000000000003 /* main.swift */,
 			);
 			name = Sources;
 			sourceTree = "<group>";
@@ -104,6 +141,7 @@
 				A20000000000000000000005 /* HobMacShell.entitlements */,
 				B20000000000000000000006 /* HobAgent-Info.plist */,
 				B20000000000000000000007 /* HobAgent.entitlements */,
+				C20000000000000000000004 /* HobFoundationBridge.entitlements */,
 			);
 			name = Configuration;
 			sourceTree = "<group>";
@@ -113,6 +151,7 @@
 			children = (
 				A20000000000000000000003 /* Hob.app */,
 				B20000000000000000000005 /* HobAgent.app */,
+				C20000000000000000000005 /* HobFoundationBridge */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -146,15 +185,33 @@
 				B60000000000000000000001 /* Agent Sources */,
 				B30000000000000000000001 /* Agent Frameworks */,
 				B60000000000000000000002 /* Agent Resources */,
+				C60000000000000000000003 /* Embed Model Tool */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				C70000000000000000000001 /* PBXTargetDependency */,
 			);
 			name = HobAgent;
 			productName = HobAgent;
 			productReference = B20000000000000000000005 /* HobAgent.app */;
 			productType = "com.apple.product-type.application";
+		};
+		C50000000000000000000001 /* HobFoundationBridge */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C80000000000000000000001 /* Build configuration list for PBXNativeTarget "HobFoundationBridge" */;
+			buildPhases = (
+				C60000000000000000000001 /* Model Tool Sources */,
+				C30000000000000000000001 /* Model Tool Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = HobFoundationBridge;
+			productName = HobFoundationBridge;
+			productReference = C20000000000000000000005 /* HobFoundationBridge */;
+			productType = "com.apple.product-type.tool";
 		};
 /* End PBXNativeTarget section */
 
@@ -170,6 +227,9 @@
 						CreatedOnToolsVersion = 26.6;
 					};
 					B50000000000000000000001 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+					C50000000000000000000001 = {
 						CreatedOnToolsVersion = 26.6;
 					};
 				};
@@ -190,6 +250,7 @@
 			targets = (
 				A50000000000000000000001 /* Hob */,
 				B50000000000000000000001 /* HobAgent */,
+				C50000000000000000000001 /* HobFoundationBridge */,
 			);
 		};
 /* End PBXProject section */
@@ -221,6 +282,8 @@
 				B10000000000000000000001 /* BackgroundService.swift in Sources */,
 				B10000000000000000000002 /* SharedStorage.swift in Sources */,
 				B10000000000000000000003 /* BackgroundServiceController.swift in Sources */,
+				C10000000000000000000001 /* ModelReadiness.swift in Sources */,
+				C10000000000000000000002 /* FoundationModelController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -234,6 +297,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		C60000000000000000000001 /* Model Tool Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C10000000000000000000003 /* main.swift in Model Tool Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -241,6 +312,11 @@
 			isa = PBXTargetDependency;
 			target = B50000000000000000000001 /* HobAgent */;
 			targetProxy = B00000000000000000000001 /* PBXContainerItemProxy */;
+		};
+		C70000000000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C50000000000000000000001 /* HobFoundationBridge */;
+			targetProxy = C00000000000000000000001 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -355,6 +431,38 @@
 			};
 			name = Release;
 		};
+		C90000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ../HobAppFoundation/AppStore/HobFoundationBridge.entitlements;
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Automatic;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				OTHER_CODE_SIGN_FLAGS = "$(inherited) -i $(PRODUCT_BUNDLE_IDENTIFIER)";
+				OTHER_SWIFT_FLAGS = "$(inherited) -parse-as-library";
+				PRODUCT_BUNDLE_IDENTIFIER = com.josephadamski.hob.foundationbridge;
+				PRODUCT_NAME = HobFoundationBridge;
+				SKIP_INSTALL = YES;
+			};
+			name = Debug;
+		};
+		C90000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ../HobAppFoundation/AppStore/HobFoundationBridge.entitlements;
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Automatic;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				OTHER_CODE_SIGN_FLAGS = "$(inherited) -i $(PRODUCT_BUNDLE_IDENTIFIER)";
+				OTHER_SWIFT_FLAGS = "$(inherited) -parse-as-library";
+				PRODUCT_BUNDLE_IDENTIFIER = com.josephadamski.hob.foundationbridge;
+				PRODUCT_NAME = HobFoundationBridge;
+				SKIP_INSTALL = YES;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -381,6 +489,15 @@
 			buildConfigurations = (
 				B90000000000000000000001 /* Debug */,
 				B90000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C80000000000000000000001 /* Build configuration list for PBXNativeTarget "HobFoundationBridge" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C90000000000000000000001 /* Debug */,
+				C90000000000000000000002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
