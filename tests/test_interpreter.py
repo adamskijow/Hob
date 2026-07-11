@@ -160,3 +160,36 @@ def test_prompt_includes_pending_clarification():
 
 def test_prompt_has_no_pending_section_when_empty():
     assert "Pending question" not in build_prompt(ctx())
+
+
+def test_parses_temporal_capture_schedule_and_recurrence_actions():
+    actions = parse_actions(
+        {
+            "actions": [
+                {
+                    "type": "capture",
+                    "task": "draft deck",
+                    "raw": "draft deck",
+                    "when": {"kind": "tomorrow"},
+                    "deadline": {"kind": "weekday", "day": "fri"},
+                    "duration_minutes": 90,
+                    "duration_confidence": 0.8,
+                    "splittable": True,
+                    "depends_on": ["a1"],
+                    "reminder_offsets": [60, 10],
+                },
+                {
+                    "type": "schedule",
+                    "target": "a2",
+                    "duration_minutes": 45,
+                    "clear": ["deadline"],
+                },
+                {"type": "recur", "target": "a3", "op": "skip"},
+            ]
+        }
+    )
+    assert actions[0].duration_minutes == 90
+    assert actions[0].deadline.kind == "weekday"
+    assert actions[0].reminder_offsets == [60, 10]
+    assert actions[1].clear == ["deadline"]
+    assert actions[2].op == "skip"

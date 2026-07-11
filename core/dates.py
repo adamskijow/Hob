@@ -174,6 +174,33 @@ def weekday_correction(message: str, resolved_iso: str | None, today: date) -> s
     return (today + timedelta(days=((wd - today.weekday()) % 7) or 7)).isoformat()
 
 
+_DEADLINE_PHRASE = re.compile(
+    r"\b(?:due(?:\s+by)?|deadline(?:\s+is|\s+of)?|by|before|no later than)\s+"
+    r"(?P<tail>[^,;.]+)",
+    re.IGNORECASE,
+)
+
+
+def deadline_in_text(text: str, today: date) -> str | None:
+    """Resolve a literal deadline clause even when the message names a do date too.
+
+    This is a narrow deterministic backstop for shapes like "work Friday; due
+    Monday". The model identifies semantics, while dateparser only extracts the
+    date from the words following an explicit deadline cue.
+    """
+    match = _DEADLINE_PHRASE.search(text)
+    if not match:
+        return None
+    tail = match.group("tail").lower()
+    if "end of the month" in tail or "end of month" in tail:
+        return _last_of_month(today).isoformat()
+    matches = search_dates(
+        match.group("tail"), languages=["en"], settings=_settings(today)
+    ) or []
+    candidates = [value.date() for _, value in matches if value.date() >= today]
+    return candidates[0].isoformat() if candidates else None
+
+
 # --- time parsing ------------------------------------------------------------
 
 _TIME_RE = re.compile(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.IGNORECASE)

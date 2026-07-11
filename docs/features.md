@@ -138,3 +138,18 @@ Every Telegram update is durable before its polling offset advances. One user
 turn—including mutations, settings, undo history, clarification state, and its
 reply—commits atomically. Temporary model failures retry the original inbox row;
 delivery failures retry a deduplicated outbox without applying the task twice.
+
+## Scheduling constraints
+
+`due_date` is Hob's do/scheduled date; a hard deadline is separate. Captures and
+existing tasks can carry duration plus estimate confidence, fixed/flexible
+status, whether work may split, an earliest start, a preferred part of day or
+clock window, a parent task, dependency ids, and several reminder offsets. Hob
+rejects impossible date combinations and dependency cycles. Undo and portable
+export/import preserve every constraint.
+
+Structured recurrence stores frequency, interval, weekdays or month date,
+fixed versus completion-relative anchoring, the original cadence anchor, end
+date/count, completed count, and exception dates. Moving the current occurrence
+does not rewrite the fixed cadence. Skipping, stopping, or changing the series
+is an explicit operation.

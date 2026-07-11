@@ -178,7 +178,7 @@ def test_released_v7_fixture_migrates_with_backup_and_data(tmp_path):
         migrated.enqueue_inbound("telegram:1", 1, "noop", {}, "now")
         assert len(migrated.pending_inbound()) == 1
 
-    backups = list(tmp_path.glob("hob.db.pre-v7-to-v8-*.bak"))
+    backups = list(tmp_path.glob("hob.db.pre-v7-to-v9-*.bak"))
     assert len(backups) == 1
     old = sqlite3.connect(backups[0])
     assert old.execute("PRAGMA user_version").fetchone()[0] == 7

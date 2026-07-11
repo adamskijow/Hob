@@ -178,3 +178,36 @@ def test_reminded_flag_survives_round_trip():
     it.reminded = True
     s.update_item(it)
     assert s.get_item("a1").reminded is True
+
+
+def test_task_specific_multiple_reminders_fire_at_each_offset():
+    it = item("a1", "board call", "2026-06-30", "15:00")
+    it.reminder_offsets = [60, 10]
+    s = store_with([it])
+    send = FakeSend()
+    clock = FakeClock(datetime(2026, 6, 30, 14, 0, tzinfo=TZ))
+    svc = ReminderService(s, clock, send, 10)
+
+    asyncio.run(svc.check())
+    assert len(send.calls) == 1
+    assert s.get_item("a1").reminded_offsets == [60]
+
+    clock.set(datetime(2026, 6, 30, 14, 50, tzinfo=TZ))
+    asyncio.run(svc.check())
+    assert len(send.calls) == 2
+    assert s.get_item("a1").reminded_offsets == [60, 10]
+    assert s.get_item("a1").reminded is True
+
+
+def test_wake_after_multiple_offsets_sends_one_latest_catchup():
+    it = item("a1", "board call", "2026-06-30", "15:00")
+    it.reminder_offsets = [60, 10]
+    s = store_with([it])
+    send = FakeSend()
+    svc = ReminderService(
+        s, FakeClock(datetime(2026, 6, 30, 14, 55, tzinfo=TZ)), send, 10
+    )
+
+    asyncio.run(svc.check())
+    assert len(send.calls) == 1
+    assert s.get_item("a1").reminded_offsets == [60, 10]

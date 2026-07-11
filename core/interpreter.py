@@ -24,8 +24,10 @@ from core.models import (
     Note,
     Prioritize,
     Query,
+    Recur,
     Reschedule,
     Resume,
+    Schedule,
     Setting,
     Snooze,
     Undo,
@@ -42,6 +44,9 @@ MODEL_UNREACHABLE = "model call failed"
 
 _STR = {"type": ["string", "null"]}
 _NUM = {"type": ["number", "null"]}
+_BOOL = {"type": ["boolean", "null"]}
+_STRS = {"type": "array", "items": {"type": "string"}}
+_NUMS = {"type": "array", "items": {"type": "number"}}
 _LEVEL = {"type": "string", "enum": ["high", "normal", "low"]}
 # A typed date intent: the model classifies, core.dates.resolve_intent does math.
 _WHEN = {
@@ -85,9 +90,35 @@ ACTION_SCHEMA = {
                         "capture",
                         {"task": _STR, "raw": _STR, "when": _WHEN, "time": _STR,
                          "relate": _STR, "repeat": _STR, "priority": _LEVEL,
-                         "tag": _STR, "waiting": {"type": ["boolean", "null"]},
-                         "note": _STR, "confidence": _NUM},
+                         "tag": _STR, "waiting": _BOOL,
+                         "note": _STR, "deadline": _WHEN,
+                         "duration_minutes": _NUM, "duration_confidence": _NUM,
+                         "schedule_kind": _STR, "splittable": _BOOL,
+                         "earliest": _WHEN, "earliest_time": _STR,
+                         "preferred_window": _STR, "parent": _STR,
+                         "depends_on": _STRS, "reminder_offsets": _NUMS,
+                         "repeat_anchor": _STR, "repeat_end": _WHEN,
+                         "repeat_count": _NUM, "confidence": _NUM},
                         ["type", "raw", "when"],
+                    ),
+                    _variant(
+                        "schedule",
+                        {"target": _STR, "deadline": _WHEN,
+                         "duration_minutes": _NUM, "duration_confidence": _NUM,
+                         "schedule_kind": _STR, "splittable": _BOOL,
+                         "earliest": _WHEN, "earliest_time": _STR,
+                         "preferred_window": _STR, "depends_on": _STRS,
+                         "reminder_offsets": _NUMS, "clear": _STRS,
+                         "confidence": _NUM},
+                        ["type", "target"],
+                    ),
+                    _variant(
+                        "recur",
+                        {"target": _STR,
+                         "op": {"type": "string", "enum": ["skip", "stop", "anchor", "end"]},
+                         "anchor": _STR, "end": _WHEN, "count": _NUM,
+                         "confidence": _NUM},
+                        ["type", "target", "op"],
                     ),
                     _variant(
                         "note",
@@ -200,7 +231,36 @@ Set tag to a project/list name when the user files tasks under one ("for the \
 wedding: book the caterer, order flowers" -> two captures, each tag "wedding"), \
 else null. Set waiting true when the new task is blocked on someone else from \
 the start: "waiting on the plumber to call back" -> capture, waiting true. Set \
-note to any extra detail worth keeping with the task, else null.
+note to any extra detail worth keeping with the task, else null. Scheduling \
+fields: deadline is a typed date intent ONLY for a hard "by/before/no later \
+than" deadline (ordinary "on Friday" stays in when); duration_minutes is the \
+estimated effort ("two hours" -> 120) and duration_confidence is 1 for an \
+explicit estimate or about 0.6 for an inference; schedule_kind is "fixed" for \
+an appointment or explicit immovable time, else "flexible"; splittable is true \
+only when the user permits sessions/chunks; earliest is a typed date before \
+which work cannot begin, earliest_time is its clock time; preferred_window is \
+"morning", "afternoon", "evening", or "HH:MM-HH:MM"; parent is the existing \
+parent task id for a subtask; depends_on is existing ids that must finish first; \
+reminder_offsets is explicit minutes before the scheduled time ("an hour and \
+10 minutes before" -> [60,10]). For recurring work, repeat_anchor is "fixed" \
+unless the user says the interval starts after completion, repeat_end is an \
+optional ending date intent, and repeat_count is an optional total occurrence count.
+- schedule: change scheduling metadata on an EXISTING item without moving its \
+current do date. Fields: type "schedule", target, deadline, duration_minutes, \
+duration_confidence, schedule_kind, splittable, earliest, earliest_time, \
+preferred_window, depends_on, reminder_offsets, clear, confidence. Emit only \
+values the user actually changed. clear is a list drawn from "deadline", \
+"duration", "earliest", "window", "dependencies", or "reminders" when the \
+user explicitly removes one. "The deck is due Friday and takes 90 minutes" is \
+schedule, not reschedule. "Remind me 1 hour and 10 minutes before the dentist" \
+sets reminder_offsets [60,10].
+- recur: change an EXISTING recurring series. Fields: type "recur", target, op, \
+anchor, end, count, confidence. op "skip" skips only the next occurrence; \
+"stop" ends the series after the current occurrence; "anchor" changes fixed \
+versus completion-relative cadence; "end" sets an end date or total count. \
+Use this for "skip the next one", "stop repeating", "repeat after I finish", \
+or "end after five times". Rescheduling a recurring item moves only its current \
+occurrence and does not change the series.
 - note: attach a detail to an EXISTING item. Fields: type "note", target (item \
 id), text (the detail), confidence. "add a note to the vet one: gate code is \
 4412" -> note, target the vet item, text "gate code is 4412".
@@ -348,7 +408,11 @@ def _format_active(items: list[dict]) -> str:
         return "  (none)"
     return "\n".join(
         f"  {n}: {i['id']}: {i['label']}"
-        + (f" (due {i['due_date']})" if i.get("due_date") else "")
+        + (f" (scheduled {i['due_date']})" if i.get("due_date") else "")
+        + (f" (deadline {i['deadline_date']})" if i.get("deadline_date") else "")
+        + (f" ({i['duration_minutes']}m)" if i.get("duration_minutes") else "")
+        + (f" ({i['schedule_kind']})" if i.get("schedule_kind") == "fixed" else "")
+        + (f" (depends on {','.join(i['depends_on'])})" if i.get("depends_on") else "")
         + (" (waiting)" if i.get("waiting") else "")
         for n, i in enumerate(items, start=1)
     )
@@ -477,6 +541,18 @@ def _int(value: object) -> int | None:
         return None
 
 
+def _ints(value: object) -> list[int]:
+    if not isinstance(value, list):
+        return []
+    return [parsed for parsed in (_int(item) for item in value) if parsed is not None]
+
+
+def _strings(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [parsed for parsed in (_str(item) for item in value) if parsed]
+
+
 def _when(value: object) -> When | None:
     """Parse a typed date intent. Returns None for a missing or no-date intent so
     the planner treats the task as undated."""
@@ -521,6 +597,56 @@ def _parse_one(action: object):
             tag=_str(action.get("tag")),
             waiting=bool(action.get("waiting")),
             note=_str(action.get("note")),
+            deadline=_when(action.get("deadline")),
+            duration_minutes=_int(action.get("duration_minutes")),
+            duration_confidence=_float(action.get("duration_confidence"), 1.0),
+            schedule_kind=_str(action.get("schedule_kind")) or "flexible",
+            splittable=bool(action.get("splittable")),
+            earliest=_when(action.get("earliest")),
+            earliest_time=_str(action.get("earliest_time")),
+            preferred_window=_str(action.get("preferred_window")),
+            parent=_str(action.get("parent")),
+            depends_on=_strings(action.get("depends_on")),
+            reminder_offsets=_ints(action.get("reminder_offsets")),
+            repeat_anchor=_str(action.get("repeat_anchor")) or "fixed",
+            repeat_end=_when(action.get("repeat_end")),
+            repeat_count=_int(action.get("repeat_count")),
+            confidence=conf,
+        )
+    if kind == "schedule":
+        target = _str(action.get("target"))
+        if not target:
+            return Unknown(note="schedule without target")
+        return Schedule(
+            target=target,
+            deadline=_when(action.get("deadline")),
+            duration_minutes=_int(action.get("duration_minutes")),
+            duration_confidence=_float(action.get("duration_confidence"), 1.0),
+            schedule_kind=_str(action.get("schedule_kind")),
+            splittable=(
+                bool(action.get("splittable"))
+                if action.get("splittable") is not None
+                else None
+            ),
+            earliest=_when(action.get("earliest")),
+            earliest_time=_str(action.get("earliest_time")),
+            preferred_window=_str(action.get("preferred_window")),
+            depends_on=_strings(action.get("depends_on")),
+            reminder_offsets=_ints(action.get("reminder_offsets")),
+            clear=_strings(action.get("clear")),
+            confidence=conf,
+        )
+    if kind == "recur":
+        target = _str(action.get("target"))
+        op = _str(action.get("op"))
+        if not target or op not in ("skip", "stop", "anchor", "end"):
+            return Unknown(note="recur without target or valid op")
+        return Recur(
+            target=target,
+            op=op,
+            anchor=_str(action.get("anchor")),
+            end=_when(action.get("end")),
+            count=_int(action.get("count")),
             confidence=conf,
         )
     if kind == "note":

@@ -77,3 +77,17 @@ a duplicate message. It cannot duplicate the underlying task mutation.
 A process-lifetime advisory lease prevents two Hob daemons from opening the
 same data path and makes restore/import refuse to replace a database while its
 daemon is live. Backup and export remain safe against a running database.
+
+## Temporal model
+
+Schema 9 retains `due_date` as the backward-compatible scheduled/do date and
+adds a distinct hard deadline, duration and confidence, flexibility, splitting,
+earliest start, preferred window, hierarchy, dependencies, and reminder-offset
+state. The planner resolves literal dates and validates references; the store
+persists flat scalar columns plus JSON lists.
+
+The model still emits a compact recurrence shorthand at the edge, but the core
+immediately converts it to a `RecurrenceRule`. Occurrence arithmetic uses that
+structured rule, including a stable anchor date, end conditions, completion
+count, and exceptions. This prevents a one-off move from silently changing a
+fixed series.

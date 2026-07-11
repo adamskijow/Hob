@@ -38,6 +38,15 @@ forwarded context even when the words do not match exactly. These read-only LLM
 passes validate every returned item id before showing it; mutations still go
 through the deterministic core.
 
+Hob keeps *when you plan to do something* separate from its hard deadline. It
+also understands estimated effort, fixed versus flexible commitments,
+splittable work, earliest starts, preferred windows, subtasks, and dependencies:
+"draft the board report Friday; due Monday; three hours in two sessions" becomes
+one inspectable set of constraints. Recurrence is structured, so one occurrence
+can move without shifting a fixed series; series can be completion-relative,
+end on a date or count, and skip an occurrence. A task can have several explicit
+reminder offsets instead of relying only on the global lead time.
+
 ## Getting started
 
 One command installs [uv](https://docs.astral.sh/uv/) and
@@ -87,6 +96,11 @@ Talk to it like a person:
   `/today`, `/list`, `/settings`, `/undo`, `/help`.
 - Ask "plan my day", "what should I do next?", or "I have 30 minutes before I
   leave" for a short plan. Hob proposes; it does not move anything until asked.
+- Add or edit constraints naturally: "the audit is due Friday", "this takes 45
+  minutes", "do it after the numbers", "split it into two sessions", "prefer
+  mornings", or "remind me an hour and 10 minutes before".
+- Manage a recurring series without conflating it with today: "skip the next
+  one", "repeat after I finish", "stop after five times", or "stop repeating".
 
 The full tour lives in [everything Hob understands](docs/features.md).
 

@@ -19,6 +19,23 @@ SOURCE_ROLLOVER = "rollover"
 
 
 @dataclass
+class RecurrenceRule:
+    """Structured recurrence persisted independently of model wording."""
+
+    frequency: str  # day | week | month | year
+    interval: int = 1
+    weekdays: list[str] = field(default_factory=list)
+    month_day: int | None = None
+    month: int | None = None
+    anchor: str = "fixed"  # fixed schedule | completion-relative
+    anchor_date: str | None = None  # preserves cadence when one occurrence moves
+    end_date: str | None = None
+    count: int | None = None
+    completed: int = 0
+    exceptions: list[str] = field(default_factory=list)
+
+
+@dataclass
 class Item:
     id: str
     raw_text: str
@@ -36,13 +53,29 @@ class Item:
     snooze_until: str | None = None  # ISO datetime; the reminder re-fires then
     note: str | None = None  # a detail stuck to the task ("gate code 4412")
     waiting_since: str | None = None  # ISO date; parked on someone else since
+    deadline_date: str | None = None  # hard deadline, separate from the do date
+    duration_minutes: int | None = None
+    duration_confidence: float | None = None
+    schedule_kind: str = "flexible"  # flexible | fixed
+    splittable: bool = False
+    earliest_start: str | None = None  # ISO date or datetime
+    preferred_window: str | None = None
+    parent_id: str | None = None
+    depends_on: list[str] = field(default_factory=list)
+    reminder_offsets: list[int] = field(default_factory=list)
+    reminded_offsets: list[int] = field(default_factory=list)
+    recurrence: RecurrenceRule | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict) -> "Item":
-        return cls(**data)
+        values = dict(data)
+        structured = values.get("recurrence")
+        if isinstance(structured, dict):
+            values["recurrence"] = RecurrenceRule(**structured)
+        return cls(**values)
 
 
 @dataclass
@@ -141,6 +174,51 @@ class Capture:
     tag: str | None = None  # project / list to file this task under
     waiting: bool = False  # blocked on someone else from the start
     note: str | None = None  # extra detail worth keeping with the task
+    deadline: When | None = None
+    duration_minutes: int | None = None
+    duration_confidence: float | None = None
+    schedule_kind: str = "flexible"
+    splittable: bool = False
+    earliest: When | None = None
+    earliest_time: str | None = None
+    preferred_window: str | None = None
+    parent: str | None = None
+    depends_on: list[str] = field(default_factory=list)
+    reminder_offsets: list[int] = field(default_factory=list)
+    repeat_anchor: str = "fixed"
+    repeat_end: When | None = None
+    repeat_count: int | None = None
+    confidence: float = 1.0
+
+
+@dataclass
+class Schedule:
+    """Update deterministic scheduling constraints on an existing item."""
+
+    target: str
+    deadline: When | None = None
+    duration_minutes: int | None = None
+    duration_confidence: float | None = None
+    schedule_kind: str | None = None
+    splittable: bool | None = None
+    earliest: When | None = None
+    earliest_time: str | None = None
+    preferred_window: str | None = None
+    depends_on: list[str] = field(default_factory=list)
+    reminder_offsets: list[int] = field(default_factory=list)
+    clear: list[str] = field(default_factory=list)
+    confidence: float = 1.0
+
+
+@dataclass
+class Recur:
+    """Change a recurring series separately from its current occurrence."""
+
+    target: str
+    op: str  # skip | stop | anchor | end
+    anchor: str | None = None
+    end: When | None = None
+    count: int | None = None
     confidence: float = 1.0
 
 

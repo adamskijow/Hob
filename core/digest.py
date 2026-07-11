@@ -72,10 +72,24 @@ def priority_mark(item: Item) -> str:
 
 
 def marks(item: Item) -> str:
-    """All the inline badges for a list line: priority, tag, waiting."""
+    """Compact badges shared by lists, plans, and digests."""
     tag = f" [{item.tag}]" if item.tag else ""
     waiting = " [waiting]" if item.waiting_since else ""
-    return priority_mark(item) + tag + waiting
+    deadline = f" [deadline {item.deadline_date}]" if item.deadline_date else ""
+    duration = f" [{item.duration_minutes}m]" if item.duration_minutes else ""
+    fixed = " [fixed]" if item.schedule_kind == "fixed" else ""
+    parent = f" [subtask of {item.parent_id}]" if item.parent_id else ""
+    blocked = f" [after {','.join(item.depends_on)}]" if item.depends_on else ""
+    return (
+        priority_mark(item)
+        + tag
+        + waiting
+        + deadline
+        + duration
+        + fixed
+        + parent
+        + blocked
+    )
 
 
 def ordered_open(items: list[Item], today: str) -> list[Item]:

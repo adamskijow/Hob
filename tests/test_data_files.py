@@ -10,6 +10,7 @@ from adapters.data_files import (
     restore_database,
 )
 from adapters.store_sqlite import SqliteStore
+from core.models import RecurrenceRule
 from tests.test_store import make_item
 
 
@@ -34,13 +35,27 @@ def test_import_export_is_validated_and_atomic(tmp_path):
     current = tmp_path / "current.db"
     export = tmp_path / "hob.json"
     with SqliteStore(str(current)) as store:
-        store.add_item(make_item("a1", "portable task"))
+        portable = make_item("a1", "portable task")
+        portable.deadline_date = "2026-07-10"
+        portable.duration_minutes = 60
+        portable.depends_on = ["a9"]
+        portable.reminder_offsets = [30, 5]
+        portable.recurrence = RecurrenceRule(
+            frequency="week", weekdays=["fri"], anchor_date="2026-07-03"
+        )
+        store.add_item(portable)
         export.write_text(json.dumps(store.export_data()), encoding="utf-8")
 
     replacement = tmp_path / "replacement.db"
     import_export(str(export), str(replacement))
     with SqliteStore(str(replacement)) as store:
-        assert store.get_item("a1").task == "portable task"
+        imported = store.get_item("a1")
+        assert imported.task == "portable task"
+        assert imported.deadline_date == "2026-07-10"
+        assert imported.duration_minutes == 60
+        assert imported.depends_on == ["a9"]
+        assert imported.reminder_offsets == [30, 5]
+        assert imported.recurrence.weekdays == ["fri"]
 
     broken = tmp_path / "broken.json"
     broken.write_text('{"schema_version": 999}', encoding="utf-8")

@@ -144,8 +144,38 @@ CASES = [
          lambda p: cap_due(p) == "2026-07-01",  # today 06-29 + 2
          "fuzzy relative date (a couple days)"),
     Case("finish the taxes by end of the month",
-         lambda p: cap_due(p) == "2026-06-30",
-         "fuzzy month-end date"),
+         lambda p: kinds(p) == ["capture"]
+         and p.mutations[0].deadline_date == "2026-06-30",
+         "by-date becomes a hard deadline, not a do date"),
+    Case("draft the board report Friday; it is due Monday and takes three hours in two sessions",
+         lambda p: kinds(p) == ["capture"]
+         and p.mutations[0].due_date == "2026-07-03"
+         and p.mutations[0].deadline_date == "2026-07-06"
+         and p.mutations[0].duration_minutes == 180
+         and p.mutations[0].splittable is True,
+         "capture separates do date, deadline, duration, and splitting"),
+    Case("the audit is due Friday and takes 90 minutes",
+         lambda p: kinds(p) == ["schedule"]
+         and p.mutations[0].target == "a3"
+         and p.mutations[0].deadline_date == "2026-07-03"
+         and p.mutations[0].duration_minutes == 90,
+         "existing task gets deadline and effort without moving"),
+    Case("remind me an hour and 10 minutes before the pool call",
+         lambda p: kinds(p) == ["schedule"]
+         and p.mutations[0].target == "a2"
+         and p.mutations[0].reminder_offsets == [60, 10],
+         "task-specific multiple reminder offsets"),
+    Case("skip the next audit occurrence",
+         lambda p: kinds(p) == ["recur"]
+         and p.mutations[0].target == "a3"
+         and p.mutations[0].recur_op == "skip",
+         "recurring series skip is distinct from reschedule"),
+    Case("check the filters every 2 weeks after I finish, stop after 5 times",
+         lambda p: kinds(p) == ["capture"]
+         and p.mutations[0].recurrence is not None
+         and p.mutations[0].recurrence.get("anchor") == "completion"
+         and p.mutations[0].recurrence.get("count") == 5,
+         "structured completion-relative recurrence with count"),
     Case("for the wedding: book the caterer, order flowers",
          lambda p: kinds(p) == ["capture", "capture"]
          and all(m.tag == "wedding" for m in p.mutations),

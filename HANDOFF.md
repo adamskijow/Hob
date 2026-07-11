@@ -11,9 +11,10 @@ snapshot.
 - **Live and in daily use.** Runs as a `launchd` daemon on macOS, with
   [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive. Model:
   `qwen2.5:14b-instruct` (7b works; 14b is more reliable on dense messages).
-- **Released:** v0.4.0. Schema 8 adds a durable Telegram inbox and outbox; an
-  automatic verified backup is made before migrating a v7 database.
-- **Green:** `uv run pytest` (260 passing) and the real-model eval
+- **Released:** v0.5.0. Schema 9 adds scheduling constraints, structured
+  recurrence, dependencies/subtasks, and task-specific reminder offsets. A
+  verified backup is made before migrating v7 or v8 data.
+- **Green:** `uv run pytest` (272 passing) and the real-model eval
   (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m evals.interpreter_eval`,
   53/53).
 
@@ -38,6 +39,12 @@ user to resend, and delivers replies/digests/reminders through a deduplicated
 outbox. `status`, verified `restore`/`import`, macOS Keychain token management,
 app-data defaults outside the checkout, and released-schema migration fixtures
 complete the operational surface.
+
+The v0.5 temporal layer separates scheduled dates from hard deadlines and adds
+duration/confidence, fixed/flexible and splittable work, earliest starts,
+preferred windows, parents, dependency validation, and multiple reminders.
+Structured recurrence preserves fixed cadence across a moved occurrence and
+supports completion-relative schedules, end dates/counts, skips, and stops.
 
 ## How development goes here
 

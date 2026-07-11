@@ -434,6 +434,24 @@ def test_capture_label_and_date_from_intent_tail():
     assert plan.mutations[0].due_time == "21:00"
 
 
+def test_complex_temporal_capture_keeps_a_clean_task_label():
+    plan = reconcile(
+        [
+            Capture(
+                task="draft the board report Friday; it is due Monday and takes three hours",
+                raw="draft the board report Friday; it is due Monday and takes three hours",
+                when=When(kind="weekday", day="fri"),
+                duration_minutes=180,
+                splittable=True,
+            )
+        ],
+        ctx(message="draft the board report Friday; it is due Monday and takes three hours"),
+    )
+    assert plan.mutations[0].task == "draft the board report"
+    assert plan.mutations[0].due_date == "2026-07-03"
+    assert plan.mutations[0].deadline_date == "2026-07-06"
+
+
 def test_bulk_complete_with_exclusions():
     plan = reconcile(
         [Bulk(op="complete", scope="today", exclude=["a3"])],

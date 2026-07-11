@@ -3,7 +3,7 @@
 parsing. Seeded with a fixed today (Mon 2026-06-29)."""
 from datetime import date
 
-from core.dates import leading_date, parse_time, resolve_intent
+from core.dates import deadline_in_text, leading_date, parse_time, resolve_intent
 from core.models import When
 
 TODAY = date(2026, 6, 29)  # Monday
@@ -88,3 +88,11 @@ def test_parse_time():
     assert parse_time("noon") is None  # not a clock format we accept
     assert parse_time("25:00") is None
     assert parse_time(None) is None
+
+
+def test_literal_deadline_clause_isolated_from_do_date():
+    assert deadline_in_text(
+        "draft the report Friday; it is due Monday and takes three hours", TODAY
+    ) == "2026-07-06"
+    assert deadline_in_text("finish taxes by end of the month", TODAY) == "2026-06-30"
+    assert deadline_in_text("work on taxes Friday", TODAY) is None

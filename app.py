@@ -41,6 +41,7 @@ from core.models import (
     DigestItem,
     InterpreterContext,
     Item,
+    RecurrenceRule,
     Unknown,
 )
 from core.planner import Mutation, QueryIntent, SettingChange, reconcile
@@ -89,7 +90,9 @@ HELP = (
     'ask: "what\'s on today", "what\'s overdue", "what did i finish this week". '
     '/today shows today; /list shows every open item; /settings shows timing; '
     '/undo (or "scratch that") reverts your last change. ask "plan my day" or '
-    '"what should i do next?" for a short, reasoned plan.'
+    '"what should i do next?" for a short, reasoned plan. tell me deadlines, '
+    'effort, fixed times, dependencies, preferred windows, and reminder offsets '
+    'the same way: "the deck is due friday and takes 90 minutes".'
 )
 
 # meta key for the single user's chat id, learned from inbound messages.
@@ -388,6 +391,10 @@ class MessageService:
         ordered = ordered_open(self._store.open_items(), self._clock.today().isoformat())
         active = [
             {"id": i.id, "label": i.task, "due_date": i.due_date,
+             "deadline_date": i.deadline_date,
+             "duration_minutes": i.duration_minutes,
+             "schedule_kind": i.schedule_kind,
+             "depends_on": i.depends_on,
              "waiting": bool(i.waiting_since)}
             for i in ordered
         ]
@@ -651,6 +658,22 @@ class MessageService:
         self._save_focus(applied)
         return self._reply(applied, [], [])
 
+    def _dependency_cycle(self, item_id: str, dependencies: list[str]) -> bool:
+        """Reject direct and transitive dependency loops before persistence."""
+        stack = list(dependencies)
+        seen: set[str] = set()
+        while stack:
+            current = stack.pop()
+            if current == item_id:
+                return True
+            if current in seen:
+                continue
+            seen.add(current)
+            dependency = self._store.get_item(current)
+            if dependency is not None:
+                stack.extend(dependency.depends_on)
+        return False
+
     def _apply(
         self,
         mutations: list[Mutation],
@@ -684,6 +707,19 @@ class MessageService:
                     waiting_since=(
                         self._clock.today().isoformat() if m.waiting else None
                     ),
+                    deadline_date=m.deadline_date,
+                    duration_minutes=m.duration_minutes,
+                    duration_confidence=m.duration_confidence,
+                    schedule_kind=m.schedule_kind or "flexible",
+                    splittable=bool(m.splittable),
+                    earliest_start=m.earliest_start,
+                    preferred_window=m.preferred_window,
+                    parent_id=m.parent_id,
+                    depends_on=list(m.depends_on or []),
+                    reminder_offsets=list(m.reminder_offsets or []),
+                    recurrence=(
+                        RecurrenceRule(**m.recurrence) if m.recurrence else None
+                    ),
                 )
                 self._store.add_item(item)
                 entries.append(
@@ -704,16 +740,24 @@ class MessageService:
                 continue  # vanished between reconcile and apply; skip defensively
             before = _dump(item)
             if m.kind == "complete":
-                if item.repeat:
+                rule = item.recurrence or recurrence.parse(item.repeat)
+                if rule:
                     # A recurring task advances to its next occurrence rather
                     # than closing, so it reappears on the following matching day.
-                    base = self._clock.today()
-                    if item.due_date:
-                        base = max(base, date.fromisoformat(item.due_date))
-                    nxt = recurrence.next_due(item.repeat, base, inclusive=False)
+                    rule = recurrence.completed(rule)
+                    if rule.anchor == "completion":
+                        base = self._clock.today()
+                    else:
+                        base = self._clock.today()
+                        if item.due_date:
+                            base = max(base, date.fromisoformat(item.due_date))
+                    nxt = recurrence.next_due(rule, base, inclusive=False)
                     if nxt is not None:
                         item.due_date = nxt.isoformat()
                         item.reminded = False
+                        item.reminded_offsets = []
+                        item.recurrence = rule
+                        item.repeat = recurrence.to_legacy(rule)
                     else:
                         item.status = STATUS_DONE
                 else:
@@ -729,6 +773,7 @@ class MessageService:
                         # A bare "make it 4pm" on an undated task means today.
                         item.due_date = self._clock.today().isoformat()
                 item.reminded = False  # re-arm the reminder for the new time
+                item.reminded_offsets = []
             elif m.kind == "amend":
                 item.task = m.task  # the model supplied the full new label
             elif m.kind == "prioritize":
@@ -745,6 +790,93 @@ class MessageService:
                 item.waiting_since = None
             elif m.kind == "keep":
                 pass  # updated_at below records an explicit keep/review decision
+            elif m.kind == "schedule":
+                for field_name in m.clear:
+                    if field_name == "deadline":
+                        item.deadline_date = None
+                    elif field_name == "duration":
+                        item.duration_minutes = None
+                        item.duration_confidence = None
+                    elif field_name == "earliest":
+                        item.earliest_start = None
+                    elif field_name == "window":
+                        item.preferred_window = None
+                    elif field_name == "dependencies":
+                        item.depends_on = []
+                    elif field_name == "reminders":
+                        item.reminder_offsets = []
+                        item.reminded_offsets = []
+                if m.deadline_date is not None:
+                    item.deadline_date = m.deadline_date
+                if m.duration_minutes is not None:
+                    item.duration_minutes = m.duration_minutes
+                    item.duration_confidence = m.duration_confidence
+                if m.schedule_kind is not None:
+                    item.schedule_kind = m.schedule_kind
+                if m.splittable is not None:
+                    item.splittable = m.splittable
+                if m.earliest_start is not None:
+                    item.earliest_start = m.earliest_start
+                if m.preferred_window is not None:
+                    item.preferred_window = m.preferred_window
+                if m.depends_on is not None:
+                    if self._dependency_cycle(item.id, m.depends_on):
+                        applied.append(("constraint_error", item))
+                        continue
+                    item.depends_on = list(m.depends_on)
+                if m.reminder_offsets is not None:
+                    item.reminder_offsets = list(m.reminder_offsets)
+                    item.reminded_offsets = []
+                    item.reminded = False
+                if (
+                    item.deadline_date
+                    and item.due_date
+                    and item.due_date > item.deadline_date
+                ):
+                    applied.append(("constraint_error", item))
+                    continue
+                if (
+                    item.deadline_date
+                    and item.earliest_start
+                    and item.earliest_start[:10] > item.deadline_date
+                ):
+                    applied.append(("constraint_error", item))
+                    continue
+            elif m.kind == "recur":
+                rule = item.recurrence or recurrence.parse(item.repeat)
+                if m.recur_op == "stop":
+                    item.recurrence = None
+                    item.repeat = None
+                elif rule is None:
+                    applied.append(("constraint_error", item))
+                    continue
+                elif m.recur_op == "skip":
+                    occurrence = (
+                        date.fromisoformat(item.due_date)
+                        if item.due_date
+                        else self._clock.today()
+                    )
+                    rule = recurrence.with_exception(rule, occurrence)
+                    nxt = recurrence.next_due(rule, occurrence, inclusive=False)
+                    if nxt is None:
+                        item.status = STATUS_DONE
+                    else:
+                        item.due_date = nxt.isoformat()
+                        item.recurrence = rule
+                        item.repeat = recurrence.to_legacy(rule)
+                        item.reminded = False
+                        item.reminded_offsets = []
+                elif m.recur_op == "anchor":
+                    rule.anchor = m.recur_anchor or rule.anchor
+                    item.recurrence = rule
+                    item.repeat = recurrence.to_legacy(rule)
+                elif m.recur_op == "end":
+                    if m.recur_end_date:
+                        rule.end_date = m.recur_end_date
+                    if m.recur_count:
+                        rule.count = m.recur_count
+                    item.recurrence = rule
+                    item.repeat = recurrence.to_legacy(rule)
             item.updated_at = ts
             self._store.update_item(item)
             entries.append(
@@ -835,11 +967,21 @@ class MessageService:
         if q.kind == "all":
             items, title = ordered, "all open:"
         elif q.kind == "overdue":
-            items = [i for i in ordered if i.due_date and i.due_date < today]
+            items = [
+                i
+                for i in ordered
+                if (i.deadline_date and i.deadline_date < today)
+                or (i.due_date and i.due_date < today)
+            ]
             title = "overdue:"
         elif q.kind == "week":
             end = (self._clock.today() + timedelta(days=6)).isoformat()
-            items = [i for i in ordered if i.due_date and today <= i.due_date <= end]
+            items = [
+                i
+                for i in ordered
+                if (i.due_date and today <= i.due_date <= end)
+                or (i.deadline_date and today <= i.deadline_date <= end)
+            ]
             title = "this week:"
         elif q.kind == "search":
             term = (q.term or "").lower()
@@ -879,6 +1021,14 @@ class MessageService:
                     "task": i.task,
                     "due_date": i.due_date,
                     "due_time": i.due_time,
+                    "deadline_date": i.deadline_date,
+                    "duration_minutes": i.duration_minutes,
+                    "duration_confidence": i.duration_confidence,
+                    "schedule_kind": i.schedule_kind,
+                    "splittable": i.splittable,
+                    "earliest_start": i.earliest_start,
+                    "preferred_window": i.preferred_window,
+                    "depends_on": i.depends_on,
                     "priority": i.priority,
                     "tag": i.tag,
                     "note": i.note,
@@ -919,9 +1069,18 @@ class MessageService:
 
     def _answer_plan(self, constraint: str, open_items: list[Item]) -> str:
         """Generate a short read-only plan; ids are validated before rendering."""
-        on_deck = select_digest_items(open_items, self._clock.today().isoformat())
+        open_ids = {item.id for item in open_items}
+        now_iso = self._clock.now().strftime("%Y-%m-%dT%H:%M")
+        on_deck = [
+            item
+            for item in select_digest_items(
+                open_items, self._clock.today().isoformat()
+            )
+            if not any(dependency in open_ids for dependency in item.depends_on)
+            and (not item.earliest_start or item.earliest_start <= now_iso)
+        ]
         if not on_deck:
-            return "plan: nothing on deck. enjoy the breathing room."
+            return "plan: nothing actionable on deck; remaining work is blocked or not ready yet."
         fallback = on_deck[:3]
         try:
             out = self._llm.complete_json(
@@ -990,6 +1149,22 @@ class MessageService:
                 line += " (waiting)"
             if it.note:
                 line += f" ({it.note})"
+            if it.deadline_date:
+                line += f" (deadline {it.deadline_date})"
+            if it.duration_minutes:
+                hours, minutes = divmod(it.duration_minutes, 60)
+                effort = (
+                    f"{hours}h {minutes}m" if hours and minutes
+                    else f"{hours}h" if hours
+                    else f"{minutes}m"
+                )
+                line += f" ({effort})"
+            if it.schedule_kind == "fixed":
+                line += " (fixed)"
+            if it.splittable:
+                line += " (splittable)"
+            if it.preferred_window:
+                line += f" (prefer {it.preferred_window})"
             return line
 
         # Always restate what was captured, with its timing, not a bare "got it".
@@ -1036,6 +1211,44 @@ class MessageService:
                 parts.append(f'back on: "{item.task}"')
             elif kind == "keep":
                 parts.append(f'keeping: "{item.task}". i will check again later.')
+            elif kind == "schedule":
+                details = []
+                if item.deadline_date:
+                    details.append(f"deadline {item.deadline_date}")
+                if item.duration_minutes:
+                    details.append(f"{item.duration_minutes} minutes")
+                if item.schedule_kind == "fixed":
+                    details.append("fixed")
+                if item.splittable:
+                    details.append("splittable")
+                if item.earliest_start:
+                    details.append(f"starts after {item.earliest_start}")
+                if item.preferred_window:
+                    details.append(f"prefer {item.preferred_window}")
+                if item.depends_on:
+                    details.append("depends on " + ", ".join(item.depends_on))
+                if item.reminder_offsets:
+                    details.append(
+                        "reminders " + ", ".join(
+                            f"{offset}m before" for offset in item.reminder_offsets
+                        )
+                    )
+                parts.append(
+                    f'updated schedule for "{item.task}": '
+                    + (", ".join(details) if details else "constraints cleared")
+                )
+            elif kind == "recur":
+                if item.recurrence or item.repeat:
+                    parts.append(
+                        f'updated series for "{item.task}": '
+                        f"{recurrence.describe(item.recurrence or item.repeat)}"
+                    )
+                else:
+                    parts.append(f'stopped repeating "{item.task}" after this one')
+            elif kind == "constraint_error":
+                parts.append(
+                    f'i did not change "{item.task}": its dates or dependencies conflict.'
+                )
         parts.extend(questions)
         parts.extend(answers)
         return "\n".join(parts) if parts else "ok"
@@ -1203,6 +1416,66 @@ class ReminderService:
             self._store.mark_reminded(item.id)
             # Remember which item this ping was about, so a Telegram reply to it
             # ("done", "snooze 20") anchors to the item with no guessing.
+            if isinstance(sent_id, int):
+                self._store.record_sent_ref(sent_id, item.id)
+
+        # Tasks with explicit offsets own their reminder cadence instead of using
+        # the global lead. If sleep caused several offsets to pass, send only the
+        # latest relevant one and mark the older missed offsets so wake-up is calm.
+        current = self._clock.now()
+        for item in self._store.open_items():
+            if (
+                not item.reminder_offsets
+                or item.waiting_since
+                or not item.due_date
+                or not item.due_time
+            ):
+                continue
+            if item.snooze_until:
+                snooze_at = datetime.fromisoformat(item.snooze_until).replace(
+                    tzinfo=current.tzinfo
+                )
+                if snooze_at > current:
+                    continue
+                chosen = -1
+                due_offsets: list[int] = []
+                text = f'reminder (snoozed): "{item.task}" at {item.due_time}'
+            else:
+                due_at = datetime.fromisoformat(
+                    f"{item.due_date}T{item.due_time}"
+                ).replace(tzinfo=current.tzinfo)
+                if due_at < current - self._grace:
+                    continue
+                due_offsets = [
+                    offset
+                    for offset in item.reminder_offsets
+                    if offset not in item.reminded_offsets
+                    and due_at - timedelta(minutes=offset) <= current
+                ]
+                if not due_offsets:
+                    continue
+                chosen = min(due_offsets)
+                text = f'reminder: "{item.task}" at {item.due_time}'
+            if item.note:
+                text += f" ({item.note})"
+            try:
+                sent_id = await self._send(
+                    int(chat),
+                    text,
+                    item.id,
+                    dedupe_key=(
+                        f"reminder:{item.id}:{item.due_date}T{item.due_time}:"
+                        f"offset:{chosen}:{item.updated_at}"
+                    ),
+                )
+            except TypeError:
+                sent_id = await self._send(int(chat), text)
+            if chosen == -1:
+                item.snooze_until = None
+                self._store.update_item(item)
+            else:
+                for offset in due_offsets:
+                    self._store.mark_reminded(item.id, offset)
             if isinstance(sent_id, int):
                 self._store.record_sent_ref(sent_id, item.id)
 

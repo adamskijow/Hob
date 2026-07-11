@@ -11,10 +11,12 @@ import json
 import sqlite3
 import threading
 from contextlib import contextmanager
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+from core import recurrence
 from core.models import (
     STATUS_DONE,
     STATUS_OPEN,
@@ -24,9 +26,10 @@ from core.models import (
     InboxEntry,
     Item,
     OutboxEntry,
+    RecurrenceRule,
 )
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS items (
@@ -68,7 +71,9 @@ CREATE TABLE IF NOT EXISTS meta (
 _ITEM_COLS = (
     "id, raw_text, task, due_date, due_time, status, source, created_at, "
     "updated_at, reminded, repeat, priority, tag, snooze_until, note, "
-    "waiting_since"
+    "waiting_since, deadline_date, duration_minutes, duration_confidence, "
+    "schedule_kind, splittable, earliest_start, preferred_window, parent_id, "
+    "depends_on_json, reminder_offsets_json, reminded_offsets_json, recurrence_json"
 )
 
 _DELIVERY_DDL = """
@@ -171,6 +176,34 @@ class SqliteStore:
             # A committed inbox prevents Telegram offset advancement from losing
             # a message; an outbox prevents applied state from losing its reply.
             self._conn.executescript(_DELIVERY_DDL)
+        if version < 9:
+            # Planning constraints: scheduled date remains due_date for backward
+            # compatibility; deadline and effort are separate, typed fields.
+            for statement in (
+                "ALTER TABLE items ADD COLUMN deadline_date TEXT",
+                "ALTER TABLE items ADD COLUMN duration_minutes INTEGER",
+                "ALTER TABLE items ADD COLUMN duration_confidence REAL",
+                "ALTER TABLE items ADD COLUMN schedule_kind TEXT NOT NULL DEFAULT 'flexible'",
+                "ALTER TABLE items ADD COLUMN splittable INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE items ADD COLUMN earliest_start TEXT",
+                "ALTER TABLE items ADD COLUMN preferred_window TEXT",
+                "ALTER TABLE items ADD COLUMN parent_id TEXT",
+                "ALTER TABLE items ADD COLUMN depends_on_json TEXT NOT NULL DEFAULT '[]'",
+                "ALTER TABLE items ADD COLUMN reminder_offsets_json TEXT NOT NULL DEFAULT '[]'",
+                "ALTER TABLE items ADD COLUMN reminded_offsets_json TEXT NOT NULL DEFAULT '[]'",
+                "ALTER TABLE items ADD COLUMN recurrence_json TEXT",
+            ):
+                self._conn.execute(statement)
+            rows = self._conn.execute(
+                "SELECT id, repeat FROM items WHERE repeat IS NOT NULL"
+            ).fetchall()
+            for row in rows:
+                structured = recurrence.parse(row["repeat"])
+                if structured is not None:
+                    self._conn.execute(
+                        "UPDATE items SET recurrence_json = ? WHERE id = ?",
+                        (json.dumps(asdict(structured)), row["id"]),
+                    )
         self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self._conn.commit()
 
@@ -230,25 +263,9 @@ class SqliteStore:
     def add_item(self, item: Item) -> None:
         with self._lock:
             self._conn.execute(
-                f"INSERT INTO items ({_ITEM_COLS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    item.id,
-                    item.raw_text,
-                    item.task,
-                    item.due_date,
-                    item.due_time,
-                    item.status,
-                    item.source,
-                    item.created_at,
-                    item.updated_at,
-                    int(item.reminded),
-                    item.repeat,
-                    item.priority,
-                    item.tag,
-                    item.snooze_until,
-                    item.note,
-                    item.waiting_since,
-                ),
+                f"INSERT INTO items ({_ITEM_COLS}) VALUES "
+                f"({','.join('?' for _ in range(28))})",
+                self._item_values(item),
             )
             self._commit()
 
@@ -264,25 +281,12 @@ class SqliteStore:
                 "UPDATE items SET raw_text=?, task=?, due_date=?, due_time=?, "
                 "status=?, source=?, created_at=?, updated_at=?, reminded=?, "
                 "repeat=?, priority=?, tag=?, snooze_until=?, note=?, "
-                "waiting_since=? WHERE id=?",
-                (
-                    item.raw_text,
-                    item.task,
-                    item.due_date,
-                    item.due_time,
-                    item.status,
-                    item.source,
-                    item.created_at,
-                    item.updated_at,
-                    int(item.reminded),
-                    item.repeat,
-                    item.priority,
-                    item.tag,
-                    item.snooze_until,
-                    item.note,
-                    item.waiting_since,
-                    item.id,
-                ),
+                "waiting_since=?, deadline_date=?, duration_minutes=?, "
+                "duration_confidence=?, schedule_kind=?, splittable=?, "
+                "earliest_start=?, preferred_window=?, parent_id=?, "
+                "depends_on_json=?, reminder_offsets_json=?, reminded_offsets_json=?, "
+                "recurrence_json=? WHERE id=?",
+                self._item_values(item)[1:] + (item.id,),
             )
             self._commit()
 
@@ -313,6 +317,7 @@ class SqliteStore:
         rows = self._conn.execute(
             f"SELECT {_ITEM_COLS} FROM items WHERE status = ? "
             "AND due_date IS NOT NULL AND due_time IS NOT NULL AND reminded = 0 "
+            "AND reminder_offsets_json = '[]' "
             "AND waiting_since IS NULL "  # parked on someone else: no pings
             "AND ((snooze_until IS NULL AND (due_date || 'T' || due_time) BETWEEN ? AND ?) "
             "     OR (snooze_until IS NOT NULL AND snooze_until BETWEEN ? AND ?)) "
@@ -348,11 +353,23 @@ class SqliteStore:
         ).fetchall()
         return [self._row_to_item(r) for r in rows]
 
-    def mark_reminded(self, item_id: str) -> None:
+    def mark_reminded(self, item_id: str, offset: int | None = None) -> None:
         with self._lock:
-            self._conn.execute(
-                "UPDATE items SET reminded = 1 WHERE id = ?", (item_id,)
-            )
+            if offset is None:
+                self._conn.execute(
+                    "UPDATE items SET reminded = 1 WHERE id = ?", (item_id,)
+                )
+            else:
+                item = self.get_item(item_id)
+                if item is None:
+                    return
+                item.reminded_offsets = sorted(
+                    set(item.reminded_offsets + [offset]), reverse=True
+                )
+                item.reminded = all(
+                    value in item.reminded_offsets for value in item.reminder_offsets
+                )
+                self.update_item(item)
             self._commit()
 
     # action log ------------------------------------------------------------
@@ -720,7 +737,47 @@ class SqliteStore:
 
     # helpers ---------------------------------------------------------------
     @staticmethod
+    def _item_values(item: Item) -> tuple:
+        structured = item.recurrence or recurrence.parse(item.repeat)
+        legacy = recurrence.to_legacy(structured) if structured else item.repeat
+        return (
+            item.id,
+            item.raw_text,
+            item.task,
+            item.due_date,
+            item.due_time,
+            item.status,
+            item.source,
+            item.created_at,
+            item.updated_at,
+            int(item.reminded),
+            legacy,
+            item.priority,
+            item.tag,
+            item.snooze_until,
+            item.note,
+            item.waiting_since,
+            item.deadline_date,
+            item.duration_minutes,
+            item.duration_confidence,
+            item.schedule_kind,
+            int(item.splittable),
+            item.earliest_start,
+            item.preferred_window,
+            item.parent_id,
+            json.dumps(item.depends_on),
+            json.dumps(item.reminder_offsets),
+            json.dumps(item.reminded_offsets),
+            json.dumps(asdict(structured)) if structured else None,
+        )
+
+    @staticmethod
     def _row_to_item(row: sqlite3.Row) -> Item:
+        structured = (
+            json.loads(row["recurrence_json"])
+            if row["recurrence_json"]
+            else None
+        )
         return Item(
             id=row["id"],
             raw_text=row["raw_text"],
@@ -738,6 +795,18 @@ class SqliteStore:
             snooze_until=row["snooze_until"],
             note=row["note"],
             waiting_since=row["waiting_since"],
+            deadline_date=row["deadline_date"],
+            duration_minutes=row["duration_minutes"],
+            duration_confidence=row["duration_confidence"],
+            schedule_kind=row["schedule_kind"],
+            splittable=bool(row["splittable"]),
+            earliest_start=row["earliest_start"],
+            preferred_window=row["preferred_window"],
+            parent_id=row["parent_id"],
+            depends_on=json.loads(row["depends_on_json"] or "[]"),
+            reminder_offsets=json.loads(row["reminder_offsets_json"] or "[]"),
+            reminded_offsets=json.loads(row["reminded_offsets_json"] or "[]"),
+            recurrence=RecurrenceRule(**structured) if structured else None,
         )
 
     @staticmethod

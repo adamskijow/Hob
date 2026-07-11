@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import difflib
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import date, timedelta
 
 from core import dates, recurrence
@@ -33,8 +33,10 @@ from core.models import (
     Note,
     Prioritize,
     Query,
+    Recur,
     Reschedule,
     Resume,
+    Schedule,
     Setting,
     Snooze,
     Undo,
@@ -66,6 +68,22 @@ class Mutation:
     minutes: int | None = None  # snooze length
     note: str | None = None  # note text (kind=note, or a capture's initial note)
     waiting: bool = False  # capture starts parked on someone else
+    deadline_date: str | None = None
+    duration_minutes: int | None = None
+    duration_confidence: float | None = None
+    schedule_kind: str | None = None
+    splittable: bool | None = None
+    earliest_start: str | None = None
+    preferred_window: str | None = None
+    parent_id: str | None = None
+    depends_on: list[str] | None = None
+    reminder_offsets: list[int] | None = None
+    recurrence: dict | None = None
+    clear: list[str] = field(default_factory=list)
+    recur_op: str | None = None
+    recur_anchor: str | None = None
+    recur_end_date: str | None = None
+    recur_count: int | None = None
 
 
 @dataclass
@@ -375,6 +393,88 @@ def _clean_label(task: str | None) -> str | None:
     return task
 
 
+def _clean_temporal_label(action: Capture) -> str | None:
+    """Trim constraint clauses a model occasionally leaves in a capture label."""
+    label = _clean_label(action.task)
+    if not label:
+        return label
+    if ";" in label:
+        label = label.split(";", 1)[0].strip()
+    if action.repeat:
+        label = re.split(
+            r"\s+(?:every\s+\d+|every\s+(?:day|week|month|year|mon|tue|wed|thu|fri|sat|sun)|daily|weekdays)\b",
+            label,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip()
+    if action.deadline:
+        label = re.split(
+            r"\s+(?:due|by|before|no later than)\b",
+            label,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip()
+    if action.duration_minutes:
+        label = re.split(
+            r"\s+(?:and\s+)?takes?\b",
+            label,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip()
+    if action.when:
+        label = re.sub(
+            r"\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow)$",
+            "",
+            label,
+            flags=re.IGNORECASE,
+        ).strip()
+    return label or _clean_label(action.task)
+
+
+_WINDOWS = {"morning", "afternoon", "evening"}
+_CLOCK_WINDOW = re.compile(r"^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$")
+_CLEARABLE = {"deadline", "duration", "earliest", "window", "dependencies", "reminders"}
+_DEADLINE_CUE = re.compile(
+    r"\b(by|before|deadline|due|due by|no later than)\b", re.IGNORECASE
+)
+
+
+def _window(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = value.strip().lower()
+    return normalized if normalized in _WINDOWS or _CLOCK_WINDOW.match(normalized) else None
+
+
+def _offsets(values: list[int]) -> list[int]:
+    return sorted({value for value in values if 0 <= value <= 7 * 24 * 60}, reverse=True)
+
+
+def _resolve_refs(refs: list[str], active: dict, by_pos: dict) -> tuple[list[str], bool]:
+    resolved: list[str] = []
+    missing = False
+    for ref in refs:
+        target = _resolve_ref(ref, active, by_pos)
+        if target is None:
+            missing = True
+        elif target not in resolved:
+            resolved.append(target)
+    return resolved, missing
+
+
+def _start_value(when, raw_time: str | None, today: date) -> tuple[str | None, bool]:
+    resolution = dates.resolve_intent(when, today)
+    parsed_time = dates.parse_time(raw_time)
+    if resolution.ambiguous:
+        return None, True
+    start_date = resolution.date
+    if parsed_time and start_date is None:
+        start_date = today.isoformat()
+    if start_date and parsed_time:
+        return f"{start_date}T{parsed_time}", False
+    return start_date, False
+
+
 def _reconcile_capture(
     action: Capture,
     today: date,
@@ -389,6 +489,23 @@ def _reconcile_capture(
     if resolution.date is None and not resolution.ambiguous and shared_date is not None:
         # A leading date shared across a multi-task message (computed above).
         resolution = dates.DateResolution(date=shared_date)
+
+    deadline = dates.resolve_intent(action.deadline, today)
+    literal_deadline = dates.deadline_in_text(message, today)
+    if literal_deadline:
+        deadline = dates.DateResolution(date=literal_deadline)
+        if resolution.date == literal_deadline:
+            resolution = dates.DateResolution()
+    if (
+        solo
+        and not literal_deadline
+        and deadline.date is None
+        and not deadline.ambiguous
+        and resolution.date is not None
+        and _DEADLINE_CUE.search(message)
+    ):
+        deadline = resolution
+        resolution = dates.DateResolution()
 
     if resolution.ambiguous:
         question = f'when is "{action.task}" due? the date was not clear.'
@@ -406,11 +523,60 @@ def _reconcile_capture(
         due_date = active_due.get(rid) if rid else None
 
     repeat = recurrence.normalize(action.repeat)
-    if repeat is not None:
+    if deadline.ambiguous:
+        plan.questions.append(f'what is the hard deadline for "{action.task}"?')
+        return
+    earliest_start, earliest_ambiguous = _start_value(
+        action.earliest, action.earliest_time, today
+    )
+    if earliest_ambiguous:
+        plan.questions.append(f'when can "{action.task}" start?')
+        return
+    if deadline.date and due_date and due_date > deadline.date:
+        plan.questions.append(
+            f'the planned date for "{action.task}" is after its deadline. which date should change?'
+        )
+        return
+    if deadline.date and earliest_start and earliest_start[:10] > deadline.date:
+        plan.questions.append(
+            f'"{action.task}" cannot start after its deadline. which constraint should change?'
+        )
+        return
+    parent_id = _resolve_ref(action.parent, active_due, by_pos) if action.parent else None
+    if action.parent and parent_id is None:
+        plan.questions.append("i could not find the parent task. check /list and try again.")
+        return
+    dependencies, missing_dependency = _resolve_refs(
+        action.depends_on, active_due, by_pos
+    )
+    if missing_dependency:
+        plan.questions.append("i could not find one dependency. check /list and try again.")
+        return
+    repeat_end = dates.resolve_intent(action.repeat_end, today)
+    if repeat_end.ambiguous and not action.repeat_count:
+        plan.questions.append(f'when should "{action.task}" stop repeating?')
+        return
+    if repeat_end.ambiguous:
+        repeat_end = dates.DateResolution()
+    repeat_anchor = action.repeat_anchor
+    if re.search(
+        r"\b(after (i |it is |it was )?(finish|finished|complete|completed)|after completion)\b",
+        message,
+        re.IGNORECASE,
+    ):
+        repeat_anchor = "completion"
+    structured = recurrence.parse(
+        repeat,
+        anchor=repeat_anchor,
+        end_date=repeat_end.date,
+        count=action.repeat_count,
+    )
+    if structured is not None:
         # A recurring task's date is its next occurrence, decided by the rule.
-        first = recurrence.next_due(repeat, today, inclusive=True)
+        first = recurrence.next_due(structured, today, inclusive=True)
         if first is not None:
             due_date = first.isoformat()
+            structured.anchor_date = first.isoformat()
     elif solo:
         # Deterministic backstop: a day word in the message wins over a
         # misclassified intent ("taxes monday" read as tomorrow). Lone captures
@@ -425,7 +591,7 @@ def _reconcile_capture(
 
     mutation = Mutation(
         kind="capture",
-        task=_clean_label(action.task),
+        task=_clean_temporal_label(action),
         raw=action.raw,
         due_date=due_date,
         due_time=due_time,
@@ -434,6 +600,27 @@ def _reconcile_capture(
         tag=action.tag,
         note=action.note,
         waiting=action.waiting,
+        deadline_date=deadline.date,
+        duration_minutes=(
+            action.duration_minutes
+            if action.duration_minutes and 1 <= action.duration_minutes <= 10080
+            else None
+        ),
+        duration_confidence=(
+            max(0.0, min(1.0, action.duration_confidence or 1.0))
+            if action.duration_minutes
+            else None
+        ),
+        schedule_kind=(
+            "fixed" if action.schedule_kind == "fixed" else "flexible"
+        ),
+        splittable=bool(action.splittable),
+        earliest_start=earliest_start,
+        preferred_window=_window(action.preferred_window),
+        parent_id=parent_id,
+        depends_on=dependencies,
+        reminder_offsets=_offsets(action.reminder_offsets),
+        recurrence=asdict(structured) if structured else None,
     )
     years = _too_far(due_date, today) if due_date else None
     if years is not None:
@@ -494,6 +681,135 @@ def _reconcile_prioritize(
         return
     level = action.level if action.level in ("high", "normal", "low") else "normal"
     plan.mutations.append(Mutation(kind="prioritize", target=target, priority=level))
+
+
+def _reconcile_schedule(
+    action: Schedule,
+    today: date,
+    active: dict,
+    by_pos: dict,
+    message: str,
+    plan: Plan,
+) -> None:
+    target = _check_target(
+        action.target,
+        action.confidence,
+        active,
+        by_pos,
+        plan,
+        proposed=Mutation(kind="schedule"),
+        verb="change its scheduling constraints",
+    )
+    if target is None:
+        return
+    deadline = dates.resolve_intent(action.deadline, today)
+    literal_deadline = dates.deadline_in_text(message, today)
+    if literal_deadline:
+        deadline = dates.DateResolution(date=literal_deadline)
+    else:
+        corrected = dates.named_day_correction(message, deadline.date, today)
+        if corrected is not None:
+            deadline = dates.DateResolution(date=corrected)
+    if deadline.ambiguous:
+        plan.questions.append(f'what is the hard deadline for "{active[target]}"?')
+        return
+    earliest_start, ambiguous = _start_value(
+        action.earliest, action.earliest_time, today
+    )
+    if ambiguous:
+        plan.questions.append(f'when can "{active[target]}" start?')
+        return
+    dependencies, missing = _resolve_refs(action.depends_on, active, by_pos)
+    if missing:
+        plan.questions.append("i could not find one dependency. check /list and try again.")
+        return
+    dependencies = [item_id for item_id in dependencies if item_id != target]
+    clear = [name for name in action.clear if name in _CLEARABLE]
+    mutation = Mutation(
+        kind="schedule",
+        target=target,
+        deadline_date=deadline.date,
+        duration_minutes=(
+            action.duration_minutes
+            if action.duration_minutes and 1 <= action.duration_minutes <= 10080
+            else None
+        ),
+        duration_confidence=(
+            max(0.0, min(1.0, action.duration_confidence or 1.0))
+            if action.duration_minutes
+            else None
+        ),
+        schedule_kind=(
+            action.schedule_kind
+            if action.schedule_kind in ("fixed", "flexible")
+            else None
+        ),
+        splittable=action.splittable,
+        earliest_start=earliest_start,
+        preferred_window=_window(action.preferred_window),
+        depends_on=dependencies if action.depends_on else None,
+        reminder_offsets=(
+            _offsets(action.reminder_offsets) if action.reminder_offsets else None
+        ),
+        clear=clear,
+    )
+    changed = any(
+        value is not None
+        for value in (
+            mutation.deadline_date,
+            mutation.duration_minutes,
+            mutation.schedule_kind,
+            mutation.splittable,
+            mutation.earliest_start,
+            mutation.preferred_window,
+            mutation.depends_on,
+            mutation.reminder_offsets,
+        )
+    ) or bool(clear)
+    if not changed:
+        plan.questions.append("which deadline, duration, window, dependency, or reminder should change?")
+        return
+    years = _too_far(deadline.date, today) if deadline.date else None
+    if years is not None:
+        _hold(
+            plan,
+            mutation,
+            f'that deadline is {deadline.date}, about {years} years out. reply yes to keep it.',
+        )
+        return
+    plan.mutations.append(mutation)
+
+
+def _reconcile_recur(
+    action: Recur, today: date, active: dict, by_pos: dict, plan: Plan
+) -> None:
+    target = _check_target(
+        action.target,
+        action.confidence,
+        active,
+        by_pos,
+        plan,
+        proposed=Mutation(kind="recur", recur_op=action.op),
+        verb="change that recurring series",
+    )
+    if target is None:
+        return
+    end = dates.resolve_intent(action.end, today)
+    if end.ambiguous:
+        plan.questions.append(f'when should "{active[target]}" stop repeating?')
+        return
+    plan.mutations.append(
+        Mutation(
+            kind="recur",
+            target=target,
+            recur_op=action.op,
+            recur_anchor=(
+                action.anchor if action.anchor in ("fixed", "completion") else None
+            ),
+            recur_end_date=end.date,
+            recur_count=action.count if action.count and action.count > 0 else None,
+        )
+    )
 
 
 _TODAY_WORDS = ("today", "tonight", "this morning", "this afternoon", "this evening", "now")
@@ -768,6 +1084,17 @@ def _fix_everything_but(actions: list, ctx) -> list:
 def reconcile(actions: list, ctx) -> Plan:
     today = date.fromisoformat(ctx.today)
     actions = _fix_everything_but(actions, ctx)
+    if re.search(
+        r"\b(waiting on|blocked on|cannot start until|can't start until)\b",
+        ctx.message,
+        re.IGNORECASE,
+    ):
+        actions = [
+            Wait(target=action.target, confidence=action.confidence)
+            if isinstance(action, Note)
+            else action
+            for action in actions
+        ]
     active = {i["id"]: i.get("label", "") for i in ctx.active_items}
     plan = Plan()
     captures = [a for a in actions if isinstance(a, Capture)]
@@ -794,6 +1121,10 @@ def reconcile(actions: list, ctx) -> Plan:
             _reconcile_amend(action, active, by_pos, plan)
         elif isinstance(action, Prioritize):
             _reconcile_prioritize(action, active, by_pos, plan)
+        elif isinstance(action, Schedule):
+            _reconcile_schedule(action, today, active, by_pos, ctx.message, plan)
+        elif isinstance(action, Recur):
+            _reconcile_recur(action, today, active, by_pos, plan)
         elif isinstance(action, Setting):
             _reconcile_setting(action, plan)
         elif isinstance(action, Complete):
