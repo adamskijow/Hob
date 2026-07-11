@@ -9,7 +9,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app import MessageService
-from core.models import Item
+from core.models import Item, PlanRun, PlanSession
 from adapters.store_sqlite import SqliteStore
 from adapters.telegram_bot import InboundMessage
 from tests.fakes import FakeClock, FakeLlm
@@ -1188,3 +1188,65 @@ def test_query_today_lists_items():
 
     assert "today:" in out
     assert "1: review SR audit" in out  # overdue rolls in first
+
+
+def test_status_reports_execution_evidence_without_private_text(
+    tmp_path, monkeypatch, capsys
+):
+    from types import SimpleNamespace
+
+    import app
+
+    db = tmp_path / "hob.db"
+    with SqliteStore(str(db)) as store:
+        store.add_item(Item(
+            id="a1",
+            raw_text="secret task label",
+            task="secret task label",
+            due_date=None,
+            due_time=None,
+            status="open",
+            source="capture",
+            created_at="2026-07-11T08:00:00",
+            updated_at="2026-07-11T08:00:00",
+        ))
+        store.save_plan_run(
+            PlanRun(
+                "p1", "2026-07-11", "proposed", "private constraint",
+                "2026-07-11T08:00:00",
+            ),
+            [PlanSession(
+                "p1:s1", "p1", "a1", "secret task label",
+                "2026-07-11T09:00:00", "2026-07-11T09:30:00",
+            )],
+        )
+        store.adopt_plan("p1", "2026-07-11T08:05:00")
+        store.set_meta("first_plan_adopted_at", "2026-07-11T08:05:00")
+    cfg = SimpleNamespace(
+        db_path=str(db),
+        telegram_token_source="test",
+        allowed_telegram_user_id=None,
+        work_start="09:00",
+        work_end="17:30",
+        work_days=(0, 1, 2, 3, 4),
+        default_duration_minutes=30,
+        transition_buffer_minutes=0,
+        model="test-model",
+        ollama_host="http://localhost:11434",
+        calendar_bridge="",
+        calendar_enabled=False,
+    )
+    monkeypatch.setattr(app, "_model_ready", lambda llm, model: True)
+    monkeypatch.setattr(
+        app,
+        "EventKitCalendar",
+        lambda *args: SimpleNamespace(
+            status=lambda: SimpleNamespace(status="disabled")
+        ),
+    )
+
+    assert app._status(cfg) == 0
+    output = capsys.readouterr().out
+    assert "first_plan=yes adopted_runs=1" in output
+    assert "runs=active:1" in output and "states=planned:1" in output
+    assert "secret" not in output and "private constraint" not in output

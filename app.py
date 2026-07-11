@@ -2675,6 +2675,26 @@ def _status(cfg: Config) -> int:
             print(
                 f"  INFO execution: active={active_label} proposal={proposal_label}"
             )
+            metrics = store.execution_metrics()
+
+            def counts(values: dict) -> str:
+                return ",".join(
+                    f"{key}:{values[key]}" for key in sorted(values)
+                ) or "none"
+
+            print(
+                "  INFO adoption: "
+                f"first_plan={'yes' if store.get_meta(FIRST_PLAN_ADOPTED_KEY) else 'no'} "
+                f"adopted_runs={metrics['adopted_runs']} "
+                f"latest={metrics['latest_adopted_at'] or 'never'} "
+                f"runs={counts(metrics['runs'])}"
+            )
+            print(
+                "  INFO sessions: "
+                f"states={counts(metrics['sessions'])} "
+                f"notified={metrics['notified_sessions']} "
+                f"nudge_delivery={counts(metrics['nudge_delivery'])}"
+            )
             ok = ok and healthy
     except Exception as exc:  # noqa: BLE001
         print(f"  FAIL database: {exc}")

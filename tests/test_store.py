@@ -356,3 +356,39 @@ def test_outbox_dedupe_and_delivery_state():
     sent = s.outbound_for_key("digest:today")
     assert sent.status == "sent"
     assert sent.telegram_message_id == 99
+
+
+def test_execution_metrics_are_privacy_safe_and_track_adoption_and_nudges():
+    s = mem()
+    s.add_item(make_item("a1", "secret task label"))
+    run = PlanRun(
+        "p1", "2026-07-11", "proposed", "private constraint",
+        "2026-07-11T08:00:00",
+    )
+    session = PlanSession(
+        "p1:s1", "p1", "a1", "secret task label",
+        "2026-07-11T09:00:00", "2026-07-11T09:30:00",
+    )
+    s.save_plan_run(run, [session])
+    s.adopt_plan("p1", "2026-07-11T08:05:00")
+    s.mark_plan_session_notified("p1:s1", "2026-07-11T09:00:00")
+    outbound = s.enqueue_outbound(
+        "plan-session:p1:s1:2026-07-11T09:00:00",
+        1,
+        "message",
+        "private nudge text",
+        "2026-07-11T09:00:00",
+    )
+    s.mark_outbound_sent(outbound.id, "2026-07-11T09:00:01", 7)
+
+    metrics = s.execution_metrics()
+
+    assert metrics == {
+        "runs": {"active": 1},
+        "sessions": {"planned": 1},
+        "adopted_runs": 1,
+        "latest_adopted_at": "2026-07-11T08:05:00",
+        "notified_sessions": 1,
+        "nudge_delivery": {"sent": 1},
+    }
+    assert "secret" not in repr(metrics) and "private" not in repr(metrics)

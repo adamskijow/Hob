@@ -125,6 +125,9 @@ class Store(Protocol):
     def mark_plan_session_notified(self, session_id: str, notified_at: str) -> None:
         ...
 
+    def execution_metrics(self) -> dict:
+        ...
+
     # action log (append-only, powers /undo)
     def next_batch_id(self) -> str:
         ...

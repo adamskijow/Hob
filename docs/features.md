@@ -199,7 +199,10 @@ refuse to guess until `HOB_DB_PATH` explicitly selects one.
 The Telegram token can live in macOS Keychain (`python app.py token set`) rather
 than plaintext deployment configuration. `python app.py status` reports local
 database, queue, pairing, digest, and model health without exposing task text or
-secrets. Verified `restore` and `import` commands safety-backup current data
+secrets. It also reports aggregate plan-run and session states, the latest
+adoption timestamp, and plan-nudge delivery counts, so activation can be
+verified without printing task labels, constraints, or message bodies. Verified
+`restore` and `import` commands safety-backup current data
 before an atomic replacement.
 
 Every Telegram update is durable before its polling offset advances. One user

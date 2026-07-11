@@ -117,3 +117,8 @@ uv run --directory /path/to/hob python app.py restore /safe/hob.db
 uv run --directory /path/to/hob python app.py import /safe/hob.json
 uv run --directory /path/to/hob python app.py status
 ```
+
+Status is safe to retain in operational logs: execution activation is reported
+only as aggregate run/session state counts, adoption time, and plan-nudge
+delivery counts. It does not print task labels, plan constraints, message text,
+Telegram message identifiers, or secrets.
