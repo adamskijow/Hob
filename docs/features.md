@@ -176,6 +176,16 @@ days, and reports deadline risk, leftovers, conflicts, and default-estimate
 assumptions. It is a load test, not a schedule: it changes no tasks, plans,
 reminders, or Calendar data.
 
+After either result, ask "why did the audit not fit?", "why was the second one
+scheduled there?", or "what would make the report fit?". The model may classify
+the follow-up and identify a displayed reference, but Hob answers only from a
+versioned snapshot of the deterministic result. The snapshot keeps exact
+blocks, remaining effort, placement/risk reasons, visible planning assumptions,
+and aggregate Calendar coverage. It never keeps Calendar titles or identifiers.
+Explanations and suggested options are read-only; a changed task, estimate,
+setting, or proposal still requires an explicit normal request and remains
+undoable or separately adoptable.
+
 ## Commands and queries
 
 - `/today` lists only today's on-deck items.
@@ -190,7 +200,8 @@ reminders, or Calendar data.
 - `/help` shows a one-liner.
 
 Everything else is just plain language. You can ask ("what's on today", "what's
-overdue", "am I overloaded this week", "what will not fit by Friday", "anything
+overdue", "am I overloaded this week", "what will not fit by Friday", "why did
+the audit not fit?", "anything
 about the audit", "what did I finish today"), move many at once ("push
 everything to tomorrow"), and undo
 conversationally ("scratch that") as well as with `/undo`.

@@ -189,7 +189,7 @@ ACTION_SCHEMA = {
                         {"kind": {"type": "string", "enum": [
                             "today", "date", "all", "overdue", "week", "search",
                             "done", "tag", "waiting", "plan", "plan_status",
-                            "outlook"]},
+                            "outlook", "explain"]},
                          "when": _WHEN, "term": _STR, "tag": _STR,
                          "constraint": _STR},
                         ["type", "kind"],
@@ -339,6 +339,11 @@ minutes and low energy"), "plan_status" (report the plan already adopted: \
 "what is on my plan", "what am I doing now", "what is next on the plan"), \
 "outlook" (read-only seven-day capacity and deadline fit: "am I overloaded \
 this week", "what will not fit", "can I finish everything by Friday"). \
+"explain" (read-only follow-up about the latest plan/outlook: "why did the \
+audit not fit", "why was the second one scheduled there", "what would make \
+the report fit"). For explain, put words identifying the displayed task in \
+term, if any, and preserve the full question in constraint. Never invent a \
+reason or emit a setting/task change with an explanation request. \
 For plan, set when when a day is named and set constraint to the user's relevant \
 time, energy, location, exclusions, or other planning words; otherwise null. \
 For outlook, put any what-if capacity words in constraint.
@@ -423,6 +428,8 @@ Resolving references:
 - Each open item is listed as "number: id: label". To point at one, set target \
 (or relate) to its id, mapping a number ("drop 2"), position ("the second one"), \
 or description ("the prez one") to that id.
+- A target must contain only the listed id token such as "a1", never reasoning, \
+an explanation, a list line, or prose about how it matched. \
 - If you are unsure which item is meant, lower the confidence; never guess an id.
 
 Rules:

@@ -615,7 +615,14 @@ def build_day_plan(
             if remaining_budget is not None:
                 remaining_budget -= used
             if used < duration:
-                plan.deferred.append(DeferredItem(item.id, item.task, "partially scheduled", duration - used))
+                plan.deferred.append(
+                    DeferredItem(
+                        item.id,
+                        item.task,
+                        "partially scheduled within the stated time budget",
+                        duration - used,
+                    )
+                )
             continue
 
         # Splittable work may consume several real gaps, never tiny fragments.
@@ -642,7 +649,19 @@ def build_day_plan(
                     break
             if left < allowed:
                 if duration - (allowed - left) > 0:
-                    plan.deferred.append(DeferredItem(item.id, item.task, "partially scheduled", duration - (allowed - left)))
+                    reason = (
+                        "partially scheduled within the stated time budget"
+                        if allowed < duration and left <= 0
+                        else "partially scheduled; remaining free time is insufficient"
+                    )
+                    plan.deferred.append(
+                        DeferredItem(
+                            item.id,
+                            item.task,
+                            reason,
+                            duration - (allowed - left),
+                        )
+                    )
                 continue
 
         reason = "does not fit the remaining free time"

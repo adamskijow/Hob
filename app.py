@@ -32,6 +32,11 @@ from core.digest import (
 )
 from core.interpreter import MODEL_UNREACHABLE, interpret
 from core.errors import RetryableMessageError
+from core.explanation import (
+    DECISION_VERSION,
+    explain_decision,
+    is_explanation_question,
+)
 from core.feasibility import (
     CalendarSnapshot,
     build_day_plan,
@@ -52,6 +57,7 @@ from core.models import (
     Item,
     PlanRun,
     PlanSession,
+    Query,
     RecurrenceRule,
     Unknown,
 )
@@ -111,7 +117,9 @@ HELP = (
     'work from 9 to 5", "plan work weekdays", or "protect lunch noon to 1" '
     'to set the daily frame. /outlook shows the read-only capacity result. '
     'say "use this plan" to adopt local sessions; /plan shows the active '
-    'version. adoption never moves tasks or writes calendar events.'
+    'version. ask "why did this not fit?" or "what would make it fit?" after '
+    'a plan or outlook. explanations change nothing. adoption never moves tasks '
+    'or writes calendar events.'
 )
 
 # meta key for the single user's chat id, learned from inbound messages.
@@ -154,6 +162,7 @@ DAY_CODES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 FOCUS_KEY = "focus"
 FOCUS_TTL_MINUTES = 15
 LAST_PLAN_KEY = "last_day_plan"
+LAST_DECISION_KEY = "last_planning_decision"
 # Reactions on a Hob message that maps to an item: these complete it, this drops
 # it. Anything else (hearts on chit-chat) is appreciation, not an instruction.
 REACT_COMPLETE = {"\U0001F44D", "\U0001F44C", "\U0001F4AF", "\U0001F3C6"}
@@ -860,12 +869,20 @@ class MessageService:
             and isinstance(actions[0], Unknown)
             and actions[0].note == MODEL_UNREACHABLE
         ):
-            log.warning("model unreachable; not applying message %s", message_id)
-            if restore_on_outage:
-                self._restore_batch(restore_on_outage)
-            if self._retry_model_outages:
-                raise RetryableMessageError("local model unavailable")
-            return "i can't reach the model right now. give it a few seconds and resend."
+            if is_explanation_question(text):
+                actions = [
+                    Query(kind="explain", term=None, constraint=text)
+                ]
+            else:
+                log.warning("model unreachable; not applying message %s", message_id)
+                if restore_on_outage:
+                    self._restore_batch(restore_on_outage)
+                if self._retry_model_outages:
+                    raise RetryableMessageError("local model unavailable")
+                return (
+                    "i can't reach the model right now. give it a few seconds "
+                    "and resend."
+                )
         plan = reconcile(actions, ctx)
         if plan.undo:  # "scratch that" / "undo that"
             return self._undo()
@@ -1372,6 +1389,8 @@ class MessageService:
 
     def _answer_query(self, q: QueryIntent) -> str:
         today = self._clock.today().isoformat()
+        if q.kind == "explain":
+            return self._answer_explanation(q.constraint or "why?", q.term)
         if q.kind == "plan_status":
             return self._answer_plan_status()
         if q.kind == "outlook":
@@ -1446,6 +1465,63 @@ class MessageService:
             return f"{title} nothing"
         return title + "\n" + "\n".join(
             f"{pos[i.id]}: {i.task}{marks(i)}" for i in items
+        )
+
+    @staticmethod
+    def _decision_preferences(preferences) -> dict:
+        return {
+            "work_start": preferences.work_start,
+            "work_end": preferences.work_end,
+            "work_days": list(preferences.work_days),
+            "breaks": [list(window) for window in preferences.breaks],
+            "budget_minutes": preferences.budget_minutes,
+            "budget_scope": preferences.budget_scope,
+            "earliest_time": preferences.earliest_time,
+            "latest_time": preferences.latest_time,
+            "energy": preferences.energy,
+            "default_duration_minutes": preferences.default_duration_minutes,
+            "transition_buffer_minutes": preferences.transition_buffer_minutes,
+        }
+
+    def _save_decision(self, decision: dict) -> None:
+        """Replace explanation context only after deterministic computation."""
+        self._store.set_meta(LAST_DECISION_KEY, json.dumps(decision))
+
+    @staticmethod
+    def _add_decision_item_facts(entry: dict, item: Item) -> None:
+        entry.update(
+            priority=item.priority,
+            deadline=item.deadline_date,
+            due_date=item.due_date,
+            duration_minutes=item.duration_minutes,
+            preferred_window=item.preferred_window,
+            earliest_start=item.earliest_start,
+            splittable=item.splittable,
+            depends_on=list(item.depends_on),
+        )
+
+    @staticmethod
+    def _bounded_decision_items(entries: list[dict]) -> tuple[list[dict], bool]:
+        bounded = []
+        truncated = len(entries) > 100
+        for original in entries[:100]:
+            entry = dict(original)
+            blocks = entry.get("blocks") or []
+            if len(blocks) > 50:
+                truncated = True
+            entry["blocks"] = list(blocks[:50])
+            bounded.append(entry)
+        return bounded, truncated
+
+    def _answer_explanation(self, question: str, term: str | None) -> str:
+        try:
+            snapshot = json.loads(
+                self._store.get_meta(LAST_DECISION_KEY) or "null"
+            )
+        except (TypeError, json.JSONDecodeError):
+            snapshot = None
+        return explain_decision(
+            snapshot if isinstance(snapshot, dict) else {}, question, term
         )
 
     def _answer_plan_status(self) -> str:
@@ -1552,6 +1628,85 @@ class MessageService:
             preferences,
             horizon_days=horizon_days,
             adopted_sessions=adopted,
+        )
+        items_by_id = {item.id: item for item in open_items}
+        decision_items: dict[str, dict] = {}
+        for day in forecast.days:
+            for block in day.blocks:
+                entry = decision_items.setdefault(
+                    block.item_id,
+                    {
+                        "id": block.item_id,
+                        "label": block.label,
+                        "outcome": "scheduled",
+                        "blocks": [],
+                        "inferred": block.inferred_duration,
+                        "fixed": block.fixed,
+                    },
+                )
+                entry["blocks"].append(
+                    {
+                        "day": day.day,
+                        "start": block.start.strftime("%H:%M"),
+                        "end": block.end.strftime("%H:%M"),
+                    }
+                )
+        for risk in forecast.risks:
+            entry = decision_items.setdefault(
+                risk.item_id,
+                {
+                    "id": risk.item_id,
+                    "label": risk.label,
+                    "blocks": [],
+                    "inferred": risk.item_id in forecast.assumed_item_ids,
+                    "fixed": False,
+                },
+            )
+            entry.update(
+                outcome="risk",
+                reason=risk.reason,
+                remaining_minutes=risk.remaining_minutes,
+            )
+        for unplaced in forecast.unplaced:
+            decision_items.setdefault(
+                unplaced.item_id,
+                {
+                    "id": unplaced.item_id,
+                    "label": unplaced.label,
+                    "outcome": "unplaced",
+                    "reason": unplaced.reason,
+                    "remaining_minutes": unplaced.remaining_minutes,
+                    "blocks": [],
+                    "inferred": unplaced.item_id in forecast.assumed_item_ids,
+                    "fixed": False,
+                },
+            )
+        for item_id, entry in decision_items.items():
+            item = items_by_id.get(item_id)
+            if item is not None:
+                self._add_decision_item_facts(entry, item)
+        bounded_items, truncated = self._bounded_decision_items(
+            list(decision_items.values())
+        )
+        self._save_decision(
+            {
+                "version": DECISION_VERSION,
+                "kind": "outlook",
+                "generated_at": now.isoformat(),
+                "start_day": forecast.start_day,
+                "end_day": forecast.end_day,
+                "preferences": self._decision_preferences(preferences),
+                "calendar": {
+                    "authorized_days": sum(
+                        snapshot.status == "authorized"
+                        for snapshot in snapshots.values()
+                    ),
+                    "total_days": horizon_days,
+                },
+                "free_minutes": forecast.free_minutes,
+                "items": bounded_items,
+                "truncated": truncated,
+            }
         )
         lines = [
             f"week outlook {forecast.start_day} to {forecast.end_day}: "
@@ -1825,6 +1980,72 @@ class MessageService:
             previous=previous,
             target_day=target,
         )
+        decision_items: dict[str, dict] = {}
+        for block in feasible.blocks:
+            entry = decision_items.setdefault(
+                block.item_id,
+                {
+                    "id": block.item_id,
+                    "label": block.label,
+                    "outcome": "scheduled",
+                    "blocks": [],
+                    "inferred": block.inferred_duration,
+                    "fixed": block.fixed,
+                },
+            )
+            entry["blocks"].append(
+                {
+                    "day": feasible.day,
+                    "start": block.start.strftime("%H:%M"),
+                    "end": block.end.strftime("%H:%M"),
+                }
+            )
+        for deferred in feasible.deferred:
+            entry = decision_items.get(deferred.item_id)
+            if entry is None:
+                decision_items[deferred.item_id] = {
+                    "id": deferred.item_id,
+                    "label": deferred.label,
+                    "outcome": "deferred",
+                    "reason": deferred.reason,
+                    "remaining_minutes": deferred.remaining_minutes,
+                    "blocks": [],
+                    "inferred": deferred.item_id
+                    in {
+                        item.id for item in open_items if item.duration_minutes is None
+                    },
+                }
+            else:
+                entry.update(
+                    outcome="partial",
+                    reason=deferred.reason,
+                    remaining_minutes=deferred.remaining_minutes,
+                )
+        by_id = {item.id: item for item in open_items}
+        for item_id, entry in decision_items.items():
+            item = by_id.get(item_id)
+            if item is not None:
+                self._add_decision_item_facts(entry, item)
+        bounded_items, truncated = self._bounded_decision_items(
+            list(decision_items.values())
+        )
+        self._save_decision(
+            {
+                "version": DECISION_VERSION,
+                "kind": "plan",
+                "generated_at": feasible.generated_at,
+                "start_day": feasible.day,
+                "end_day": feasible.day,
+                "preferences": self._decision_preferences(preferences),
+                "calendar": {
+                    "authorized_days": int(snapshot.status == "authorized"),
+                    "total_days": 1,
+                },
+                "free_minutes": feasible.free_minutes,
+                "items": bounded_items,
+                "truncated": truncated,
+            }
+        )
         changes = diff_day_plans(previous, feasible)
         self._store.set_meta(LAST_PLAN_KEY, json.dumps(feasible.to_dict()))
         run_id = self._store.next_plan_id()
@@ -1849,7 +2070,6 @@ class MessageService:
         ]
         self._store.save_plan_run(run, sessions)
 
-        by_id = {item.id: item for item in open_items}
         self._save_focus_items(
             [by_id[block.item_id] for block in feasible.blocks if block.item_id in by_id],
             context="plan",
@@ -1954,9 +2174,25 @@ class MessageService:
         if changes:
             lines.append("changed since the last plan:")
             lines.extend(f"- {change}" for change in changes)
+        used_minutes = sum(
+            max(0, int((block.end - block.start).total_seconds() // 60))
+            for block in feasible.blocks
+        )
+        if preferences.budget_minutes is not None:
+            budget_open = max(0, preferences.budget_minutes - used_minutes)
+            capacity = (
+                f"{budget_open}m remains in the stated budget; "
+                f"{feasible.free_minutes}m is physically open inside the profile. "
+            )
+        else:
+            capacity = f"{feasible.free_minutes}m remains open. "
         lines.append(
-            f"{feasible.free_minutes}m remains open. nothing moved; tell me what "
-            'changed and i will replan, or say "use this plan" to adopt it.'
+            capacity
+            + "nothing moved; tell me what changed and i will replan, or say "
+            '"use this plan" to adopt it.'
+        )
+        lines.append(
+            'ask "why did this not fit?" for the recorded reason and safe options.'
         )
         return "\n".join(lines)
 

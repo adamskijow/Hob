@@ -102,6 +102,17 @@ result as a read-only capacity answer. No forecast allocation enters plan,
 task, action, reminder, or Calendar state. Named boundaries such as "by Friday"
 are resolved by the deterministic date core.
 
+The latest completed plan or outlook also replaces one versioned explanation
+artifact in local meta state. It contains displayed task labels and ids, exact
+task blocks, deterministic deferred/risk reasons, remaining minutes, parsed
+planning preferences, and aggregate Calendar coverage. It excludes raw Calendar
+periods, event details and identifiers, transport metadata, and model-authored
+causal prose. The model may emit a typed `explain` query and a target hint; the
+core validates that hint against the artifact and renders the answer. A literal
+planning-explanation detector provides the same read-only path during a model
+outage. No explanation creates an action batch, plan run, setting, task change,
+or adoption.
+
 The Swift EventKit bridge is a signed background app because Calendar permission
 belongs to a stable macOS bundle identity. Apple exposes reads through a full-
 access permission tier, but the bridge implements only status, permission, and

@@ -828,6 +828,90 @@ def test_outlook_literal_backstop_corrects_flat_week_query():
     assert deadline.queries[0].date == "2026-07-03"
 
 
+def test_explanation_literal_backstop_is_read_only_and_preserves_model_target():
+    plan = reconcile(
+        [Query(kind="today", term="audit")],
+        ctx(ACTIVE, message="why did the audit not fit?"),
+    )
+    assert len(plan.queries) == 1 and plan.queries[0].kind == "explain"
+    assert not plan.mutations and not plan.settings and not plan.plan_action
+
+    targeted = reconcile(
+        [Query(kind="explain", term="a3")],
+        ctx(ACTIVE, message="what would make the audit fit?"),
+    )
+    assert targeted.queries[0].term == "a3"
+    assert targeted.queries[0].constraint == "what would make the audit fit?"
+
+
+def test_explanation_request_does_not_apply_a_coemitted_hidden_change():
+    plan = reconcile(
+        [
+            Query(kind="explain", term="audit"),
+            Setting(key="work_hours", raw="8 to 8"),
+        ],
+        ctx(
+            ACTIVE,
+            message=(
+                "why did the audit not fit? go ahead and extend my workday"
+            ),
+        ),
+    )
+    assert len(plan.queries) == 1 and plan.queries[0].kind == "explain"
+    assert not plan.settings and not plan.mutations
+
+
+def test_verbose_model_reference_with_explicit_displayed_id_position_is_recovered():
+    plan = reconcile(
+        [Complete(
+            target=(
+                "user prose says the prez one matches item id:1 "
+                "(prep the prez deck)"
+            ),
+            confidence=0.9,
+        )],
+        ctx(ACTIVE, message="did the prez one"),
+    )
+    assert len(plan.mutations) == 1
+    assert plan.mutations[0].kind == "complete"
+    assert plan.mutations[0].target == "a1"
+
+
+def test_literal_multiple_reminder_offsets_override_model_summed_duration():
+    plan = reconcile(
+        [Schedule(target="a2", reminder_offsets=[70])],
+        ctx(
+            ACTIVE,
+            message="remind me an hour and 10 minutes before the pool call",
+        ),
+    )
+    assert len(plan.mutations) == 1
+    assert plan.mutations[0].target == "a2"
+    assert plan.mutations[0].reminder_offsets == [60, 10]
+
+
+def test_new_recurrence_cannot_mutate_unrelated_model_target_and_keeps_count():
+    plan = reconcile(
+        [Recur(
+            target="a2",
+            op="anchor",
+            count=None,
+            confidence=1.0,
+        )],
+        ctx(
+            ACTIVE,
+            message=(
+                "check the filters every 2 weeks after I finish, stop after 5 times"
+            ),
+        ),
+    )
+    assert len(plan.mutations) == 1
+    mutation = plan.mutations[0]
+    assert mutation.kind == "capture" and mutation.task == "check the filters"
+    assert mutation.recurrence["anchor"] == "completion"
+    assert mutation.recurrence["count"] == 5
+
+
 def test_plan_actions_have_literal_consent_backstops():
     for message, expected in (
         ("use this plan", "adopt"),
