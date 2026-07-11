@@ -6,55 +6,24 @@ at any moment. Two supervisors keep the setup alive: `launchd` keeps Hob running
 (restart on crash, resume on login), and
 [Hearth](https://github.com/adamskijow/Hearth) keeps the Ollama model runner Hob
 depends on alive (readiness checks, restart on crash or wedge, sleep
-prevention). Ready-to-edit `LaunchAgent` templates for both are in
-[`deploy/`](../deploy/).
+prevention). Hob generates its own LaunchAgent. The Hearth reference template
+remains in [`deploy/`](../deploy/).
 
-Hob is one process started by `launchd`. The run command is:
+Install or update Hob's user service from the checkout:
 
 ```
-uv run --directory /path/to/hob python app.py
+uv run python app.py service install
+uv run python app.py service status
 ```
 
-`launchd` sets the environment, runs that command, and restarts it on exit. Copy
-[`deploy/com.local.hob.plist`](../deploy/com.local.hob.plist) to
-`~/Library/LaunchAgents/`, edit the paths, store the bot token with
-`uv run python app.py token set`, and load it with
-`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.local.hob.plist`.
-That template expands the minimal plist below with `WorkingDirectory`, `PATH`,
-and `HOB_KEEP_ALIVE`:
+The command resolves the exact checkout and `uv` paths, renders and validates a
+secret-free plist, and loads it under the current macOS user. It uses
+`uv run --frozen --no-sync`, so daemon startup never changes the lockfile or
+environment. The checked-in Hob plist is a reference fixture, not an edit step.
 
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>            <string>com.local.hob</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/Users/you/.local/bin/uv</string>
-    <string>run</string>
-    <string>--directory</string>
-    <string>/Users/you/hob</string>
-    <string>python</string>
-    <string>app.py</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>HOB_ALLOWED_TELEGRAM_USER_ID</key> <string>123456789</string>
-    <key>HOB_MODEL</key>          <string>qwen2.5:7b-instruct</string>
-    <key>HOB_WAKE_TIME</key>      <string>07:00</string>
-    <key>HOB_DB_PATH</key>        <string>/Users/you/Library/Application Support/Hob/hob.db</string>
-    <key>HOB_WORK_DAYS</key>      <string>mon,tue,wed,thu,fri</string>
-  </dict>
-  <key>KeepAlive</key>          <true/>
-  <key>StandardOutPath</key>    <string>/Users/you/Library/Application Support/Hob/hob.log</string>
-  <key>StandardErrorPath</key>  <string>/Users/you/Library/Application Support/Hob/hob.log</string>
-</dict>
-</plist>
-```
-
-The Telegram token lives in the user's macOS Keychain, not in the plist. The
+The Telegram token lives in the user's macOS Keychain, not in the plist. Doctor
+asks Telegram to validate it without printing the token or bot identity before
+service installation. The
 explicit owner id is recommended for unattended installs. If omitted, the first private
 `/start` pairs the database to that Telegram user. Group chats are always
 rejected.
@@ -85,10 +54,10 @@ works, but the `LaunchAgent` survives logout and restarts on crash. Hob degrades
 gracefully when the model is briefly unreachable; Hearth keeps those windows
 short.
 
-**Logging.** Hob logs to stderr (and stdout). Under `launchd`, point
-`StandardErrorPath` at a file as above. The bot token is kept out of the log.
-Create `~/Library/Application Support/Hob` before loading the agent. Hob does
-not manage its own log files.
+**Logging.** The generated LaunchAgent writes stdout and stderr to
+`~/Library/Application Support/Hob/hob.log`. The bot token is redacted and HTTP
+request logging is suppressed. This low-volume single-owner log is retained
+until the owner rotates or deletes it; `service status` prints its exact path.
 
 **Restart behavior and recovery.** Hob is safe to kill at any moment.
 
@@ -156,3 +125,24 @@ already applied and only that delivery is skipped. An outbound retry can
 duplicate a message if Telegram accepted the earlier send without returning an
 acknowledgement. Mutations refuse while Hob holds the database lease, and all
 queue commands refuse to guess when both legacy and app-data databases exist.
+
+**Upgrade and rollback.** Before changing a release, take an explicit backup,
+update the checkout and dependencies, then rerun service installation:
+
+```
+uv run python app.py backup ~/Desktop/hob-before-upgrade.db
+git switch --detach v1.0.0
+uv sync --frozen
+scripts/build_calendar_bridge.sh
+uv run python app.py service install
+uv run python app.py service status
+```
+
+Installation stops the old agent before opening or migrating the database and
+also writes a verified raw pre-migration backup under
+`~/Library/Application Support/Hob/Backups`. A failed database callback or
+launchd bootstrap restores the prior loaded plist. For an application rollback,
+run `service uninstall`, switch to the prior release, sync and build it, restore
+the explicit compatible backup if the schema changed, then run `service
+install`. Never point older code at a newer unsupported schema. Uninstall keeps
+all data and Keychain state.

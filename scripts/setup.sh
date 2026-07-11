@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: MIT
 #
 # One-command setup for Hob. Installs uv and Ollama if missing, syncs deps,
-# pulls the model, and runs the preflight so you know it is ready. Idempotent:
-# safe to run again any time.
+# pulls the model, runs the preflight, and installs the macOS LaunchAgent when
+# every required check passes. Idempotent: safe to run again any time.
 #
 #   scripts/setup.sh
 #
@@ -92,9 +92,16 @@ For unattended deployment, also set HOB_ALLOWED_TELEGRAM_USER_ID explicitly.
 EOF
 fi
 
-# --- preflight ----------------------------------------------------------------
-say "Preflight (app.py doctor)"
-HOB_MODEL="$MODEL" uv run python app.py doctor || true
-
-say "Setup complete. Start Hob with:  uv run python app.py"
-echo "For a durable install that survives reboot and sleep, see docs/deployment.md"
+if [ "$(uname -s)" = "Darwin" ]; then
+  say "Preflight and reboot-safe service installation"
+  if ! HOB_MODEL="$MODEL" uv run python app.py service install; then
+    warn "Setup paused. Fix the failure above, then re-run scripts/setup.sh."
+    exit 1
+  fi
+  say "Setup complete"
+  echo "Send the bot /start, finish its five questions, then check: uv run python app.py service status"
+else
+  say "Preflight (app.py doctor)"
+  HOB_MODEL="$MODEL" uv run python app.py doctor
+  say "Setup complete. Start Hob with: uv run python app.py"
+fi
