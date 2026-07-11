@@ -36,6 +36,11 @@ application shell. It is still not an App Store archive:
 - `native/HobMacApp/HobMacApp.xcodeproj` builds a real `Hob.app` menu-bar bundle
   targeting macOS 26. CI builds it without signing so project drift fails before
   signing credentials or App Store Connect are involved.
+- The Xcode app now embeds `HobAgent.app` in `Contents/Library/LoginItems` and
+  owns its explicit `SMAppService` register, approval, disable, and recovery
+  experience. Both targets resolve storage only through the protected App Group.
+  Registration stays locked while the helper is health-only, so this foundation
+  cannot falsely claim background delivery.
 
 The Store targets intentionally contain no Ollama, uv, Homebrew, launchctl,
 shell installer, inbound network server, or arbitrary filesystem entitlement.
@@ -50,6 +55,10 @@ shell installer, inbound network server, or arbitrary filesystem entitlement.
 - Add container/App Group storage and a visible helper-health switch.
 - Add privacy manifest, App Store privacy worksheet, signing, archive, sandbox,
   and notarized development-export checks.
+
+The app and helper targets, bundle placement, consent UI, App Group resolver,
+and unsigned CI packaging gate now exist. Developer-account registration,
+distribution signing, runtime embedding, and lifecycle rehearsals remain open.
 
 ### B. First-run success
 

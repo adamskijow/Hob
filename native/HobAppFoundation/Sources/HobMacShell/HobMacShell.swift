@@ -7,17 +7,24 @@ import SwiftUI
 
 @main
 struct HobMacShell: App {
-    @State private var readiness = AppReadiness(
-        edition: .appStore,
-        modelBackend: .appleFoundationModels,
-        ownerPaired: false,
-        backgroundServiceApproved: false,
-        modelAvailable: false
-    )
+    @StateObject private var backgroundService = BackgroundServiceController()
+
+    private var readiness: AppReadiness {
+        AppReadiness(
+            edition: .appStore,
+            modelBackend: .appleFoundationModels,
+            ownerPaired: false,
+            backgroundServiceApproved: backgroundService.isDeliveryReady,
+            modelAvailable: false
+        )
+    }
 
     var body: some Scene {
         Window("Hob Setup", id: "setup") {
-            SetupHomeView(readiness: readiness)
+            SetupHomeView(
+                readiness: readiness,
+                backgroundService: backgroundService
+            )
         }
         .defaultSize(width: 680, height: 560)
 
@@ -31,6 +38,8 @@ struct HobMacShell: App {
                     .tabItem { Label("Setup", systemImage: "checklist") }
                 PrivacyView()
                     .tabItem { Label("Privacy", systemImage: "lock.shield") }
+                BackgroundServiceView(controller: backgroundService)
+                    .tabItem { Label("Background", systemImage: "clock.arrow.circlepath") }
             }
             .frame(minWidth: 620, minHeight: 420)
         }
@@ -68,7 +77,9 @@ private struct HobMenu: View {
 }
 
 private struct SetupHomeView: View {
+    @Environment(\.scenePhase) private var scenePhase
     let readiness: AppReadiness
+    @ObservedObject var backgroundService: BackgroundServiceController
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -92,9 +103,67 @@ private struct SetupHomeView: View {
                 .padding()
                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
             }
+            BackgroundServiceView(controller: backgroundService)
             OnboardingView()
         }
         .padding(28)
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                backgroundService.refresh()
+            }
+        }
+    }
+}
+
+private struct BackgroundServiceView: View {
+    @ObservedObject var controller: BackgroundServiceController
+
+    var body: some View {
+        Form {
+            Section("Background delivery") {
+                LabeledContent("Status", value: controller.state.title)
+                Text(controller.state.guidance)
+                    .foregroundStyle(.secondary)
+                Text("Hob runs in the background only after you choose Turn On. You can turn it off here or in System Settings at any time.")
+                    .font(.callout)
+                if !controller.runtimeAvailable {
+                    Label(
+                        "The signed helper is bundled, but background delivery stays locked until the Hob task runtime is connected.",
+                        systemImage: "hammer"
+                    )
+                    .foregroundStyle(.secondary)
+                }
+                if let error = controller.lastError {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.red)
+                }
+                serviceActions
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { controller.refresh() }
+    }
+
+    @ViewBuilder
+    private var serviceActions: some View {
+        switch controller.state {
+        case .notRegistered:
+            Button("Turn On Background Delivery") { controller.enable() }
+                .disabled(!controller.runtimeAvailable)
+        case .enabled:
+            Button("Turn Off Background Delivery", role: .destructive) {
+                controller.disable()
+            }
+        case .requiresApproval:
+            Button("Open Login Items Settings") { controller.openApprovalSettings() }
+            Button("Cancel Background Registration", role: .destructive) {
+                controller.disable()
+            }
+        case .notFound:
+            Button("Check Again") { controller.refresh() }
+        case .unknown:
+            Button("Refresh Status") { controller.refresh() }
+        }
     }
 }
 

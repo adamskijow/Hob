@@ -9,7 +9,38 @@
 /* Begin PBXBuildFile section */
 		A10000000000000000000001 /* AppReadiness.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* AppReadiness.swift */; };
 		A10000000000000000000002 /* HobMacShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* HobMacShell.swift */; };
+		B10000000000000000000001 /* BackgroundService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* BackgroundService.swift */; };
+		B10000000000000000000002 /* SharedStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* SharedStorage.swift */; };
+		B10000000000000000000003 /* BackgroundServiceController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* BackgroundServiceController.swift */; };
+		B10000000000000000000004 /* BackgroundService.swift in Agent Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* BackgroundService.swift */; };
+		B10000000000000000000005 /* SharedStorage.swift in Agent Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* SharedStorage.swift */; };
+		B10000000000000000000006 /* HobAgent.swift in Agent Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* HobAgent.swift */; };
+		B10000000000000000000007 /* HobAgent.app in Embed Login Items */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* HobAgent.app */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		B00000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A70000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B50000000000000000000001;
+			remoteInfo = HobAgent;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		B60000000000000000000004 /* Embed Login Items */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Library/LoginItems;
+			dstSubfolderSpec = 1;
+			files = (
+				B10000000000000000000007 /* HobAgent.app in Embed Login Items */,
+			);
+			name = "Embed Login Items";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		A20000000000000000000001 /* AppReadiness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppReadiness.swift; path = ../HobAppFoundation/Sources/HobAppCore/AppReadiness.swift; sourceTree = "<group>"; };
@@ -17,10 +48,24 @@
 		A20000000000000000000003 /* Hob.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Hob.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A20000000000000000000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = Info.plist; path = ../HobAppFoundation/AppStore/Info.plist; sourceTree = "<group>"; };
 		A20000000000000000000005 /* HobMacShell.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = HobMacShell.entitlements; path = ../HobAppFoundation/AppStore/HobMacShell.entitlements; sourceTree = "<group>"; };
+		B20000000000000000000001 /* BackgroundService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BackgroundService.swift; path = ../HobAppFoundation/Sources/HobAppCore/BackgroundService.swift; sourceTree = "<group>"; };
+		B20000000000000000000002 /* SharedStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SharedStorage.swift; path = ../HobAppFoundation/Sources/HobAppCore/SharedStorage.swift; sourceTree = "<group>"; };
+		B20000000000000000000003 /* BackgroundServiceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BackgroundServiceController.swift; path = ../HobAppFoundation/Sources/HobMacShell/BackgroundServiceController.swift; sourceTree = "<group>"; };
+		B20000000000000000000004 /* HobAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = HobAgent.swift; path = ../HobAppFoundation/Sources/HobAgent/HobAgent.swift; sourceTree = "<group>"; };
+		B20000000000000000000005 /* HobAgent.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HobAgent.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B20000000000000000000006 /* HobAgent-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = "HobAgent-Info.plist"; path = ../HobAppFoundation/AppStore/HobAgent-Info.plist; sourceTree = "<group>"; };
+		B20000000000000000000007 /* HobAgent.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = HobAgent.entitlements; path = ../HobAppFoundation/AppStore/HobAgent.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		A30000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B30000000000000000000001 /* Agent Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -44,6 +89,10 @@
 			children = (
 				A20000000000000000000001 /* AppReadiness.swift */,
 				A20000000000000000000002 /* HobMacShell.swift */,
+				B20000000000000000000001 /* BackgroundService.swift */,
+				B20000000000000000000002 /* SharedStorage.swift */,
+				B20000000000000000000003 /* BackgroundServiceController.swift */,
+				B20000000000000000000004 /* HobAgent.swift */,
 			);
 			name = Sources;
 			sourceTree = "<group>";
@@ -53,6 +102,8 @@
 			children = (
 				A20000000000000000000004 /* Info.plist */,
 				A20000000000000000000005 /* HobMacShell.entitlements */,
+				B20000000000000000000006 /* HobAgent-Info.plist */,
+				B20000000000000000000007 /* HobAgent.entitlements */,
 			);
 			name = Configuration;
 			sourceTree = "<group>";
@@ -61,6 +112,7 @@
 			isa = PBXGroup;
 			children = (
 				A20000000000000000000003 /* Hob.app */,
+				B20000000000000000000005 /* HobAgent.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -75,14 +127,33 @@
 				A60000000000000000000001 /* Sources */,
 				A30000000000000000000001 /* Frameworks */,
 				A60000000000000000000002 /* Resources */,
+				B60000000000000000000004 /* Embed Login Items */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B70000000000000000000001 /* PBXTargetDependency */,
+			);
+			name = Hob;
+			productName = Hob;
+			productReference = A20000000000000000000003 /* Hob.app */;
+			productType = "com.apple.product-type.application";
+		};
+		B50000000000000000000001 /* HobAgent */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B80000000000000000000001 /* Build configuration list for PBXNativeTarget "HobAgent" */;
+			buildPhases = (
+				B60000000000000000000001 /* Agent Sources */,
+				B30000000000000000000001 /* Agent Frameworks */,
+				B60000000000000000000002 /* Agent Resources */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 			);
-			name = Hob;
-			productName = Hob;
-			productReference = A20000000000000000000003 /* Hob.app */;
+			name = HobAgent;
+			productName = HobAgent;
+			productReference = B20000000000000000000005 /* HobAgent.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -96,6 +167,9 @@
 				LastUpgradeCheck = 2660;
 				TargetAttributes = {
 					A50000000000000000000001 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+					B50000000000000000000001 = {
 						CreatedOnToolsVersion = 26.6;
 					};
 				};
@@ -115,12 +189,20 @@
 			projectRoot = "";
 			targets = (
 				A50000000000000000000001 /* Hob */,
+				B50000000000000000000001 /* HobAgent */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		A60000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B60000000000000000000002 /* Agent Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -136,10 +218,31 @@
 			files = (
 				A10000000000000000000001 /* AppReadiness.swift in Sources */,
 				A10000000000000000000002 /* HobMacShell.swift in Sources */,
+				B10000000000000000000001 /* BackgroundService.swift in Sources */,
+				B10000000000000000000002 /* SharedStorage.swift in Sources */,
+				B10000000000000000000003 /* BackgroundServiceController.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B60000000000000000000001 /* Agent Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B10000000000000000000004 /* BackgroundService.swift in Agent Sources */,
+				B10000000000000000000005 /* SharedStorage.swift in Agent Sources */,
+				B10000000000000000000006 /* HobAgent.swift in Agent Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B70000000000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B50000000000000000000001 /* HobAgent */;
+			targetProxy = B00000000000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		A90000000000000000000001 /* Debug */ = {
@@ -208,6 +311,50 @@
 			};
 			name = Release;
 		};
+		B90000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ../HobAppFoundation/AppStore/HobAgent.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ../HobAppFoundation/AppStore/HobAgent-Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.josephadamski.hob.agent;
+				PRODUCT_NAME = HobAgent;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+			};
+			name = Debug;
+		};
+		B90000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ../HobAppFoundation/AppStore/HobAgent.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ../HobAppFoundation/AppStore/HobAgent-Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.josephadamski.hob.agent;
+				PRODUCT_NAME = HobAgent;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -225,6 +372,15 @@
 			buildConfigurations = (
 				A90000000000000000000003 /* Debug */,
 				A90000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B80000000000000000000001 /* Build configuration list for PBXNativeTarget "HobAgent" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B90000000000000000000001 /* Debug */,
+				B90000000000000000000002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

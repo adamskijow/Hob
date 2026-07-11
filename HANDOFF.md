@@ -40,6 +40,11 @@ snapshot.
   Models seam, and minimum sandbox/Calendar/network boundary. The Xcode target
   now produces a real unsigned `Hob.app` shell in local and CI builds. It is not
   yet a signed archive or distributable Store app.
+- **Store helper increment:** the Xcode shell embeds a sandboxed login-item
+  helper, exposes an explicit reversible `SMAppService` consent flow, and
+  resolves shared data only through the protected App Group. The helper is
+  health-only, so the UI deliberately locks registration until the real task
+  runtime is connected. See `docs/audits/app-store-background-service.md`.
 - **Live v0.8 evidence:** the exact launchd database contains one active and one
   superseded run, three canceled old sessions, one started and two planned
   revised sessions. The direct nudge reply produced `started`, not completion;

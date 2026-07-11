@@ -8,12 +8,17 @@ let package = Package(
     products: [
         .library(name: "HobAppCore", targets: ["HobAppCore"]),
         .executable(name: "HobMacShell", targets: ["HobMacShell"]),
+        .executable(name: "HobAgent", targets: ["HobAgent"]),
         .executable(name: "HobFoundationBridge", targets: ["HobFoundationBridge"]),
     ],
     targets: [
         .target(name: "HobAppCore"),
         .executableTarget(
             name: "HobMacShell",
+            dependencies: ["HobAppCore"]
+        ),
+        .executableTarget(
+            name: "HobAgent",
             dependencies: ["HobAppCore"]
         ),
         .executableTarget(
