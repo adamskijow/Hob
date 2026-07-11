@@ -16,11 +16,16 @@ snapshot.
   nudged once at session start. Schema is 10.
 - **Draft:** v0.9 is isolated on `agent/llm-native-ux` in draft PR #1. It adds
   a deterministic weekly capacity outlook, working days, plan-aware EOD, first-
-  adoption coaching, and privacy-safe activation metrics. It must not merge or
-  deploy until the live v0.8 adoption/replan/nudge loop is dogfooded.
+  adoption coaching, and privacy-safe activation metrics. The live v0.8
+  adoption/status/interruption/replan/replacement/nudge/reply gate completed on
+  2026-07-11 with clean queues, so this parent dogfood block is closed.
 - **Green:** `uv run pytest` (345 passing), native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
   evals.interpreter_eval`, 72/72). Ubuntu and macOS PR checks pass.
+- **Live v0.8 evidence:** the exact launchd database contains one active and one
+  superseded run, three canceled old sessions, one started and two planned
+  revised sessions. The direct nudge reply produced `started`, not completion;
+  inbox and outbox have no pending or failed rows. Details are in the v0.8 audit.
 
 ## What is built
 
