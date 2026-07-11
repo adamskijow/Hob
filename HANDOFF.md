@@ -14,7 +14,7 @@ snapshot.
 - **Released:** v0.7.0. Guided, resumable onboarding establishes an explicit
   planning profile; default effort and transition buffers shape feasibility;
   visible plan order safely anchors follow-up references. Schema remains 9.
-- **Green:** `uv run pytest` (303 passing), native bridge build, and the
+- **Green:** `uv run pytest` (304 passing), native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
   evals.interpreter_eval`, 63/63).
 

@@ -2133,6 +2133,10 @@ def _token_command(argv: list[str]) -> int:
 
 
 def _export_or_backup(cfg: Config, argv: list[str]) -> int:
+    ambiguity = _database_choice_error(cfg)
+    if ambiguity:
+        print(f"hob: {argv[0]} refused: {ambiguity}", file=sys.stderr)
+        return 2
     command = argv[0]
     default = (
         f"hob-export-{datetime.now().date().isoformat()}.json"
@@ -2154,14 +2158,35 @@ def _export_or_backup(cfg: Config, argv: list[str]) -> int:
             )
         else:
             store.backup(str(destination))
-    print(f"hob: wrote {command} to {destination}")
+    print(f"hob: wrote {command} from {cfg.db_path} to {destination}")
     return 0
+
+
+def _database_choice_error(cfg: Config) -> str | None:
+    """Refuse recovery operations when legacy compatibility is ambiguous."""
+    if os.environ.get("HOB_DB_PATH", "").strip():
+        return None
+    selected = Path(cfg.db_path).expanduser().resolve()
+    legacy = (Path.cwd() / "hob.db").resolve()
+    app_data = (
+        Path.home() / "Library" / "Application Support" / "Hob" / "hob.db"
+    ).resolve()
+    if selected == legacy and app_data.exists() and app_data != selected:
+        return (
+            f"both {legacy} and {app_data} exist; set HOB_DB_PATH explicitly "
+            "to choose one"
+        )
+    return None
 
 
 def _restore_or_import(cfg: Config, argv: list[str]) -> int:
     command = argv[0]
     if len(argv) != 2:
         print(f"usage: python app.py {command} SOURCE", file=sys.stderr)
+        return 2
+    ambiguity = _database_choice_error(cfg)
+    if ambiguity:
+        print(f"hob: {command} refused: {ambiguity}", file=sys.stderr)
         return 2
     source = str(Path(argv[1]).expanduser())
     try:

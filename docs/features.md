@@ -164,7 +164,9 @@ The first private `/start` pairs Hob to one Telegram user unless
 `HOB_ALLOWED_TELEGRAM_USER_ID` sets the owner explicitly. Other users and group
 chats cannot read or mutate the shared task store or redirect its digest.
 `python app.py backup` creates a consistent SQLite backup; `python app.py export`
-writes portable JSON containing tasks, history, digests, and settings.
+writes portable JSON containing tasks, history, digests, and settings. If a
+legacy checkout database and the app-data database both exist, recovery commands
+refuse to guess until `HOB_DB_PATH` explicitly selects one.
 
 The Telegram token can live in macOS Keychain (`python app.py token set`) rather
 than plaintext deployment configuration. `python app.py status` reports local

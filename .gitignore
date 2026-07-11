@@ -6,6 +6,9 @@ __pycache__/
 *.db-journal
 *.db-wal
 *.db-shm
+*.bak
+*.bak-shm
+*.bak-wal
 *.log
 .env
 .DS_Store

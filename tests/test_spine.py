@@ -440,6 +440,33 @@ def test_returning_owner_start_does_not_force_setup():
     assert "hi, i am hob" in out and "setup 1/4" not in out
 
 
+def test_recovery_commands_refuse_ambiguous_legacy_database(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from app import _database_choice_error, _export_or_backup
+
+    checkout = tmp_path / "checkout"
+    home = tmp_path / "home"
+    checkout.mkdir()
+    app_data = home / "Library" / "Application Support" / "Hob" / "hob.db"
+    app_data.parent.mkdir(parents=True)
+    (checkout / "hob.db").touch()
+    app_data.touch()
+    monkeypatch.chdir(checkout)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("HOB_DB_PATH", raising=False)
+    cfg = SimpleNamespace(db_path="hob.db")
+
+    error = _database_choice_error(cfg)
+
+    assert error and "set HOB_DB_PATH explicitly" in error
+    destination = tmp_path / "must-not-be-written.db"
+    assert _export_or_backup(cfg, ["backup", str(destination)]) == 2
+    assert not destination.exists()
+    monkeypatch.setenv("HOB_DB_PATH", "hob.db")
+    assert _database_choice_error(cfg) is None
+
+
 def test_plan_focus_positions_override_canonical_list_positions():
     from app import FOCUS_KEY
 
