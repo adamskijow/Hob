@@ -50,7 +50,7 @@ from core.models import (
     RecurrenceRule,
     Unknown,
 )
-from core.planner import Mutation, QueryIntent, SettingChange, reconcile
+from core.planner import Mutation, Pending, QueryIntent, SettingChange, reconcile
 from core.ports import Calendar, Clock, Llm, Store
 from core.undo import plan_undo
 from core.version import __version__
@@ -96,6 +96,7 @@ HELP = (
     'reminder with "done" or "snooze 20"; edit a message and i take the edit. '
     'ask: "what\'s on today", "what\'s overdue", "what did i finish this week". '
     '/today shows today; /list shows every open item; /settings shows timing; '
+    '/setup guides planning preferences; '
     '/undo (or "scratch that") reverts your last change. ask "plan my day" or '
     '"what should i do next?" for a short, reasoned plan. tell me deadlines, '
     'effort, fixed times, dependencies, preferred windows, and reminder offsets '
@@ -122,6 +123,16 @@ WAKE_KEY = "wake_time"
 EOD_KEY = "eod_time"
 WORK_HOURS_KEY = "work_hours"
 BREAKS_KEY = "breaks"
+DEFAULT_DURATION_KEY = "default_duration"
+TRANSITION_BUFFER_KEY = "transition_buffer"
+ONBOARDING_STAGE_KEY = "onboarding_stage"
+ONBOARDING_DONE_KEY = "onboarding_complete"
+ONBOARDING_STEPS = (
+    "work_hours",
+    "break_window",
+    "default_duration",
+    "transition_buffer",
+)
 # meta key holding the conversational focus: the items the last message touched
 # (JSON {ts, items: [{id, label}]}), so a bare follow-up ("make it 4pm") can
 # resolve. Stale focus is ignored after this many minutes.
@@ -277,6 +288,8 @@ class MessageService:
         work_start: str = "09:00",
         work_end: str = "17:30",
         breaks: tuple[tuple[str, str], ...] = (("12:00", "13:00"),),
+        default_duration_minutes: int = 30,
+        transition_buffer_minutes: int = 0,
     ) -> None:
         self._store = store
         self._clock = clock
@@ -290,6 +303,8 @@ class MessageService:
         self._work_start = work_start
         self._work_end = work_end
         self._breaks = breaks
+        self._default_duration_minutes = default_duration_minutes
+        self._transition_buffer_minutes = transition_buffer_minutes
 
     def _welcome(self) -> str:
         return (
@@ -298,7 +313,130 @@ class MessageService:
             f"{self._wake_time} i will send one organized digest. correct it in "
             'plain language ("did the vet one", "push it to friday"), ask me '
             'things ("what is on today", "what is overdue"), and i will keep it '
-            f"all right here. times use {self._timezone}. /help anytime."
+            f"all right here. times use {self._timezone}. /setup tunes how i "
+            "plan; /help shows the full shorthand."
+        )
+
+    def _calendar_status(self) -> str:
+        if self._calendar is None:
+            return "unavailable"
+        status = getattr(self._calendar, "status", None)
+        if status is None:
+            return "available to planning"
+        try:
+            return status().status
+        except Exception:
+            return "unavailable"
+
+    def _setup_value(self, key: str) -> str:
+        if key == "work_hours":
+            return self._store.get_meta(WORK_HOURS_KEY) or (
+                f"{self._work_start}-{self._work_end}"
+            )
+        if key == "break_window":
+            value = self._store.get_meta(BREAKS_KEY)
+            if value:
+                return value
+            return ",".join(f"{start}-{end}" for start, end in self._breaks) or "none"
+        if key == "default_duration":
+            return self._store.get_meta(DEFAULT_DURATION_KEY) or str(
+                self._default_duration_minutes
+            )
+        return self._store.get_meta(TRANSITION_BUFFER_KEY) or str(
+            self._transition_buffer_minutes
+        )
+
+    def _setup_prompt(self, stage: str) -> str:
+        prompts = {
+            "work_hours": (
+                'setup 1/4: what hours may i plan inside? reply like "plan work '
+                'from 9 to 5", or say "skip" to keep {current}.'
+            ),
+            "break_window": (
+                'setup 2/4: what daily time should stay protected? reply like '
+                '"protect lunch from noon to 1", "no break", or "skip" to keep '
+                "{current}."
+            ),
+            "default_duration": (
+                'setup 3/4: when a task has no estimate, what should i assume? '
+                'reply like "assume 30 minutes", or say "skip" to keep {current}m.'
+            ),
+            "transition_buffer": (
+                'setup 4/4: how much breathing room should i leave between '
+                'commitments? reply like "leave 10 minutes between things", '
+                '"no buffer", or "skip" to keep {current}m.'
+            ),
+        }
+        question = prompts[stage].format(current=self._setup_value(stage))
+        self._store.set_meta(
+            PENDING_KEY,
+            json.dumps(
+                [
+                    asdict(
+                        Pending(
+                            kind="setting",
+                            question=question,
+                            key=stage,
+                        )
+                    )
+                ]
+            ),
+        )
+        return question
+
+    def _begin_onboarding(self, include_welcome: bool = False) -> str:
+        stage = self._store.get_meta(ONBOARDING_STAGE_KEY)
+        if stage not in ONBOARDING_STEPS:
+            stage = ONBOARDING_STEPS[0]
+            self._store.set_meta(ONBOARDING_STAGE_KEY, stage)
+        prompt = self._setup_prompt(stage)
+        intro = self._welcome() + "\n\n" if include_welcome else ""
+        return intro + prompt + '\nYou can also say "cancel setup" at any step.'
+
+    def _finish_onboarding(self) -> str:
+        self._store.set_meta(ONBOARDING_STAGE_KEY, "")
+        self._store.set_meta(ONBOARDING_DONE_KEY, self._clock.now().isoformat())
+        self._store.set_meta(PENDING_KEY, "")
+        calendar = self._calendar_status()
+        calendar_line = (
+            "calendar is connected."
+            if calendar == "authorized"
+            else "calendar is not connected; plans still use your hours. on the Mac, run `uv run python app.py calendar authorize` whenever you want live busy-time checks."
+        )
+        return (
+            "setup complete. your planning assumptions are visible in /settings "
+            "and each change is undoable. "
+            + calendar_line
+            + ' send me one real task, then ask "plan my day".'
+        )
+
+    def _advance_onboarding(self, settings: list[SettingChange]) -> str | None:
+        stage = self._store.get_meta(ONBOARDING_STAGE_KEY)
+        if stage not in ONBOARDING_STEPS or not any(s.key == stage for s in settings):
+            return None
+        index = ONBOARDING_STEPS.index(stage) + 1
+        if index >= len(ONBOARDING_STEPS):
+            return self._finish_onboarding()
+        next_stage = ONBOARDING_STEPS[index]
+        self._store.set_meta(ONBOARDING_STAGE_KEY, next_stage)
+        return self._setup_prompt(next_stage)
+
+    def _skip_onboarding(self) -> str:
+        stage = self._store.get_meta(ONBOARDING_STAGE_KEY)
+        if stage not in ONBOARDING_STEPS:
+            return self._begin_onboarding()
+        index = ONBOARDING_STEPS.index(stage) + 1
+        if index >= len(ONBOARDING_STEPS):
+            return self._finish_onboarding()
+        next_stage = ONBOARDING_STEPS[index]
+        self._store.set_meta(ONBOARDING_STAGE_KEY, next_stage)
+        return "kept the current value.\n" + self._setup_prompt(next_stage)
+
+    def _cancel_onboarding(self) -> str:
+        self._store.set_meta(PENDING_KEY, "")
+        return (
+            "setup paused. your saved values and current step are unchanged; "
+            "/setup resumes anytime."
         )
 
     def _authorize(self, msg: InboundMessage, low: str) -> tuple[bool, str | None]:
@@ -337,6 +475,7 @@ class MessageService:
     def _handle(self, msg: InboundMessage) -> str:
         text = msg.text.strip()
         low = text.lower()
+        was_paired = bool(self._store.get_meta(OWNER_USER_KEY))
         authorized, denial = self._authorize(msg, low)
         if not authorized:
             return denial or ""
@@ -345,7 +484,27 @@ class MessageService:
         if msg.edited:
             return self._handle_edit(msg)
         if low == "/start":
-            return self._welcome()
+            if self._store.get_meta(ONBOARDING_STAGE_KEY) in ONBOARDING_STEPS:
+                return self._begin_onboarding(include_welcome=True)
+            fresh = (
+                not was_paired
+                and not self._store.get_meta(ONBOARDING_DONE_KEY)
+                and not self._store.open_items()
+            )
+            return (
+                self._begin_onboarding(include_welcome=True)
+                if fresh
+                else self._welcome()
+            )
+        if low in ("/setup", "/onboarding"):
+            return self._begin_onboarding()
+        if low in {"cancel setup", "stop setup", "/cancelsetup"}:
+            return self._cancel_onboarding()
+        if (
+            self._store.get_meta(ONBOARDING_STAGE_KEY) in ONBOARDING_STEPS
+            and low in {"skip", "keep", "keep it", "next"}
+        ):
+            return self._skip_onboarding()
         if low == "/help":
             return HELP
         if low == "/today":
@@ -442,7 +601,10 @@ class MessageService:
         raw = self._store.get_meta(FOCUS_KEY)
         if not raw:
             return []
-        data = json.loads(raw)
+        try:
+            data = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return []
         try:
             ts = datetime.fromisoformat(data.get("ts", ""))
         except ValueError:
@@ -457,15 +619,35 @@ class MessageService:
         gone, not the new subject). Empty applied leaves the prior focus alone so
         a question or chitchat does not wipe the anchor."""
         items = [
-            {"id": it.id, "label": it.task}
+            it
             for kind, it in reversed(applied)  # most recent action first
             if kind != "drop"
         ][:3]
-        if items:
+        self._save_focus_items(items, context="mutation", limit=3)
+
+    def _save_focus_items(
+        self, items: list[Item], *, context: str, limit: int
+    ) -> None:
+        focused = []
+        seen: set[str] = set()
+        for item in items:
+            if item.id in seen:
+                continue
+            seen.add(item.id)
+            focused.append(
+                {"id": item.id, "label": item.task, "context": context}
+            )
+            if len(focused) >= limit:
+                break
+        if focused:
             self._store.set_meta(
                 FOCUS_KEY,
-                json.dumps({"ts": self._clock.now().isoformat(), "items": items}),
+                json.dumps(
+                    {"ts": self._clock.now().isoformat(), "items": focused}
+                ),
             )
+        elif context == "plan":
+            self._store.set_meta(FOCUS_KEY, "")
 
     def handle_reaction(
         self, message_id: int, emojis: list[str], user_id: int | None = None
@@ -604,16 +786,21 @@ class MessageService:
         )
         applied = self._apply(plan.mutations, message_id, batch_id=batch_id)
         self._save_focus(applied)
-        answers = [self._answer_query(q) for q in plan.queries]
-        answers += [
+        answers = [self._answer_start(item_id) for item_id in plan.starts]
+        answers += [self._answer_query(q) for q in plan.queries]
+        setting_answers = [
             self._apply_setting(s, message_id, batch_id) for s in plan.settings
         ]
+        answers += setting_answers
         # Persist this turn's clarifications for the next message; "" clears any
         # that were just resolved or superseded.
         self._store.set_meta(
             PENDING_KEY,
             json.dumps([asdict(p) for p in plan.pending]) if plan.pending else "",
         )
+        onboarding_reply = self._advance_onboarding(plan.settings)
+        if onboarding_reply:
+            answers.append(onboarding_reply)
         questions = list(plan.questions)
         if plan.confirm is not None:
             self._store.set_meta(
@@ -654,6 +841,8 @@ class MessageService:
             "eod_time": EOD_KEY,
             "work_hours": WORK_HOURS_KEY,
             "break_window": BREAKS_KEY,
+            "default_duration": DEFAULT_DURATION_KEY,
+            "transition_buffer": TRANSITION_BUFFER_KEY,
         }.get(s.key, s.key)
         before = self._store.get_meta(key)
         self._store.set_meta(key, s.value)
@@ -682,6 +871,10 @@ class MessageService:
                 if s.value != "none"
                 else "ok, daily protected break removed."
             )
+        if s.key == "default_duration":
+            return f"ok, i will estimate unstated tasks at {s.value} minutes."
+        if s.key == "transition_buffer":
+            return f"ok, i will leave {s.value} minutes between commitments."
         return "ok"
 
     def _apply_confirmed(self, data: list, message_id: str) -> str:
@@ -1045,6 +1238,26 @@ class MessageService:
             f"{pos[i.id]}: {i.task}{marks(i)}" for i in items
         )
 
+    def _answer_start(self, item_id: str) -> str:
+        item = self._store.get_item(item_id)
+        if item is None or item.status != STATUS_OPEN:
+            return "that planned item is no longer open; ask me to replan."
+        self._save_focus_items([item], context="current", limit=1)
+        effort = (
+            item.duration_minutes
+            or self._minutes_setting(
+                DEFAULT_DURATION_KEY,
+                self._default_duration_minutes,
+                5,
+                480,
+            )
+        )
+        estimate = " estimate" if item.duration_minutes is None else ""
+        return (
+            f'next: "{item.task}" ({effort}m{estimate}). '
+            "i have not marked it done; tell me when you finish or need a replan."
+        )
+
     @staticmethod
     def _item_context(items: list[Item]) -> str:
         return json.dumps(
@@ -1100,6 +1313,15 @@ class MessageService:
         matches = [i for i in ordered if i.id.lower() in wanted]
         return matches or literal
 
+    def _minutes_setting(
+        self, key: str, default: int, minimum: int, maximum: int
+    ) -> int:
+        try:
+            value = int(self._store.get_meta(key) or default)
+        except (TypeError, ValueError):
+            return default
+        return value if minimum <= value <= maximum else default
+
     def _answer_plan(self, constraint: str, open_items: list[Item]) -> str:
         """Build a read-only timeline; the model can explain but cannot schedule."""
         now = self._clock.now()
@@ -1139,6 +1361,18 @@ class MessageService:
             work_start=work_start,
             work_end=work_end,
             breaks=breaks,
+            default_duration_minutes=self._minutes_setting(
+                DEFAULT_DURATION_KEY,
+                self._default_duration_minutes,
+                5,
+                480,
+            ),
+            transition_buffer_minutes=self._minutes_setting(
+                TRANSITION_BUFFER_KEY,
+                self._transition_buffer_minutes,
+                0,
+                120,
+            ),
         )
         previous = None
         try:
@@ -1152,6 +1386,11 @@ class MessageService:
         self._store.set_meta(LAST_PLAN_KEY, json.dumps(feasible.to_dict()))
 
         by_id = {item.id: item for item in open_items}
+        self._save_focus_items(
+            [by_id[block.item_id] for block in feasible.blocks if block.item_id in by_id],
+            context="plan",
+            limit=10,
+        )
         timeline = [
             {
                 "id": block.item_id,
@@ -1214,15 +1453,26 @@ class MessageService:
         else:
             lines.append("calendar bridge unavailable; this uses working hours only.")
 
-        for number, block in enumerate(feasible.blocks, start=1):
+        displayed_numbers: dict[str, int] = {}
+        for block in feasible.blocks:
             item = by_id.get(block.item_id)
             badges = marks(item) if item else ""
-            estimate = " (30m estimate)" if block.inferred_duration else ""
+            estimate = (
+                f" ({preferences.default_duration_minutes}m estimate)"
+                if block.inferred_duration
+                else ""
+            )
             segment = f" (part {block.segment})" if block.segment > 1 else ""
             reason = reasons.get(block.item_id)
-            suffix = f": {reason}" if reason else ""
+            if block.item_id not in displayed_numbers:
+                displayed_numbers[block.item_id] = len(displayed_numbers) + 1
+                prefix = f"{displayed_numbers[block.item_id]}:"
+                suffix = f": {reason}" if reason else ""
+            else:
+                prefix = "  ↳"
+                suffix = ""
             lines.append(
-                f"{number}: {block.start:%H:%M}–{block.end:%H:%M} "
+                f"{prefix} {block.start:%H:%M}–{block.end:%H:%M} "
                 f"{block.label}{badges}{estimate}{segment}{suffix}"
             )
         if feasible.warnings:
@@ -1405,12 +1655,29 @@ class MessageService:
         breaks = self._store.get_meta(BREAKS_KEY)
         if not breaks:
             breaks = ",".join(f"{start}-{end}" for start, end in self._breaks)
+        default_duration = self._minutes_setting(
+            DEFAULT_DURATION_KEY, self._default_duration_minutes, 5, 480
+        )
+        transition_buffer = self._minutes_setting(
+            TRANSITION_BUFFER_KEY, self._transition_buffer_minutes, 0, 120
+        )
+        setup_stage = self._store.get_meta(ONBOARDING_STAGE_KEY)
+        if setup_stage in ONBOARDING_STEPS:
+            setup = f"in progress ({setup_stage.replace('_', ' ')})"
+        elif self._store.get_meta(ONBOARDING_DONE_KEY):
+            setup = "complete"
+        else:
+            setup = "not run (/setup)"
         return (
             f"settings:\ntimezone: {self._timezone}\n"
             f"morning digest: {wake}\n"
             f"evening recap: {eod if eod != '' else 'disabled'}\n"
             f"planning hours: {work_hours}\n"
-            f"protected breaks: {'none' if breaks == 'none' else breaks}"
+            f"protected breaks: {'none' if breaks == 'none' else breaks}\n"
+            f"default estimate: {default_duration}m\n"
+            f"transition buffer: {transition_buffer}m\n"
+            f"calendar: {self._calendar_status()}\n"
+            f"setup: {setup}"
         )
 
 
@@ -1660,6 +1927,8 @@ async def _run_daemon(cfg: Config, store: SqliteStore) -> None:
         work_start=cfg.work_start,
         work_end=cfg.work_end,
         breaks=cfg.breaks,
+        default_duration_minutes=cfg.default_duration_minutes,
+        transition_buffer_minutes=cfg.transition_buffer_minutes,
     )
     telegram = TelegramAdapter(
         store, service.handle, token=cfg.telegram_token,
@@ -1699,7 +1968,11 @@ def _doctor() -> int:
     print("hob doctor")
     try:
         cfg = Config.from_env()
-        print(f"  OK   config: tz={cfg.timezone} wake={cfg.wake_time} db={cfg.db_path}")
+        print(
+            f"  OK   config: tz={cfg.timezone} wake={cfg.wake_time} "
+            f"estimate={cfg.default_duration_minutes}m "
+            f"buffer={cfg.transition_buffer_minutes}m db={cfg.db_path}"
+        )
     except ConfigError as exc:
         print(f"  FAIL config: {exc}")
         return 2
@@ -1770,6 +2043,19 @@ def _status(cfg: Config) -> int:
                 f"offset={offset}"
             )
             print(f"  INFO last morning digest: {digest_date}; evening recap: {eod_date}")
+            work_hours = store.get_meta(WORK_HOURS_KEY) or (
+                f"{cfg.work_start}-{cfg.work_end}"
+            )
+            default_duration = store.get_meta(DEFAULT_DURATION_KEY) or str(
+                cfg.default_duration_minutes
+            )
+            transition_buffer = store.get_meta(TRANSITION_BUFFER_KEY) or str(
+                cfg.transition_buffer_minutes
+            )
+            print(
+                f"  INFO planning: hours={work_hours} "
+                f"estimate={default_duration}m buffer={transition_buffer}m"
+            )
             ok = ok and healthy
     except Exception as exc:  # noqa: BLE001
         print(f"  FAIL database: {exc}")
@@ -1789,8 +2075,7 @@ def _status(cfg: Config) -> int:
     snapshot = calendar.status()
     label = "OK  " if snapshot.status == "authorized" else "INFO"
     print(
-        f"  {label} calendar: {snapshot.status}; working hours "
-        f"{cfg.work_start}-{cfg.work_end}"
+        f"  {label} calendar: {snapshot.status}"
     )
     return 0 if ok else 1
 

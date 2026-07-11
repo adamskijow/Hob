@@ -42,6 +42,8 @@ class PlanPreferences:
     earliest_time: str | None = None
     latest_time: str | None = None
     energy: str | None = None
+    default_duration_minutes: int = DEFAULT_DURATION_MINUTES
+    transition_buffer_minutes: int = 0
 
 
 @dataclass
@@ -128,6 +130,8 @@ def parse_plan_preferences(
     work_start: str = "09:00",
     work_end: str = "17:30",
     breaks: tuple[tuple[str, str], ...] = (("12:00", "13:00"),),
+    default_duration_minutes: int = DEFAULT_DURATION_MINUTES,
+    transition_buffer_minutes: int = 0,
 ) -> PlanPreferences:
     """Extract hard planning bounds literally; unknown prose remains harmless."""
     low = (constraint or "").lower()
@@ -171,6 +175,8 @@ def parse_plan_preferences(
         earliest_time=earliest,
         latest_time=latest,
         energy=energy,
+        default_duration_minutes=default_duration_minutes,
+        transition_buffer_minutes=transition_buffer_minutes,
     )
 
 
@@ -252,11 +258,13 @@ def _preferred_bounds(item: Item, day: date, tzinfo) -> tuple[datetime, datetime
         return None
 
 
-def _candidate_key(item: Item, target: date, low_energy: bool) -> tuple:
+def _candidate_key(
+    item: Item, target: date, low_energy: bool, default_duration: int
+) -> tuple:
     deadline = item.deadline_date or "9999-12-31"
     due = item.due_date or "9999-12-31"
     urgent_day = 0 if deadline <= target.isoformat() or due <= target.isoformat() else 1
-    duration = item.duration_minutes or DEFAULT_DURATION_MINUTES
+    duration = item.duration_minutes or default_duration
     return (
         urgent_day,
         deadline,
@@ -320,9 +328,29 @@ def build_day_plan(
     if work_end <= horizon_start:
         plan.warnings.append("no working time remains inside the requested window")
 
-    busy = list(snapshot.busy)
+    buffer = timedelta(minutes=max(0, preferences.transition_buffer_minutes))
+    protected = list(snapshot.busy)
+    busy = [
+        BusyPeriod(
+            period.start - buffer,
+            period.end + buffer,
+            period.source,
+            period.opaque_id,
+        )
+        for period in snapshot.busy
+    ]
     for start, end in preferences.breaks:
-        busy.append(BusyPeriod(_at(target, start, tzinfo), _at(target, end, tzinfo), "break"))
+        period = BusyPeriod(
+            _at(target, start, tzinfo), _at(target, end, tzinfo), "break"
+        )
+        busy.append(
+            BusyPeriod(
+                period.start - buffer,
+                period.end + buffer,
+                period.source,
+            )
+        )
+        protected.append(period)
 
     open_ids = {item.id for item in items}
     candidates: list[Item] = []
@@ -330,15 +358,15 @@ def build_day_plan(
         if item.due_date and item.due_date > target.isoformat():
             continue
         if item.waiting_since:
-            plan.deferred.append(DeferredItem(item.id, item.task, "waiting on someone else", item.duration_minutes or DEFAULT_DURATION_MINUTES))
+            plan.deferred.append(DeferredItem(item.id, item.task, "waiting on someone else", item.duration_minutes or preferences.default_duration_minutes))
             continue
         blocking = [dependency for dependency in item.depends_on if dependency in open_ids]
         if blocking:
-            plan.deferred.append(DeferredItem(item.id, item.task, "blocked by " + ", ".join(blocking), item.duration_minutes or DEFAULT_DURATION_MINUTES))
+            plan.deferred.append(DeferredItem(item.id, item.task, "blocked by " + ", ".join(blocking), item.duration_minutes or preferences.default_duration_minutes))
             continue
         ready, ready_at = _item_ready(item, target, horizon_start)
         if not ready or ready_at and ready_at.date() > target:
-            plan.deferred.append(DeferredItem(item.id, item.task, f"not ready until {item.earliest_start}", item.duration_minutes or DEFAULT_DURATION_MINUTES))
+            plan.deferred.append(DeferredItem(item.id, item.task, f"not ready until {item.earliest_start}", item.duration_minutes or preferences.default_duration_minutes))
             continue
         candidates.append(item)
 
@@ -349,24 +377,42 @@ def build_day_plan(
     for item in candidates:
         if item.due_date == target.isoformat() and item.due_time:
             start = _at(target, item.due_time, tzinfo)
-            end = start + timedelta(minutes=item.duration_minutes or DEFAULT_DURATION_MINUTES)
+            end = start + timedelta(
+                minutes=item.duration_minutes or preferences.default_duration_minutes
+            )
             if end <= now:
                 plan.deferred.append(
                     DeferredItem(
                         item.id,
                         item.task,
                         "stated time has passed; it was not moved",
-                        item.duration_minutes or DEFAULT_DURATION_MINUTES,
+                        item.duration_minutes or preferences.default_duration_minutes,
                     )
                 )
                 plan.warnings.append(
                     f'missed stated time: "{item.task}" was at {item.due_time}'
                 )
                 continue
-            overlaps = any(start < period.end and end > period.start for period in busy)
+            overlaps = any(
+                start < period.end and end > period.start for period in protected
+            )
+            buffer_short = (
+                not overlaps
+                and preferences.transition_buffer_minutes > 0
+                and any(
+                    start < period.end and end > period.start for period in busy
+                )
+            )
             outside = start < work_start or end > work_end
-            if overlaps or outside:
-                problem = "overlaps protected calendar time" if overlaps else "falls outside working hours"
+            if overlaps or buffer_short or outside:
+                if overlaps:
+                    problem = "overlaps protected calendar time"
+                elif buffer_short:
+                    problem = (
+                        "leaves less than the configured transition buffer"
+                    )
+                else:
+                    problem = "falls outside working hours"
                 plan.warnings.append(f'"{item.task}" {problem}; its stated time was not moved')
             block = PlanBlock(
                 item.id,
@@ -377,12 +423,22 @@ def build_day_plan(
                 inferred_duration=item.duration_minutes is None,
             )
             plan.blocks.append(block)
-            busy.append(BusyPeriod(start, end, "task", item.id))
+            protected.append(BusyPeriod(start, end, "task", item.id))
+            busy.append(
+                BusyPeriod(start - buffer, end + buffer, "task", item.id)
+            )
         else:
             flexible.append(item)
 
     remaining_budget = preferences.budget_minutes
-    flexible.sort(key=lambda item: _candidate_key(item, target, preferences.energy == "low"))
+    flexible.sort(
+        key=lambda item: _candidate_key(
+            item,
+            target,
+            preferences.energy == "low",
+            preferences.default_duration_minutes,
+        )
+    )
     anchors: dict[str, tuple[datetime, datetime]] = {}
     if (
         previous
@@ -399,7 +455,7 @@ def build_day_plan(
             prior = old_blocks.get(item.id, [])
             if len(prior) != 1:
                 continue
-            duration = item.duration_minutes or DEFAULT_DURATION_MINUTES
+            duration = item.duration_minutes or preferences.default_duration_minutes
             allowed = duration if anchor_budget is None else min(duration, anchor_budget)
             if allowed <= 0 or allowed < duration and not item.splittable:
                 continue
@@ -429,7 +485,9 @@ def build_day_plan(
             ):
                 continue
             anchors[item.id] = (start, end)
-            reserved.append(BusyPeriod(start, end, "task", item.id))
+            reserved.append(
+                BusyPeriod(start - buffer, end + buffer, "task", item.id)
+            )
             if anchor_budget is not None:
                 anchor_budget -= required
         busy = reserved
@@ -448,7 +506,7 @@ def build_day_plan(
                 )
             )
             continue
-        duration = item.duration_minutes or DEFAULT_DURATION_MINUTES
+        duration = item.duration_minutes or preferences.default_duration_minutes
         allowed = duration if remaining_budget is None else min(duration, remaining_budget)
         if allowed <= 0:
             plan.deferred.append(DeferredItem(item.id, item.task, "outside the stated time budget", duration))
@@ -480,7 +538,9 @@ def build_day_plan(
             start, end = placed
             used = _minutes(start, end)
             plan.blocks.append(PlanBlock(item.id, item.task, start, end, inferred_duration=item.duration_minutes is None))
-            busy.append(BusyPeriod(start, end, "task", item.id))
+            busy.append(
+                BusyPeriod(start - buffer, end + buffer, "task", item.id)
+            )
             if remaining_budget is not None:
                 remaining_budget -= used
             if used < duration:
@@ -500,7 +560,9 @@ def build_day_plan(
                     continue
                 block_end = start + timedelta(minutes=take)
                 plan.blocks.append(PlanBlock(item.id, item.task, start, block_end, inferred_duration=item.duration_minutes is None, segment=segment))
-                busy.append(BusyPeriod(start, block_end, "task", item.id))
+                busy.append(
+                    BusyPeriod(start - buffer, block_end + buffer, "task", item.id)
+                )
                 left -= take
                 segment += 1
                 if remaining_budget is not None:

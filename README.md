@@ -97,7 +97,10 @@ uv run python app.py token set
 
 `HOB_TELEGRAM_TOKEN` remains an environment-variable override for development.
 The first `/start` pairs Hob to that Telegram user; every other user and all
-group chats are rejected. For explicit deployment-time ownership, set
+group chats are rejected. A fresh owner then gets a four-step, resumable setup
+for planning hours, protected time, default effort, and transition space. Run
+`/setup` later to review it; every preference is visible in `/settings` and each
+change is undoable. For explicit deployment-time ownership, set
 `HOB_ALLOWED_TELEGRAM_USER_ID` before starting.
 
 ## Usage
@@ -120,6 +123,11 @@ Talk to it like a person:
   from the prior proposal. Hob proposes; it does not move anything until asked.
 - Say "plan work from 9 to 5" or "protect lunch from noon to 1" to change the
   planning frame in chat. `/settings` shows the live values.
+- Say "assume tasks take 45 minutes" or "leave 10 minutes between things" to
+  make unstated effort and breathing room explicit. Hob never learns hidden
+  preferences from behavior; it uses only settings you can inspect and undo.
+- After a plan, "start the second one" follows the plan order you just saw and
+  focuses that task without falsely marking it complete.
 - Add or edit constraints naturally: "the audit is due Friday", "this takes 45
   minutes", "do it after the numbers", "split it into two sessions", "prefer
   mornings", or "remind me an hour and 10 minutes before".
@@ -148,6 +156,8 @@ All configuration is environment variables:
 | `HOB_CALENDAR_BRIDGE` | Override path to the bridge executable | (bundled build) |
 | `HOB_WORK_HOURS` | Daily planning bounds, `HH:MM-HH:MM` | `09:00-17:30` |
 | `HOB_BREAKS` | Comma-separated protected time ranges | `12:00-13:00` |
+| `HOB_DEFAULT_DURATION` | Estimate for tasks with no stated duration | `30` |
+| `HOB_TRANSITION_BUFFER` | Minutes kept between commitments | `0` |
 
 The digest and recap times can also be changed in chat ("send the morning
 digest at 8"), no restart needed.

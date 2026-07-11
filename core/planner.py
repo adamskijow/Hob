@@ -39,6 +39,7 @@ from core.models import (
     Schedule,
     Setting,
     Snooze,
+    Start,
     Undo,
     Unknown,
     Wait,
@@ -134,6 +135,7 @@ class Plan:
     confirm: ConfirmIntent | None = None
     undo: bool = False  # the user asked to undo the last change
     settings: list[SettingChange] = field(default_factory=list)
+    starts: list[str] = field(default_factory=list)
     chitchat: str | None = None  # a warm reply to a social pleasantry
 
 
@@ -582,7 +584,12 @@ def _reconcile_capture(
         # misclassified intent ("taxes monday" read as tomorrow). Lone captures
         # only: with several, a trailing day must not smear across them (the
         # leading-date share above handles the "Tomorrow: A, B, C" shape).
-        corrected = dates.named_day_correction(message, due_date, today)
+        planned_words = (
+            message.split(";", 1)[0]
+            if literal_deadline and ";" in message
+            else message
+        )
+        corrected = dates.named_day_correction(planned_words, due_date, today)
         if corrected is not None:
             due_date = corrected
 
@@ -675,8 +682,26 @@ def _reconcile_setting(action: Setting, plan: Plan) -> None:
             plan.pending.append(Pending(kind="setting", question=question, key=action.key))
             return
         plan.settings.append(SettingChange(key=action.key, value=value))
+    elif action.key in ("default_duration", "transition_buffer"):
+        value = _parse_minutes(action.raw)
+        low, high = (5, 480) if action.key == "default_duration" else (0, 120)
+        if value is None or not low <= value <= high:
+            what = (
+                "default task estimate"
+                if action.key == "default_duration"
+                else "transition buffer"
+            )
+            question = f"how many minutes should i use for the {what}?"
+            plan.questions.append(question)
+            plan.pending.append(
+                Pending(kind="setting", question=question, key=action.key)
+            )
+            return
+        plan.settings.append(SettingChange(key=action.key, value=str(value)))
     else:
-        plan.questions.append("i can change digest, recap, working-hours, and break times.")
+        plan.questions.append(
+            "i can change digest, recap, work hours, breaks, default effort, and buffers."
+        )
 
 
 def _parse_time_range(raw: str) -> str | None:
@@ -706,6 +731,23 @@ def _parse_time_range(raw: str) -> str | None:
         if hour < 12:
             end = f"{hour + 12:02d}:{minute:02d}"
     return f"{start}-{end}" if end > start else None
+
+
+def _parse_minutes(raw: str) -> int | None:
+    low = raw.strip().lower()
+    if re.search(r"\b(?:no|zero)\s+(?:buffer|minutes?)\b|\bnone\b", low):
+        return 0
+    if "half an hour" in low or "half hour" in low:
+        return 30
+    if "quarter of an hour" in low or "quarter hour" in low:
+        return 15
+    if re.search(r"\b(?:an|one) hour\b", low):
+        return 60
+    hours = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:hours?|hrs?)\b", low)
+    if hours:
+        return round(float(hours.group(1)) * 60)
+    match = re.search(r"\b(\d+)\s*(minutes?|mins?)?\b", low)
+    return int(match.group(1)) if match else None
 
 
 def _reconcile_prioritize(
@@ -1103,6 +1145,7 @@ def _fix_everything_but(actions: list, ctx) -> list:
     if not tail_words:
         return actions
     labels = {i["id"]: i.get("label", "") for i in ctx.active_items}
+    by_pos = {str(n): i["id"] for n, i in enumerate(ctx.active_items, start=1)}
     excluded = [i for i, lab in labels.items() if _tail_matches(lab, tail_words)]
     if not excluded:
         return actions
@@ -1115,7 +1158,11 @@ def _fix_everything_but(actions: list, ctx) -> list:
         return actions
     singles = [a for a in actions if isinstance(a, (Complete, Drop))]
     if singles and all(
-        _tail_matches(labels.get(a.target, ""), tail_words) for a in singles
+        _tail_matches(
+            labels.get(_resolve_ref(a.target, labels, by_pos) or "", ""),
+            tail_words,
+        )
+        for a in singles
     ):
         # Every explicit action targets an item the user EXCLUDED: inverted.
         op = "drop" if all(isinstance(a, Drop) for a in singles) else "complete"
@@ -1124,20 +1171,161 @@ def _fix_everything_but(actions: list, ctx) -> list:
     return actions
 
 
+_ORDINAL_POSITIONS = {
+    "first": "1", "second": "2", "third": "3", "fourth": "4",
+    "fifth": "5", "sixth": "6", "seventh": "7", "eighth": "8",
+    "ninth": "9", "tenth": "10",
+}
+_REFERENCE_ACTIONS = (
+    Amend, Complete, Drop, Note, Prioritize, Recur, Reschedule, Resume,
+    Schedule, Snooze, Start, Wait,
+)
+
+
+def _literal_ordinal(message: str) -> str | None:
+    match = re.search(
+        r"\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)"
+        r"(?:\s+one|\s+task|\s+item)?\b",
+        message,
+        re.IGNORECASE,
+    )
+    return _ORDINAL_POSITIONS.get(match.group(1).lower()) if match else None
+
+
+def _strongly_names_item(text: str, item: dict | None) -> bool:
+    if not item:
+        return False
+    label_words = list(dict.fromkeys(_words(item.get("label", ""))))
+    text_words = _words(text)
+    if not label_words or not text_words:
+        return False
+    matched = [
+        label_word
+        for label_word in label_words
+        if _word_hits(label_word, text_words)
+    ]
+    if len(matched) >= min(2, len(label_words)):
+        return True
+    generic = {
+        "call", "draft", "email", "item", "meeting", "new", "plan",
+        "report", "review", "task", "waiting", "work",
+    }
+    return any(len(word) >= 4 and word not in generic for word in matched)
+
+
+def _merge_new_capture_constraints(actions: list, ctx) -> list:
+    """Attach a pronoun-led constraint clause to the new capture it describes.
+
+    Small models occasionally emit "new task; it is due Monday" as a Capture
+    plus a Schedule aimed at an unrelated open item. The literal pronoun and the
+    absence of that target's words make the ownership deterministic.
+    """
+    captures = [action for action in actions if isinstance(action, Capture)]
+    schedules = [action for action in actions if isinstance(action, Schedule)]
+    if (
+        len(captures) != 1
+        or not schedules
+        or not re.search(r"[;,.]\s*(?:it|this|that)\b", ctx.message, re.I)
+    ):
+        return actions
+    capture = captures[0]
+    active = {item["id"].lower(): item.get("label", "") for item in ctx.active_items}
+    by_pos = {str(n): item["id"] for n, item in enumerate(ctx.active_items, start=1)}
+    merged: set[int] = set()
+    constraint_clause = re.split(r"[;,.]", ctx.message, maxsplit=1)[-1]
+    for schedule in schedules:
+        target = _resolve_ref(schedule.target, active, by_pos)
+        target_item = (
+            {"label": active.get(target, "")} if target is not None else None
+        )
+        if _strongly_names_item(constraint_clause, target_item):
+            continue
+        if capture.deadline is None and schedule.deadline is not None:
+            capture.deadline = schedule.deadline
+        if capture.duration_minutes is None and schedule.duration_minutes is not None:
+            capture.duration_minutes = schedule.duration_minutes
+            capture.duration_confidence = schedule.duration_confidence
+        if schedule.schedule_kind is not None:
+            capture.schedule_kind = schedule.schedule_kind
+        if schedule.splittable is not None:
+            capture.splittable = schedule.splittable
+        if capture.earliest is None and schedule.earliest is not None:
+            capture.earliest = schedule.earliest
+            capture.earliest_time = schedule.earliest_time
+        if capture.preferred_window is None and schedule.preferred_window:
+            capture.preferred_window = schedule.preferred_window
+        if schedule.depends_on:
+            capture.depends_on = list(schedule.depends_on)
+        if schedule.reminder_offsets:
+            capture.reminder_offsets = list(schedule.reminder_offsets)
+        merged.add(id(schedule))
+    return [action for action in actions if id(action) not in merged]
+
+
+def _recover_new_recurrence(actions: list, ctx) -> list:
+    """Recover a new recurring capture misclassified as editing a series."""
+    if len(actions) != 1 or not isinstance(actions[0], Recur):
+        return actions
+    action = actions[0]
+    active = {item["id"].lower(): item.get("label", "") for item in ctx.active_items}
+    by_pos = {str(n): item["id"] for n, item in enumerate(ctx.active_items, start=1)}
+    if _resolve_ref(action.target, active, by_pos) is not None:
+        return actions
+    match = re.search(
+        r"\bevery\s+(\d+)\s+(day|week|month|year)s?\b",
+        ctx.message,
+        re.IGNORECASE,
+    )
+    if not match:
+        return actions
+    task = ctx.message[:match.start()].strip(" ,;:")
+    if not task:
+        return actions
+    best, _ = _best_item(_words(task), ctx.active_items)
+    if _strongly_names_item(task, best):
+        return actions
+    anchor = (
+        "completion"
+        if re.search(r"\bafter (?:i |it )?(?:finish|complete)", ctx.message, re.I)
+        else "fixed"
+    )
+    return [
+        Capture(
+            task=task,
+            raw=ctx.message,
+            repeat=f"every:{int(match.group(1))}:{match.group(2).lower()}",
+            repeat_anchor=anchor,
+            repeat_count=action.count,
+        )
+    ]
+
+
 def reconcile(actions: list, ctx) -> Plan:
     today = date.fromisoformat(ctx.today)
     actions = _fix_everything_but(actions, ctx)
+    actions = _recover_new_recurrence(actions, ctx)
+    actions = _merge_new_capture_constraints(actions, ctx)
     if re.search(
         r"\b(waiting on|blocked on|cannot start until|can't start until)\b",
         ctx.message,
         re.IGNORECASE,
     ):
-        actions = [
-            Wait(target=action.target, confidence=action.confidence)
-            if isinstance(action, Note)
-            else action
-            for action in actions
-        ]
+        converted = []
+        for action in actions:
+            if isinstance(action, Note):
+                converted.append(
+                    Wait(target=action.target, confidence=action.confidence)
+                )
+            elif isinstance(action, Capture):
+                best, _ = _best_item(_words(ctx.message), ctx.active_items)
+                converted.append(
+                    Wait(target=best["id"], confidence=1.0)
+                    if _strongly_names_item(ctx.message, best)
+                    else action
+                )
+            else:
+                converted.append(action)
+        actions = converted
     active = {i["id"]: i.get("label", "") for i in ctx.active_items}
     plan = Plan()
     captures = [a for a in actions if isinstance(a, Capture)]
@@ -1145,6 +1333,34 @@ def reconcile(actions: list, ctx) -> Plan:
     active_due = {i["id"].lower(): i.get("due_date") for i in ctx.active_items}
     # 1-based position -> id, so a typed "drop 2" resolves to the displayed item.
     by_pos = {str(n): i["id"] for n, i in enumerate(ctx.active_items, start=1)}
+    if ctx.focus and ctx.focus[0].get("context") == "plan":
+        planned = [
+            item
+            for item in ctx.focus
+            if item.get("id") in active
+        ]
+        if planned:
+            by_pos = {
+                str(n): item["id"] for n, item in enumerate(planned, start=1)
+            }
+    ordinal = _literal_ordinal(ctx.message)
+    if ordinal and ordinal in by_pos:
+        if (
+            ctx.focus
+            and ctx.focus[0].get("context") == "plan"
+            and re.fullmatch(
+                r"\s*(?:(?:i(?:'ll| will)|let'?s)\s+)?"
+                r"(?:do|start|work on)\s+(?:the\s+)?"
+                r"(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)"
+                r"(?:\s+one|\s+task|\s+item)?[.!]?\s*",
+                ctx.message,
+                re.IGNORECASE,
+            )
+        ):
+            actions = [Start(target=by_pos[ordinal], confidence=1.0)]
+        elif len(actions) == 1 and isinstance(actions[0], _REFERENCE_ACTIONS):
+            actions[0].target = by_pos[ordinal]
+            actions[0].confidence = 1.0
     # A date at the START of a multi-task message ("Tomorrow I need to A, B, C")
     # applies to all the tasks; the model attaches it to the first one and leaves
     # the rest with no date. Detect the leading date in the text, then take the
@@ -1162,6 +1378,17 @@ def reconcile(actions: list, ctx) -> Plan:
             )
         elif isinstance(action, Amend):
             _reconcile_amend(action, active, by_pos, plan)
+        elif isinstance(action, Start):
+            target = _check_target(
+                action.target,
+                action.confidence,
+                active,
+                by_pos,
+                plan,
+                verb="start it",
+            )
+            if target is not None:
+                plan.starts.append(target)
         elif isinstance(action, Prioritize):
             _reconcile_prioritize(action, active, by_pos, plan)
         elif isinstance(action, Schedule):

@@ -80,11 +80,11 @@ Reuse this "cold decide, hot deliver" pattern for other voice, never for facts.
    screenshots and were reproduced this way.
 2. **Implement**, keeping the core pure and the fix deterministic where it is
    about correctness.
-3. **`uv run pytest`** (currently 286 passing). Add a unit test for any new core
+3. **`uv run pytest`** (currently 303 passing). Add a unit test for any new core
    behavior.
 4. **Run the eval** against the real model and add a case for the new behavior:
    `HOB_MODEL=qwen2.5:14b-instruct uv run python -m evals.interpreter_eval`
-   (currently 60/60). The eval is the real-model regression net; keep it green.
+   (currently 63/63). The eval is the real-model regression net; keep it green.
 5. **Deploy** by restarting the daemon (see Ops). Confirm the fix live.
 
 ## Ops (this is a live daemon)

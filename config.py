@@ -46,6 +46,8 @@ class Config:
     work_start: str
     work_end: str
     breaks: tuple[tuple[str, str], ...]
+    default_duration_minutes: int
+    transition_buffer_minutes: int
 
     @property
     def telegram_enabled(self) -> bool:
@@ -96,6 +98,14 @@ class Config:
             work_start=_range(src.get("HOB_WORK_HOURS", "09:00-17:30"))[0],
             work_end=_range(src.get("HOB_WORK_HOURS", "09:00-17:30"))[1],
             breaks=_breaks(src.get("HOB_BREAKS", "12:00-13:00")),
+            default_duration_minutes=_integer(
+                src.get("HOB_DEFAULT_DURATION", "30"),
+                "HOB_DEFAULT_DURATION",
+            ),
+            transition_buffer_minutes=_integer(
+                src.get("HOB_TRANSITION_BUFFER", "0"),
+                "HOB_TRANSITION_BUFFER",
+            ),
         )
         cfg.validate()
         return cfg
@@ -131,6 +141,10 @@ class Config:
             )
         if self.work_start >= self.work_end:
             raise ConfigError("HOB_WORK_HOURS must end after it starts")
+        if not 5 <= self.default_duration_minutes <= 480:
+            raise ConfigError("HOB_DEFAULT_DURATION must be between 5 and 480 minutes")
+        if not 0 <= self.transition_buffer_minutes <= 120:
+            raise ConfigError("HOB_TRANSITION_BUFFER must be between 0 and 120 minutes")
 
 
 def _boolean(value: str) -> bool:
@@ -140,6 +154,13 @@ def _boolean(value: str) -> bool:
     if low in {"0", "false", "no", "off"}:
         return False
     raise ConfigError("HOB_CALENDAR_ENABLED must be true or false")
+
+
+def _integer(value: str, name: str) -> int:
+    try:
+        return int(value.strip())
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be a whole number of minutes") from exc
 
 
 def _range(value: str) -> tuple[str, str]:

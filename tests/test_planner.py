@@ -10,7 +10,9 @@ from core.models import (
     InterpreterContext,
     Prioritize,
     Query,
+    Recur,
     Reschedule,
+    Schedule,
     Setting,
     Undo,
     Unknown,
@@ -110,6 +112,60 @@ def test_target_by_position_number():
     # The user sees positions; "drop 2" must resolve to the 2nd listed item's id.
     plan = reconcile([Complete(target="2", confidence=0.9)], ctx(ACTIVE))
     assert plan.mutations[0].target == "a2"
+
+
+def test_literal_ordinal_overrides_a_bad_model_target():
+    plan = reconcile(
+        [Complete(target="All items on deck", confidence=1.0)],
+        ctx(ACTIVE, message="the third one is done"),
+    )
+    assert plan.mutations[0].target == "a3"
+
+
+def test_plan_start_uses_displayed_order_without_completing():
+    focus = [
+        {"id": "a2", "label": "call the pool guy", "context": "plan"},
+        {"id": "a3", "label": "review SR audit", "context": "plan"},
+    ]
+    plan = reconcile(
+        [Prioritize(target="a2", level="normal")],
+        ctx(ACTIVE, message="do the second one", focus=focus),
+    )
+    assert plan.starts == ["a3"]
+    assert not plan.mutations
+
+
+def test_pronoun_constraint_clause_merges_into_new_capture():
+    plan = reconcile(
+        [
+            Capture(
+                task="draft the board report; it is due Monday",
+                raw="draft the board report Friday; it is due Monday",
+                when=When(kind="weekday", day="fri"),
+                duration_minutes=180,
+                splittable=True,
+            ),
+            Schedule(
+                target="a3",
+                deadline=When(kind="absolute", date="2026-07-06"),
+                clear=["deadline"],
+            ),
+        ],
+        ctx(
+            ACTIVE,
+            message=(
+                "draft the board report Friday; it is due Monday and takes "
+                "three hours in two sessions"
+            ),
+        ),
+    )
+    assert len(plan.mutations) == 1
+    mutation = plan.mutations[0]
+    assert mutation.kind == "capture"
+    assert mutation.task == "draft the board report"
+    assert mutation.due_date == "2026-07-03"
+    assert mutation.deadline_date == "2026-07-06"
+    assert mutation.duration_minutes == 180 and mutation.splittable
 
 
 def test_relate_by_position_number():
@@ -373,6 +429,55 @@ def test_capture_carries_waiting_and_note():
     assert plan.mutations[0].note == "about the leak"
 
 
+def test_waiting_capture_that_names_existing_item_becomes_wait_action():
+    plan = reconcile(
+        [
+            Capture(
+                task="the prez deck is waiting on sam's slides",
+                raw="the prez deck is waiting on sam's slides",
+                waiting=True,
+            )
+        ],
+        ctx(ACTIVE, message="the prez deck is waiting on sam's slides"),
+    )
+    assert len(plan.mutations) == 1
+    assert plan.mutations[0].kind == "wait"
+    assert plan.mutations[0].target == "a1"
+
+
+def test_waiting_new_task_with_one_shared_word_stays_a_capture():
+    active = [
+        {"id": "a1", "label": "draft quarterly report", "due_date": None}
+    ]
+    plan = reconcile(
+        [
+            Capture(
+                task="new report from Sam",
+                raw="new report is waiting on Sam",
+                waiting=True,
+            )
+        ],
+        ctx(active, message="new report is waiting on Sam"),
+    )
+    assert plan.mutations[0].kind == "capture"
+
+
+def test_new_recurrence_misclassified_as_series_edit_is_recovered():
+    plan = reconcile(
+        [Recur(target="default", op="anchor", count=5)],
+        ctx(
+            ACTIVE,
+            message="check the filters every 2 weeks after I finish, stop after 5 times",
+        ),
+    )
+    mutation = plan.mutations[0]
+    assert mutation.kind == "capture" and mutation.task == "check the filters"
+    assert mutation.recurrence["frequency"] == "week"
+    assert mutation.recurrence["interval"] == 2
+    assert mutation.recurrence["anchor"] == "completion"
+    assert mutation.recurrence["count"] == 5
+
+
 def test_resume_retargets_to_the_only_waiting_item():
     from core.models import Resume
 
@@ -474,6 +579,14 @@ def test_everything_but_inverts_a_lone_complete():
     )
     assert {m.target for m in plan.mutations} == {"a1", "a2"}
     assert all(m.kind == "complete" for m in plan.mutations)
+
+
+def test_everything_but_resolves_a_noisy_excluded_target():
+    plan = reconcile(
+        [Complete(target="id: a1", confidence=1.0)],
+        ctx(ACTIVE, message="I did everything today but the prez deck"),
+    )
+    assert {m.target for m in plan.mutations} == {"a2", "a3"}
 
 
 def test_everything_but_fills_empty_bulk_exclude():
@@ -584,6 +697,28 @@ def test_planning_frame_settings_parse_ranges_deterministically():
         ("work_hours", "09:00-17:00"),
         ("break_window", "12:00-13:00"),
     ]
+
+
+def test_effort_and_buffer_settings_parse_and_validate_minutes():
+    plan = reconcile(
+        [
+            Setting(key="default_duration", raw="assume 45 minutes"),
+            Setting(key="transition_buffer", raw="leave 10 minutes"),
+        ],
+        ctx(),
+    )
+    assert [(s.key, s.value) for s in plan.settings] == [
+        ("default_duration", "45"),
+        ("transition_buffer", "10"),
+    ]
+    no_buffer = reconcile(
+        [Setting(key="transition_buffer", raw="no buffer")], ctx()
+    )
+    assert no_buffer.settings[0].value == "0"
+    invalid = reconcile(
+        [Setting(key="default_duration", raw="900 minutes")], ctx()
+    )
+    assert not invalid.settings and invalid.pending
 
 
 def test_query_today_and_all():

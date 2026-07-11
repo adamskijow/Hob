@@ -11,13 +11,12 @@ snapshot.
 - **Live and in daily use.** Runs as a `launchd` daemon on macOS, with
   [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive. Model:
   `qwen2.5:14b-instruct` (7b works; 14b is more reliable on dense messages).
-- **Released:** v0.6.0. Calendar-aware feasibility adds an opaque EventKit busy
-  time bridge, deterministic time-grid planning, chat-settable work hours and
-  breaks, deadline/capacity warnings, splitting, and plan diffs. Schema remains
-  9; a verified backup is made before migrating v7 or v8 data.
-- **Green:** `uv run pytest` (286 passing), native bridge build, and the
+- **Released:** v0.7.0. Guided, resumable onboarding establishes an explicit
+  planning profile; default effort and transition buffers shape feasibility;
+  visible plan order safely anchors follow-up references. Schema remains 9.
+- **Green:** `uv run pytest` (303 passing), native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
-  evals.interpreter_eval`, 60/60).
+  evals.interpreter_eval`, 63/63).
 
 ## What is built
 
@@ -52,6 +51,13 @@ breaks from working hours, locks stated times, and packs flexible work without
 letting the model invent capacity. Event titles never leave the Swift bridge.
 The prior proposal is persisted as meta state so replanning shows a small diff.
 Calendar denial or an absent bridge falls back to working-hours-only planning.
+
+The v0.7 customer-profile layer adds a four-step `/setup` state machine that
+resumes across restart and uses ordinary pending Setting actions. Default task
+effort and transition space are explicit, inspectable, undoable inputs to the
+feasibility core. Plan blocks persist as ordered conversational focus so ordinal
+follow-ups target what was displayed. “Start the second one” focuses work without
+falsely completing it. The increment audit is in `docs/audits/v0.7.md`.
 
 ## How development goes here
 

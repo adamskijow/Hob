@@ -22,6 +22,21 @@ The full tour of the loop and the plain-language features. The
 Feature 4 is the reason Hob exists rather than a standard to-do app. The
 interpreter is the load-bearing component; everything else is plumbing.
 
+## Onboarding and explicit work style
+
+A fresh private `/start` pairs the owner and begins four short setup steps:
+planning hours, protected daily time, the estimate for tasks without a duration,
+and transition minutes between commitments. Setup state and its pending question
+are transactional local metadata, so the flow resumes after a restart. Every
+step can be skipped, the whole flow can be paused, and `/setup` resumes it later.
+`/settings` shows setup progress, Calendar readiness, and every resulting value.
+
+These preferences are explicit rather than inferred from private behavior.
+Natural-language changes use the normal validated setting and action-log path,
+so they are undoable and included in backup/export. Calendar permission remains
+an explicit command on the Mac; Telegram setup reports the state but cannot
+grant private-data access remotely.
+
 ## Asking instead of guessing
 
 When a message is ambiguous (two possible dates, an unclear reference) Hob asks
@@ -107,6 +122,13 @@ explicitly request a change. Calendar event titles never cross the Swift
 EventKit adapter boundary. Without permission or a bridge, the same planner
 falls back to working hours and breaks.
 
+Unknown task durations use the visible default estimate. A transition buffer
+expands busy periods only for feasibility math, leaving fixed commitments at
+their stated times and warning when a fixed time cannot honor the buffer. Plan
+order is stored as conversational focus, so "start the second one" resolves to
+the displayed plan rather than a different list order. Starting focuses the task
+and explicitly does not mark it complete.
+
 Search is semantic across task wording, the original capture, notes, and project
 tags, with literal search as the failure fallback.
 
@@ -124,7 +146,9 @@ work from 9 to 5", "protect lunch noon to 1").
 
 - `/today` lists only today's on-deck items.
 - `/list` lists every open item, including future and waiting tasks.
-- `/settings` shows the timezone, digest/recap times, planning hours, and breaks.
+- `/settings` shows timezone, digest/recap times, planning profile, Calendar,
+  and setup progress.
+- `/setup` starts or resumes the guided planning-profile setup.
 - `/undo` reverts your last change (one inbound message is one undoable batch;
   repeat to walk further back).
 - `/help` shows a one-liner.

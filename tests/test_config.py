@@ -32,6 +32,8 @@ def test_defaults_applied():
     assert c.calendar_enabled
     assert (c.work_start, c.work_end) == ("09:00", "17:30")
     assert c.breaks == (("12:00", "13:00"),)
+    assert c.default_duration_minutes == 30
+    assert c.transition_buffer_minutes == 0
 
 
 def test_allowed_telegram_user_id():
@@ -96,14 +98,20 @@ def test_planning_frame_configuration_and_validation():
         "HOB_CALENDAR_ENABLED": "off",
         "HOB_WORK_HOURS": "08:30-16:30",
         "HOB_BREAKS": "10:00-10:15,12:30-13:00",
+        "HOB_DEFAULT_DURATION": "45",
+        "HOB_TRANSITION_BUFFER": "10",
     })
     assert not cfg.calendar_enabled
     assert (cfg.work_start, cfg.work_end) == ("08:30", "16:30")
     assert cfg.breaks == (("10:00", "10:15"), ("12:30", "13:00"))
+    assert cfg.default_duration_minutes == 45
+    assert cfg.transition_buffer_minutes == 10
     for env in (
         {**BASE, "HOB_CALENDAR_ENABLED": "perhaps"},
         {**BASE, "HOB_WORK_HOURS": "9 to 5"},
         {**BASE, "HOB_BREAKS": "13:00-12:00"},
+        {**BASE, "HOB_DEFAULT_DURATION": "4"},
+        {**BASE, "HOB_TRANSITION_BUFFER": "121"},
     ):
         with pytest.raises(ConfigError):
             Config.from_env(env)

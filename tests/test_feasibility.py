@@ -71,6 +71,68 @@ def test_time_budget_is_a_hard_bound_and_unknown_duration_is_visible():
     assert any(deferred.reason == "does not fit the stated time budget" for deferred in plan.deferred)
 
 
+def test_explicit_default_duration_and_transition_buffer_shape_the_plan():
+    tasks = [item("a1", "first"), item("a2", "second")]
+    plan = build_day_plan(
+        tasks,
+        CalendarSnapshot("authorized"),
+        NOW,
+        PlanPreferences(
+            breaks=(),
+            default_duration_minutes=45,
+            transition_buffer_minutes=10,
+        ),
+    )
+    assert [
+        (block.start.strftime("%H:%M"), block.end.strftime("%H:%M"))
+        for block in plan.blocks
+    ] == [("09:00", "09:45"), ("09:55", "10:40")]
+    assert all(block.inferred_duration for block in plan.blocks)
+
+
+def test_transition_buffer_protects_both_sides_of_calendar_events():
+    snapshot = CalendarSnapshot(
+        "authorized",
+        [BusyPeriod(
+            datetime(2026, 7, 11, 10, 0, tzinfo=TZ),
+            datetime(2026, 7, 11, 11, 0, tzinfo=TZ),
+        )],
+    )
+    task = item("a1", "ninety minutes", duration_minutes=90)
+    plan = build_day_plan(
+        [task],
+        snapshot,
+        NOW,
+        PlanPreferences(
+            breaks=(),
+            transition_buffer_minutes=10,
+        ),
+    )
+    assert plan.blocks[0].start.strftime("%H:%M") == "11:10"
+
+
+def test_fixed_commitment_inside_buffer_is_flagged_but_not_moved():
+    snapshot = CalendarSnapshot(
+        "authorized",
+        [BusyPeriod(
+            datetime(2026, 7, 11, 9, 0, tzinfo=TZ),
+            datetime(2026, 7, 11, 10, 0, tzinfo=TZ),
+        )],
+    )
+    fixed = item(
+        "a1", "fixed call", due_date="2026-07-11", due_time="10:05",
+        duration_minutes=30, schedule_kind="fixed",
+    )
+    plan = build_day_plan(
+        [fixed],
+        snapshot,
+        NOW,
+        PlanPreferences(breaks=(), transition_buffer_minutes=10),
+    )
+    assert plan.blocks[0].start.strftime("%H:%M") == "10:05"
+    assert any("less than the configured transition buffer" in warning for warning in plan.warnings)
+
+
 def test_replanning_constraints_parse_literal_day_changes():
     prefs = parse_plan_preferences("afternoon gone; I can work after 10")
     assert prefs.earliest_time == "10:00"

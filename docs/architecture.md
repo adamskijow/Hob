@@ -65,6 +65,18 @@ create capacity, complete, move, or delete through this pass. The last proposal
 is stored as meta state so a replan can retain still-valid blocks and render a
 minimal diff.
 
+The planning profile is also meta state, but changes flow through typed Setting
+actions and the ordinary action log so `/undo`, backup, and export preserve the
+same contract as task edits. Feasibility receives validated default-duration and
+transition-buffer values. Generated plan order becomes typed conversational
+focus for 15 minutes; deterministic reference resolution uses that visible order
+for ordinal follow-ups. A `start` action changes focus only and states that the
+task was not completed.
+
+First-run onboarding is a small persisted state machine at the edge. Each step
+sets the normal pending Setting question, so model outages, invalid answers, and
+restarts retain the question without creating a parallel interpretation path.
+
 The Swift EventKit bridge is a signed background app because Calendar permission
 belongs to a stable macOS bundle identity. Apple exposes reads through a full-
 access permission tier, but the bridge implements only status, permission, and

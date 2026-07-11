@@ -197,6 +197,16 @@ CASES = [
              ("break_window", "12:00-13:00")
          ],
          "NL setting (protected break)"),
+    Case("assume tasks take 45 minutes unless I say otherwise",
+         lambda p: [(s.key, s.value) for s in p.settings] == [
+             ("default_duration", "45")
+         ],
+         "NL setting (default task estimate)"),
+    Case("leave 10 minutes between things",
+         lambda p: [(s.key, s.value) for s in p.settings] == [
+             ("transition_buffer", "10")
+         ],
+         "NL setting (transition buffer)"),
     Case("tomorrow I need to look at the slides, prep my 1130 meeting, and join the 2 o clock call",
          lambda p: kinds(p) == ["capture", "capture", "capture"]
          and all(m.due_date == "2026-06-30" for m in p.mutations),
@@ -214,6 +224,13 @@ CASES = [
          and p.mutations[0].priority == "high",
          "follow-up prioritize via focus",
          focus=[{"id": "a2", "label": "call the pool guy"}]),
+    Case("do the second one",
+         lambda p: p.starts == ["a3"] and not p.mutations,
+         "plan ordinal follows displayed plan order",
+         focus=[
+             {"id": "a2", "label": "call the pool guy", "context": "plan"},
+             {"id": "a3", "label": "review the SR audit", "context": "plan"},
+         ]),
     Case("buy milk tomorrow",
          lambda p: kinds(p) == ["capture"] and cap_due(p) == "2026-06-30",
          "own-subject message is not hijacked by focus",

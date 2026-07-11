@@ -30,6 +30,7 @@ from core.models import (
     Schedule,
     Setting,
     Snooze,
+    Start,
     Undo,
     Unknown,
     Wait,
@@ -138,10 +139,16 @@ ACTION_SCHEMA = {
                     _variant(
                         "setting",
                         {"key": {"type": "string", "enum": [
-                            "wake_time", "eod_time", "work_hours", "break_window"
+                            "wake_time", "eod_time", "work_hours", "break_window",
+                            "default_duration", "transition_buffer"
                         ]},
                          "raw": _STR},
                         ["type", "key", "raw"],
+                    ),
+                    _variant(
+                        "start",
+                        {"target": _STR, "confidence": _NUM},
+                        ["type", "target"],
                     ),
                     _variant(
                         "prioritize",
@@ -277,14 +284,21 @@ sent the slides"). Fields: type "resume", target, confidence. If the user says \
 the task is DONE, use complete instead.
 - setting: change a preference, not a task. Fields: type "setting", key \
 ("wake_time" = morning digest; "eod_time" = evening recap; "work_hours" = \
-the bounds Hob may plan inside; "break_window" = protected daily break), raw \
+the bounds Hob may plan inside; "break_window" = protected daily break; \
+"default_duration" = the estimate for tasks with no stated duration; \
+"transition_buffer" = open minutes kept between commitments), raw \
 (the literal time words). Use for "send the digest at 8", "plan work from 9 \
-to 5", "protect lunch from noon to 1", or "remove my lunch break".
+to 5", "protect lunch from noon to 1", "assume tasks take 45 minutes", \
+"leave 10 minutes between things", or "remove my lunch break".
 - prioritize: change the importance of an item ALREADY on the list. Fields: type \
 "prioritize", target (item number), level ("high", "normal", or "low"), \
 confidence. Use it when the user re-ranks an existing item: "make the prez deck \
 urgent", "the audit can wait", "bump the audit to the top". Match the number \
 exactly; never repurpose a different item because the words look similar.
+- start: choose an EXISTING item as the work to do next without marking it done. \
+Fields: type "start", target, confidence. Use for "start the second one", "work \
+on the first task", or "I will do number 2" when a plan/list is in context. \
+Completed/past-tense wording still uses complete.
 - amend: REWORD an EXISTING item's label ("rename the prez task to prep Q3"). \
 Fields: type "amend", target (item id), task (the full new label, keeping what \
 is still true), confidence. To attach extra info WITHOUT changing the label \
@@ -486,7 +500,17 @@ def _format_focus(ctx: InterpreterContext) -> str:
             f"  {ctx.replied['id']}: {ctx.replied['label']}\n"
         )
     if ctx.focus:
-        lines = "\n".join(f"  {f['id']}: {f['label']}" for f in ctx.focus)
+        plan_focus = ctx.focus[0].get("context") == "plan"
+        lines = "\n".join(
+            f"  {n}. {f['id']}: {f['label']}"
+            for n, f in enumerate(ctx.focus, start=1)
+        )
+        if plan_focus:
+            return (
+                "\nLast proposed plan, in the exact order shown to the user. "
+                'Ordinal references such as "the second one" refer to this '
+                "order, not the open-list order:\n" + lines + "\n"
+            )
         return (
             "\nJust discussed (most recent first) - a bare follow-up refers to "
             "the first of these:\n" + lines + "\n"
@@ -675,6 +699,11 @@ def _parse_one(action: object):
             Setting(key=key, raw=raw)
             if key and raw
             else Unknown(note="setting without key or value")
+        )
+    if kind == "start":
+        target = _str(action.get("target"))
+        return Start(target=target, confidence=conf) if target else Unknown(
+            note="start without target"
         )
     if kind == "prioritize":
         target = _str(action.get("target"))

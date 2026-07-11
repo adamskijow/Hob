@@ -265,6 +265,14 @@ class Prioritize:
 
 
 @dataclass
+class Start:
+    """Choose an item as the next focus without falsely completing it."""
+
+    target: str
+    confidence: float = 1.0
+
+
+@dataclass
 class Complete:
     target: str  # item id from the active list
     confidence: float = 1.0

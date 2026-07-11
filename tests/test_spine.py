@@ -358,6 +358,112 @@ def test_work_hours_and_break_are_chat_configurable_and_undoable():
     assert store.get_meta("work_hours") == "" and store.get_meta("breaks") == ""
 
 
+def test_default_effort_and_buffer_are_visible_and_undoable_together():
+    llm = FakeLlm({"actions": [
+        {"type": "setting", "key": "default_duration", "raw": "45 minutes"},
+        {"type": "setting", "key": "transition_buffer", "raw": "10 minutes"},
+    ]})
+    store = SqliteStore(":memory:")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York")
+    out = svc.handle(msg("assume 45 minutes and leave a 10 minute buffer"))
+    assert "45 minutes" in out and "10 minutes" in out
+    settings = svc.handle(msg("/settings", message_id=2))
+    assert "default estimate: 45m" in settings
+    assert "transition buffer: 10m" in settings
+    assert "2 change" in svc.handle(msg("/undo", message_id=3))
+    assert store.get_meta("default_duration") == ""
+    assert store.get_meta("transition_buffer") == ""
+
+
+def test_fresh_start_runs_resumable_guided_setup_to_completion():
+    from app import ONBOARDING_DONE_KEY, ONBOARDING_STAGE_KEY
+
+    llm = FakeLlm([
+        {"actions": [{"type": "setting", "key": "work_hours", "raw": "9 to 5"}]},
+        {"actions": [{"type": "setting", "key": "break_window", "raw": "no break"}]},
+        {"actions": [{"type": "setting", "key": "default_duration", "raw": "45 minutes"}]},
+        {"actions": [{"type": "setting", "key": "transition_buffer", "raw": "10 minutes"}]},
+    ])
+    store = SqliteStore(":memory:")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York")
+
+    start = svc.handle(InboundMessage("/start", 10, 1, 1, user_id=42))
+    assert "setup 1/4" in start and store.get_meta(ONBOARDING_STAGE_KEY) == "work_hours"
+    assert store.get_meta("pending")
+
+    first = svc.handle(InboundMessage("plan work from 9 to 5", 10, 2, 2, user_id=42))
+    assert "setup 2/4" in first and store.get_meta("work_hours") == "09:00-17:00"
+    second = svc.handle(InboundMessage("no break", 10, 3, 3, user_id=42))
+    assert "setup 3/4" in second and store.get_meta("breaks") == "none"
+    third = svc.handle(InboundMessage("assume 45 minutes", 10, 4, 4, user_id=42))
+    assert "setup 4/4" in third and store.get_meta("default_duration") == "45"
+    done = svc.handle(InboundMessage("leave 10 minutes", 10, 5, 5, user_id=42))
+    assert "setup complete" in done
+    assert store.get_meta("transition_buffer") == "10"
+    assert store.get_meta(ONBOARDING_DONE_KEY)
+    assert store.get_meta(ONBOARDING_STAGE_KEY) == ""
+    assert store.get_meta("pending") == ""
+    settings = svc.handle(InboundMessage("/settings", 10, 6, 6, user_id=42))
+    assert "default estimate: 45m" in settings
+    assert "transition buffer: 10m" in settings
+    assert "setup: complete" in settings
+
+
+def test_setup_resumes_after_restart_and_can_skip_or_cancel():
+    from app import ONBOARDING_STAGE_KEY
+
+    store = SqliteStore(":memory:")
+    store.set_meta("telegram_owner_user_id", "42")
+    store.set_meta(ONBOARDING_STAGE_KEY, "break_window")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    restarted = MessageService(store, clock, FakeLlm({"actions": []}), "America/New_York")
+    resumed = restarted.handle(InboundMessage("/setup", 10, 1, 1, user_id=42))
+    assert "setup 2/4" in resumed
+    skipped = restarted.handle(InboundMessage("skip", 10, 2, 2, user_id=42))
+    assert "setup 3/4" in skipped
+    canceled = restarted.handle(InboundMessage("cancel setup", 10, 3, 3, user_id=42))
+    assert "setup paused" in canceled
+    assert store.get_meta(ONBOARDING_STAGE_KEY) == "default_duration"
+    assert store.get_meta("pending") == ""
+    resumed_again = restarted.handle(InboundMessage("/setup", 10, 4, 4, user_id=42))
+    assert "setup 3/4" in resumed_again
+
+
+def test_returning_owner_start_does_not_force_setup():
+    store = SqliteStore(":memory:")
+    store.set_meta("telegram_owner_user_id", "42")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, FakeLlm({"actions": []}), "America/New_York")
+    out = svc.handle(InboundMessage("/start", 10, 1, 1, user_id=42))
+    assert "hi, i am hob" in out and "setup 1/4" not in out
+
+
+def test_plan_focus_positions_override_canonical_list_positions():
+    from app import FOCUS_KEY
+
+    svc, store = service(
+        FakeLlm({"actions": [{"type": "complete", "target": "2"}]})
+    )
+    store.set_meta(
+        FOCUS_KEY,
+        json.dumps({
+            "ts": "2026-06-29T09:00:00-04:00",
+            "items": [
+                {"id": "a2", "label": "call the pool guy", "context": "plan"},
+                {"id": "a3", "label": "review SR audit", "context": "plan"},
+            ],
+        }),
+    )
+    out = svc.handle(msg("do the second one"))
+    assert "Last proposed plan" in svc._llm.calls[0][0]
+    assert 'next: "review SR audit"' in out
+    assert "not marked it done" in out
+    assert store.get_item("a3").status == "open"
+    assert store.get_item("a1").status == "open"
+
+
 def test_followup_resolves_via_focus():
     # Turn 1 captures; turn 2's bare "make it 4pm" sees the captured item as the
     # conversational focus and reschedules it.
@@ -673,6 +779,8 @@ def test_plan_my_day_is_reasoned_read_only_and_validates_ids():
     assert "call the pool guy" in out and "review SR audit" in out
     assert "made-up" not in out
     assert [i.to_dict() for i in store.open_items()] == before
+    focus = json.loads(store.get_meta("focus"))
+    assert focus["items"] and focus["items"][0]["context"] == "plan"
 
 
 def test_plan_my_day_uses_injected_calendar_availability():
@@ -710,6 +818,45 @@ def test_plan_my_day_uses_injected_calendar_availability():
     assert "10:00–10:30 write brief" in out
     assert "calendar checked: 1 busy block" in out
     assert "Feasible timeline" in llm.calls[1][0]
+
+
+def test_split_plan_numbers_tasks_not_segments():
+    from core.feasibility import BusyPeriod, CalendarSnapshot
+
+    class Calendar:
+        def snapshot(self, start, end):
+            return CalendarSnapshot("authorized", [
+                BusyPeriod(
+                    datetime(2026, 6, 29, 10, 0, tzinfo=TZ),
+                    datetime(2026, 6, 29, 11, 0, tzinfo=TZ),
+                ),
+                BusyPeriod(
+                    datetime(2026, 6, 29, 11, 30, tzinfo=TZ),
+                    datetime(2026, 6, 29, 17, 30, tzinfo=TZ),
+                ),
+            ])
+
+    llm = FakeLlm([
+        {"actions": [{"type": "query", "kind": "plan"}]},
+        {"headline": "two focused passes", "picks": []},
+    ])
+    store = SqliteStore(":memory:")
+    store.add_item(Item(
+        id="a1", raw_text="draft report", task="draft report", due_date=None,
+        due_time=None, status="open", source="capture",
+        created_at="2026-06-29T08:00:00", updated_at="2026-06-29T08:00:00",
+        duration_minutes=90, splittable=True,
+    ))
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(
+        store, clock, llm, "America/New_York", calendar=Calendar(), breaks=()
+    )
+    out = svc.handle(msg("plan my day"))
+    assert "1: 09:00–10:00 draft report" in out
+    assert "↳ 11:00–11:30 draft report" in out
+    assert "2:" not in out
+    focus = json.loads(store.get_meta("focus"))
+    assert [entry["id"] for entry in focus["items"]] == ["a1"]
 
 
 def test_semantic_search_validates_model_selected_ids():
