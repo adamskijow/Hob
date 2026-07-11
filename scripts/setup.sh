@@ -7,10 +7,11 @@
 #
 #   scripts/setup.sh
 #
-# Honors HOB_MODEL (default qwen2.5:7b-instruct) and HOB_OLLAMA_HOST.
+# Honors HOB_MODEL (default qwen2.5:14b-instruct),
+# HOB_ALLOW_EXPERIMENTAL_MODEL, and HOB_OLLAMA_HOST.
 set -euo pipefail
 
-MODEL="${HOB_MODEL:-qwen2.5:7b-instruct}"
+MODEL="${HOB_MODEL:-qwen2.5:14b-instruct}"
 OLLAMA_HOST="${HOB_OLLAMA_HOST:-http://localhost:11434}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"

@@ -33,6 +33,7 @@ class LaunchdPaths:
 class InstalledDefinition:
     checkout: str
     database: str
+    model: str
     contains_token: bool
 
 
@@ -131,6 +132,7 @@ def installed_definition(paths: LaunchdPaths) -> InstalledDefinition | None:
     return InstalledDefinition(
         checkout=str(payload.get("WorkingDirectory") or "unknown"),
         database=str(environment.get("HOB_DB_PATH") or "unknown"),
+        model=str(environment.get("HOB_MODEL") or "unknown"),
         contains_token="HOB_TELEGRAM_TOKEN" in environment,
     )
 
@@ -210,12 +212,16 @@ def service_status(*, uid: int, run: Run = subprocess.run) -> tuple[bool, str]:
     )
     if result.returncode:
         return False, "not loaded"
-    lines = []
+    fields = {}
     for raw in result.stdout.splitlines():
         line = raw.strip()
-        if line.startswith(("pid =", "state =", "last exit code =")):
-            lines.append(line)
-    return True, "; ".join(dict.fromkeys(lines)) or "loaded"
+        for key in ("state", "pid", "last exit code"):
+            if line.startswith(f"{key} ="):
+                fields.setdefault(key, line)
+    detail = "; ".join(
+        fields[key] for key in ("state", "pid", "last exit code") if key in fields
+    )
+    return True, detail or "loaded"
 
 
 def restart_service(*, uid: int, run: Run = subprocess.run) -> None:
