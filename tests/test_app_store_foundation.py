@@ -115,6 +115,20 @@ def test_model_readiness_requires_a_bounded_correlated_generation_probe():
     assert 'status == "available" ? .available : .unavailable' in controller
 
 
+def test_portable_task_runtime_is_compiled_into_app_and_agent():
+    project = (XCODE_PROJECT / "project.pbxproj").read_text(encoding="utf-8")
+    runtime = (
+        FOUNDATION / "Sources" / "HobAppCore" / "TaskRuntime.swift"
+    ).read_text(encoding="utf-8")
+
+    assert "TaskRuntime.swift in Sources" in project
+    assert "TaskRuntime.swift in Agent Sources" in project
+    assert "request.version == 1" in runtime
+    assert "request.message.utf8.count <= 20_000" in runtime
+    assert "actions.count <= 32" in runtime
+    assert "undoSnapshots.count == 100" in runtime
+
+
 def test_background_helper_is_sandboxed_and_shares_only_required_storage():
     with (FOUNDATION / "AppStore" / "HobAgent.entitlements").open("rb") as fh:
         entitlements = plistlib.load(fh)

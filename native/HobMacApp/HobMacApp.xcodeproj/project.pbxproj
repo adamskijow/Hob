@@ -20,6 +20,8 @@
 		C10000000000000000000002 /* FoundationModelController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000002 /* FoundationModelController.swift */; };
 		C10000000000000000000003 /* main.swift in Model Tool Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000003 /* main.swift */; };
 		C10000000000000000000004 /* HobFoundationBridge in Embed Model Tool */ = {isa = PBXBuildFile; fileRef = C20000000000000000000005 /* HobFoundationBridge */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		D10000000000000000000001 /* TaskRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000001 /* TaskRuntime.swift */; };
+		D10000000000000000000002 /* TaskRuntime.swift in Agent Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000001 /* TaskRuntime.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -82,6 +84,7 @@
 		C20000000000000000000003 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "FoundationBridge-main.swift"; path = ../HobAppFoundation/Sources/HobFoundationBridge/main.swift; sourceTree = "<group>"; };
 		C20000000000000000000004 /* HobFoundationBridge.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = HobFoundationBridge.entitlements; path = ../HobAppFoundation/AppStore/HobFoundationBridge.entitlements; sourceTree = "<group>"; };
 		C20000000000000000000005 /* HobFoundationBridge */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = HobFoundationBridge; sourceTree = BUILT_PRODUCTS_DIR; };
+		D20000000000000000000001 /* TaskRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TaskRuntime.swift; path = ../HobAppFoundation/Sources/HobAppCore/TaskRuntime.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -130,6 +133,7 @@
 				C20000000000000000000001 /* ModelReadiness.swift */,
 				C20000000000000000000002 /* FoundationModelController.swift */,
 				C20000000000000000000003 /* main.swift */,
+				D20000000000000000000001 /* TaskRuntime.swift */,
 			);
 			name = Sources;
 			sourceTree = "<group>";
@@ -284,6 +288,7 @@
 				B10000000000000000000003 /* BackgroundServiceController.swift in Sources */,
 				C10000000000000000000001 /* ModelReadiness.swift in Sources */,
 				C10000000000000000000002 /* FoundationModelController.swift in Sources */,
+				D10000000000000000000001 /* TaskRuntime.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -294,6 +299,7 @@
 				B10000000000000000000004 /* BackgroundService.swift in Agent Sources */,
 				B10000000000000000000005 /* SharedStorage.swift in Agent Sources */,
 				B10000000000000000000006 /* HobAgent.swift in Agent Sources */,
+				D10000000000000000000002 /* TaskRuntime.swift in Agent Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

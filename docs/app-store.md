@@ -46,6 +46,13 @@ application shell. It is still not an App Store archive:
   identifier, and is launched by the sandboxed app. Setup calls its bounded
   built-in generation probe only after the owner chooses Check On-Device Model.
   Reported framework availability alone never marks setup ready.
+- `HobAppCore.TaskRuntime` is the first native deterministic runtime slice. A
+  versioned, correlated, bounded turn request carries the original message and
+  typed model actions. The core owns date resolution, exact target validation,
+  confidence holds, atomic application, and undo. The same synthetic golden
+  fixture runs through the released Python behavior and Swift implementation.
+  Xcode compiles this core into both the app and agent, but activation remains
+  locked until App Group persistence and the complete behavior corpus exist.
 
 The Store targets intentionally contain no Ollama, uv, Homebrew, launchctl,
 shell installer, inbound network server, or arbitrary filesystem entitlement.
@@ -86,6 +93,13 @@ distribution signing, runtime embedding, and lifecycle rehearsals remain open.
   plan, confirmation, undo, queue recovery, and export/import version.
 - Run the supported Apple model corpus separately because system model updates
   can change interpretation quality.
+
+The first shared fixture now covers basic capture, tomorrow and weekday math,
+multi-action correction, complete, drop, reschedule, clarification, confidence
+confirmation, missing targets, and repeated undo. This is a contract seed, not
+parity proof. Recurrence, constraints, planning, queries, settings, durable
+transactions, pending confirmations, reminders, Calendar, migration, and every
+literal correctness backstop remain release gates.
 
 ### D. Store release
 
