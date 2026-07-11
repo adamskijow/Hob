@@ -19,6 +19,8 @@ from core.models import (
     OutboxEntry,
     PlanRun,
     PlanSession,
+    QueueEntrySummary,
+    QueueRecoveryEvent,
 )
 
 
@@ -207,4 +209,20 @@ class Store(Protocol):
     def mark_outbound_sent(
         self, entry_id: int, sent_at: str, telegram_message_id: int | None
     ) -> None:
+        ...
+
+    def queue_metrics(self) -> dict[str, int]:
+        ...
+
+    def queue_problem_entries(self) -> list[QueueEntrySummary]:
+        ...
+
+    def recover_queue_entry(
+        self, direction: str, ref: str, action: str, at: str
+    ) -> bool:
+        ...
+
+    def queue_recovery_history(
+        self, limit: int = 20
+    ) -> list[QueueRecoveryEvent]:
         ...

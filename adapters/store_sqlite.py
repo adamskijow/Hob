@@ -28,10 +28,12 @@ from core.models import (
     OutboxEntry,
     PlanRun,
     PlanSession,
+    QueueEntrySummary,
+    QueueRecoveryEvent,
     RecurrenceRule,
 )
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS items (
@@ -142,6 +144,20 @@ CREATE INDEX IF NOT EXISTS idx_plan_sessions_due
 ON plan_sessions(status, notified_at, start);
 """
 
+_QUEUE_RECOVERY_DDL = """
+CREATE TABLE IF NOT EXISTS queue_recovery_log (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    direction      TEXT NOT NULL,
+    entry_ref      TEXT NOT NULL,
+    action         TEXT NOT NULL,
+    at             TEXT NOT NULL,
+    prior_status   TEXT NOT NULL,
+    prior_attempts INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_queue_recovery_at
+ON queue_recovery_log(at, id);
+"""
+
 
 class SqliteStore:
     def __init__(self, path: str) -> None:
@@ -240,6 +256,10 @@ class SqliteStore:
             # Proposed and explicitly adopted day-plan blocks. These are local
             # execution state, not task dates and never Calendar events.
             self._conn.executescript(_PLAN_DDL)
+        if version < 11:
+            # Explicit, reversible operator recovery for poison inbox/outbox
+            # rows. The log deliberately excludes payload, text, and errors.
+            self._conn.executescript(_QUEUE_RECOVERY_DDL)
         self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self._conn.commit()
 
@@ -960,17 +980,153 @@ class SqliteStore:
             )
             self._commit()
 
+    def queue_metrics(self) -> dict[str, int]:
+        def count(table: str, clause: str, args: tuple = ()) -> int:
+            return int(
+                self._conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE {clause}", args
+                ).fetchone()[0]
+            )
+
+        return {
+            "pending_in": count("inbox", "status='pending'"),
+            "pending_out": count("outbox", "status='pending'"),
+            "failed_in": count(
+                "inbox", "status='pending' AND last_error IS NOT NULL"
+            ),
+            "failed_out": count(
+                "outbox", "status='pending' AND last_error IS NOT NULL"
+            ),
+            "quarantined_in": count("inbox", "status='quarantined'"),
+            "quarantined_out": count("outbox", "status='quarantined'"),
+        }
+
     def queue_counts(self) -> tuple[int, int, int]:
-        pending_in = self._conn.execute(
-            "SELECT COUNT(*) FROM inbox WHERE status = 'pending'"
-        ).fetchone()[0]
-        pending_out = self._conn.execute(
-            "SELECT COUNT(*) FROM outbox WHERE status = 'pending'"
-        ).fetchone()[0]
-        failed = self._conn.execute(
-            "SELECT COUNT(*) FROM inbox WHERE status = 'pending' AND last_error IS NOT NULL"
-        ).fetchone()[0]
-        return pending_in, pending_out, failed
+        metrics = self.queue_metrics()
+        return (
+            metrics["pending_in"],
+            metrics["pending_out"],
+            metrics["failed_in"],
+        )
+
+    def queue_problem_entries(self) -> list[QueueEntrySummary]:
+        inbox = self._conn.execute(
+            "SELECT key, kind, status, attempts, created_at FROM inbox "
+            "WHERE status='quarantined' OR "
+            "(status='pending' AND last_error IS NOT NULL) "
+            "ORDER BY update_id, key"
+        ).fetchall()
+        outbox = self._conn.execute(
+            "SELECT id, kind, status, attempts, created_at FROM outbox "
+            "WHERE status='quarantined' OR "
+            "(status='pending' AND last_error IS NOT NULL) ORDER BY id"
+        ).fetchall()
+        return [
+            QueueEntrySummary(
+                "inbox", row["key"], row["kind"], row["status"],
+                row["attempts"], row["created_at"],
+            )
+            for row in inbox
+        ] + [
+            QueueEntrySummary(
+                "outbox", str(row["id"]), row["kind"], row["status"],
+                row["attempts"], row["created_at"],
+            )
+            for row in outbox
+        ]
+
+    def recover_queue_entry(
+        self,
+        direction: str,
+        ref: str,
+        action: str,
+        at: str,
+    ) -> bool:
+        if direction not in {"inbox", "outbox"}:
+            raise ValueError("queue direction must be inbox or outbox")
+        if action not in {"retry", "quarantine"}:
+            raise ValueError("queue action must be retry or quarantine")
+        table = direction
+        key = "key" if direction == "inbox" else "id"
+        value: str | int = ref
+        if direction == "outbox":
+            try:
+                value = int(ref)
+            except ValueError as exc:
+                raise ValueError("outbox reference must be a numeric id") from exc
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT status, attempts, last_error FROM {table} WHERE {key}=?",
+                (value,),
+            ).fetchone()
+            if row is None:
+                return False
+            recoverable = (
+                row["status"] == "quarantined" or row["last_error"] is not None
+            )
+            if not recoverable:
+                return False
+            if action == "quarantine" and row["status"] != "pending":
+                return False
+            self._conn.execute(
+                "INSERT INTO queue_recovery_log "
+                "(direction, entry_ref, action, at, prior_status, prior_attempts) "
+                "VALUES (?,?,?,?,?,?)",
+                (
+                    direction,
+                    str(ref),
+                    action,
+                    at,
+                    row["status"],
+                    row["attempts"],
+                ),
+            )
+            if action == "quarantine":
+                if direction == "inbox":
+                    self._conn.execute(
+                        "UPDATE inbox SET status='quarantined', completed_at=? "
+                        "WHERE key=?",
+                        (at, value),
+                    )
+                else:
+                    self._conn.execute(
+                        "UPDATE outbox SET status='quarantined' WHERE id=?",
+                        (value,),
+                    )
+            elif direction == "inbox":
+                self._conn.execute(
+                    "UPDATE inbox SET status='pending', attempts=0, "
+                    "last_error=NULL, completed_at=NULL WHERE key=?",
+                    (value,),
+                )
+            else:
+                self._conn.execute(
+                    "UPDATE outbox SET status='pending', attempts=0, "
+                    "last_error=NULL WHERE id=?",
+                    (value,),
+                )
+            self._commit()
+            return True
+
+    def queue_recovery_history(
+        self, limit: int = 20
+    ) -> list[QueueRecoveryEvent]:
+        rows = self._conn.execute(
+            "SELECT * FROM queue_recovery_log ORDER BY id DESC LIMIT ?",
+            (max(1, min(limit, 100)),),
+        ).fetchall()
+        return [
+            QueueRecoveryEvent(
+                row["id"],
+                row["direction"],
+                row["entry_ref"],
+                row["action"],
+                row["at"],
+                row["prior_status"],
+                row["prior_attempts"],
+            )
+            for row in rows
+        ]
 
     def execution_metrics(self) -> dict:
         """Privacy-safe adoption and nudge evidence for local status output."""
@@ -1149,6 +1305,7 @@ class SqliteStore:
         with self.transaction():
             for table in (
                 "sent_refs",
+                "queue_recovery_log",
                 "outbox",
                 "inbox",
                 "plan_sessions",

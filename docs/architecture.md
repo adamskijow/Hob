@@ -129,6 +129,15 @@ key, there is one unavoidable at-least-once edge: a process killed after
 Telegram accepts a send but before Hob records Telegram's response can produce
 a duplicate message. It cannot duplicate the underlying task mutation.
 
+Transient failures preserve strict order. For a failure that is permanently at
+the head of either queue, local recovery lists only content-free metadata. An
+operator can retry the retained row or explicitly quarantine it so later rows
+continue. Quarantine is never automatic and remains reversible. Inbox
+quarantine skips a transaction that rolled back; outbox quarantine skips only
+delivery of state that already committed. Recovery actions are recorded without
+payloads, text, errors, chat ids, item ids, or Telegram message ids. Queue
+mutations require the daemon's database lease.
+
 A process-lifetime advisory lease prevents two Hob daemons from opening the
 same data path and makes restore/import refuse to replace a database while its
 daemon is live. Backup and export remain safe against a running database.

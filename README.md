@@ -180,6 +180,8 @@ Inspect health, back up, export, or recover everything:
 
 ```
 uv run python app.py status
+uv run python app.py queue status
+uv run python app.py queue history
 uv run python app.py calendar status
 uv run python app.py backup /safe/place/hob-backup.db
 uv run python app.py export /safe/place/hob-export.json
@@ -192,6 +194,11 @@ candidate in isolation, save the current database beside it, and only then swap
 the data file atomically. If both a legacy checkout database and the app-data
 database exist, data commands refuse to guess; set `HOB_DB_PATH` explicitly.
 Portable export and verified restore include proposal and adopted-plan sessions.
+If a permanent inbound or outbound failure blocks later work, `queue status`
+shows content-free metadata and the exact recovery direction/reference. Stop
+the daemon before `queue retry DIRECTION REF` or
+`queue quarantine DIRECTION REF`. Quarantine retains the row and is reversible;
+the deployment guide explains the different inbox and outbox consequences.
 
 ## Reliability
 

@@ -140,6 +140,31 @@ class OutboxEntry:
     telegram_message_id: int | None = None
 
 
+@dataclass(frozen=True)
+class QueueEntrySummary:
+    """Privacy-safe metadata for a failed or quarantined delivery row."""
+
+    direction: str  # inbox | outbox
+    ref: str  # durable inbox key or numeric outbox id
+    kind: str
+    status: str
+    attempts: int
+    created_at: str
+
+
+@dataclass(frozen=True)
+class QueueRecoveryEvent:
+    """Auditable local operator action without message or error content."""
+
+    id: int
+    direction: str
+    ref: str
+    action: str  # retry | quarantine
+    at: str
+    prior_status: str
+    prior_attempts: int
+
+
 @dataclass
 class PlanRun:
     """A persisted proposal or explicitly adopted version of one day."""

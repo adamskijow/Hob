@@ -313,7 +313,7 @@ def test_released_v7_fixture_migrates_with_backup_and_data(tmp_path):
         migrated.enqueue_inbound("telegram:1", 1, "noop", {}, "now")
         assert len(migrated.pending_inbound()) == 1
 
-    backups = list(tmp_path.glob("hob.db.pre-v7-to-v10-*.bak"))
+    backups = list(tmp_path.glob("hob.db.pre-v7-to-v11-*.bak"))
     assert len(backups) == 1
     old = sqlite3.connect(backups[0])
     assert old.execute("PRAGMA user_version").fetchone()[0] == 7
@@ -333,7 +333,7 @@ def test_released_v9_fixture_adds_plan_tables_without_losing_data(tmp_path):
 
     with SqliteStore(str(db)) as migrated:
         item = migrated.get_item("a1")
-        assert migrated.schema_version == 10
+        assert migrated.schema_version == SCHEMA_VERSION
         assert item.task == "draft release notes" and item.duration_minutes == 45
         run = PlanRun(
             "p1", "2026-07-11", "proposed", "plan", "2026-07-11T08:00:00"
@@ -341,7 +341,9 @@ def test_released_v9_fixture_adds_plan_tables_without_losing_data(tmp_path):
         migrated.save_plan_run(run, [])
         assert migrated.latest_proposed_plan().id == "p1"
 
-    assert len(list(tmp_path.glob("hob.db.pre-v9-to-v10-*.bak"))) == 1
+        assert migrated.queue_recovery_history() == []
+
+    assert len(list(tmp_path.glob("hob.db.pre-v9-to-v11-*.bak"))) == 1
 
 
 def test_outbox_dedupe_and_delivery_state():
