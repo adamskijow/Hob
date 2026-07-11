@@ -33,5 +33,20 @@ jobs:
         if: runner.os == 'macOS'
         run: scripts/build_calendar_bridge.sh
 
+      - name: Build and test App Store foundation
+        if: runner.os == 'macOS'
+        run: swift test --package-path native/HobAppFoundation
+
+      - name: Build App Store shell bundle
+        if: runner.os == 'macOS'
+        run: >-
+          xcodebuild
+          -project native/HobMacApp/HobMacApp.xcodeproj
+          -scheme Hob
+          -configuration Debug
+          -derivedDataPath "$RUNNER_TEMP/hob-macapp-derived"
+          CODE_SIGNING_ALLOWED=NO
+          build
+
       - name: Test
         run: uv run pytest
