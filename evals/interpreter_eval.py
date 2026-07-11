@@ -38,6 +38,7 @@ class Case:
     active: list | None = None
     focus: list | None = None  # conversational focus, for follow-up cases
     replied: dict | None = None  # replied-to anchor, for reply cases
+    last_change_at: str | None = None  # recent undoable batch for retractions
 
 
 def kinds(p: Plan) -> list[str]:
@@ -129,6 +130,10 @@ CASES = [
     Case("scratch that",
          lambda p: p.undo is True,
          "conversational undo"),
+    Case("Nevermind I'm good",
+         lambda p: p.undo is True,
+         "recent standalone retraction undoes the last change",
+         last_change_at="2026-06-29T08:55:00"),
     Case("pick up the dry cleaning, it's urgent",
          lambda p: kinds(p) == ["capture"] and p.mutations[0].priority == "high",
          "new task captured with high priority"),
@@ -345,6 +350,7 @@ def main() -> int:
             message=c.msg, today=TODAY, now=f"{TODAY}T09:00:00", timezone=TZ,
             active_items=c.active or ACTIVE, last_digest=[],
             focus=c.focus or [], replied=c.replied,
+            last_change_at=c.last_change_at,
         )
         try:
             plan = reconcile(interpret(llm, ctx), ctx)

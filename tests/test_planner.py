@@ -408,6 +408,28 @@ def test_undo_action_sets_flag():
     assert reconcile([Undo()], ctx()).undo is True
 
 
+def test_recent_standalone_nevermind_overrides_model_but_stale_or_task_text_does_not():
+    recent = ctx(message="Nevermind I'm good")
+    recent.now = "2026-06-29T10:00:00-04:00"
+    recent.last_change_at = "2026-06-29T09:55:00-04:00"
+    plan = reconcile([Chitchat(reply="sounds good")], recent)
+    assert plan.undo and plan.chitchat is None and not plan.mutations
+
+    stale = ctx(message="Nevermind I'm good")
+    stale.now = "2026-06-29T10:20:01-04:00"
+    stale.last_change_at = "2026-06-29T10:00:00-04:00"
+    assert not reconcile([Chitchat(reply="sounds good")], stale).undo
+
+    task_text = ctx(message="never mind the taxes, pay rent")
+    task_text.now = "2026-06-29T10:00:00-04:00"
+    task_text.last_change_at = "2026-06-29T09:55:00-04:00"
+    model_capture = Capture(task="pay rent", raw=task_text.message)
+    result = reconcile([model_capture], task_text)
+    assert not result.undo and [mutation.kind for mutation in result.mutations] == [
+        "capture"
+    ]
+
+
 def test_note_wait_resume_reconcile():
     from core.models import Note, Resume, Wait
 

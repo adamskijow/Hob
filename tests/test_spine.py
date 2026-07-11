@@ -222,6 +222,29 @@ def test_undo_via_natural_language():
     assert "undid" in out and store.open_items() == []
 
 
+def test_immediate_nevermind_retracts_capture_instead_of_becoming_chitchat():
+    llm = FakeLlm([
+        {"actions": [{
+            "type": "capture",
+            "task": "hit the grift",
+            "raw": "Tomorrow I got to hit the grift",
+            "when": {"kind": "tomorrow"},
+        }]},
+        {"actions": [{"type": "chitchat", "reply": "sounds good"}]},
+    ])
+    store = SqliteStore(":memory:")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York")
+
+    svc.handle(msg("Tomorrow I got to hit the grift"))
+    assert any(item.task == "hit the grift" for item in store.open_items())
+
+    out = svc.handle(msg("Nevermind I'm good", message_id=2))
+
+    assert out == "undid 1 change(s)"
+    assert all(item.task != "hit the grift" for item in store.open_items())
+
+
 def test_done_query_lists_finished():
     llm = FakeLlm([
         {"actions": [{"type": "complete", "target": "1"}]},
