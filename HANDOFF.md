@@ -28,6 +28,12 @@ snapshot.
   mutation batch at most 15 minutes old can trigger undo; stale or task-bearing
   variants fail safe. Its exact feature head passed 347 tests and 73/73 model
   cases before merge.
+- **Live v0.9.1 evidence:** release commit `9a7d253` passed Ubuntu and macOS CI
+  in run `29165983344`, including the EventKit bridge. The release was tagged,
+  backed up, and deployed by graceful restart. A phone replay captured a new
+  tomorrow task and immediately retracted it with “Nevermind I'm good”; Hob
+  reported one undone change, the item is absent from storage, and queues are
+  clean.
 - **Live v0.8 evidence:** the exact launchd database contains one active and one
   superseded run, three canceled old sessions, one started and two planned
   revised sessions. The direct nudge reply produced `started`, not completion;
