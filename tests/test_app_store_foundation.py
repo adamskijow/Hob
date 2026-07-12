@@ -129,6 +129,25 @@ def test_portable_task_runtime_is_compiled_into_app_and_agent():
     assert "undoSnapshots.count == 100" in runtime
 
 
+def test_agent_uses_fail_closed_private_durable_task_storage():
+    project = (XCODE_PROJECT / "project.pbxproj").read_text(encoding="utf-8")
+    storage = (
+        FOUNDATION / "Sources" / "HobAppStorage" / "TaskStateStore.swift"
+    ).read_text(encoding="utf-8")
+    agent = (
+        FOUNDATION / "Sources" / "HobAgent" / "HobAgent.swift"
+    ).read_text(encoding="utf-8")
+
+    assert "TaskStateStore.swift in Agent Sources" in project
+    assert "TaskStateStore(directoryURL: try storage.taskStateDirectory())" in agent
+    assert "maximumBytes = 10_000_000" in storage
+    assert ".posixPermissions: 0o600" in storage
+    assert ".posixPermissions: 0o700" in storage
+    assert "destinationOfSymbolicLink" in storage
+    assert "try store.save(candidate.persistentState)" in storage
+    assert "runtime = candidate" in storage
+
+
 def test_background_helper_is_sandboxed_and_shares_only_required_storage():
     with (FOUNDATION / "AppStore" / "HobAgent.entitlements").open("rb") as fh:
         entitlements = plistlib.load(fh)

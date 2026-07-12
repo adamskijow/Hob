@@ -14,7 +14,7 @@ snapshot.
 - **Released:** v0.9.1. v0.9 adds a deterministic weekly capacity outlook,
   explicit working days, plan-aware EOD, first-adoption coaching, accessible
   media fallback, and privacy-safe activation metrics. Schema remains 10.
-- **Green:** `uv run pytest` (359 passing), 13 native App Store foundation
+- **Green:** `uv run pytest` (360 passing), 19 native App Store foundation
   tests, signed native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
   evals.interpreter_eval`, 73/73). The v0.9.1 patch head passed Ubuntu and macOS
@@ -58,6 +58,12 @@ snapshot.
   correction, confidence holds, unknown targets, atomic multi-action turns,
   and repeated undo. It remains in-memory and intentionally cannot unlock the
   background service. See `docs/audits/app-store-runtime-contract.md`.
+- **Store durable-state increment:** task state and bounded undo history now
+  persist atomically in the protected App Group with private permissions,
+  validation, size and symlink defenses, and explicit previous-state recovery.
+  A save failure cannot commit the in-memory candidate or return success. The
+  agent validates storage at startup but remains health-only and registration
+  stays locked. See `docs/audits/app-store-durable-state.md`.
 - **Live v0.8 evidence:** the exact launchd database contains one active and one
   superseded run, three canceled old sessions, one started and two planned
   revised sessions. The direct nudge reply produced `started`, not completion;

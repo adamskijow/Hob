@@ -59,4 +59,11 @@ public struct SharedStorage: Sendable {
     public func agentHealthURL() throws -> URL {
         try applicationSupportDirectory().appendingPathComponent("agent-health.json")
     }
+
+    public func taskStateDirectory() throws -> URL {
+        try applicationSupportDirectory().appendingPathComponent(
+            "Runtime",
+            isDirectory: true
+        )
+    }
 }

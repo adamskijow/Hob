@@ -30,8 +30,13 @@ through the Python reference and Swift core. A versioned runtime request keeps
 the original message beside typed model actions so literal safety backstops can
 remain deterministic. Unsupported actions, protocol versions, oversized input,
 ambiguous dates, missing targets, and low-confidence mutations fail closed.
-The Store helper cannot be activated until durable App Group transactions and
-the complete release corpus replace the initial in-memory slice.
+Store task and undo state is a versioned, bounded document in the App Group.
+Each candidate turn is applied to a copy, atomically persisted with a verified
+previous-state recovery copy, and only then becomes the live runtime state.
+Corrupt, oversized, future-version, duplicate-id, invalid-date, and redirected
+paths fail closed. The Store helper cannot be activated until the complete
+release corpus and durable inbox/outbox edges replace the initial behavior
+slice.
 
 The first native package in `native/HobAppFoundation` establishes three seams:
 

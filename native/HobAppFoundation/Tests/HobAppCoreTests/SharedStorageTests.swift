@@ -14,6 +14,7 @@ import Testing
 
     #expect(try storage.databaseURL().path == "/private/tmp/hob-app-group/Library/Application Support/Hob/hob.db")
     #expect(try storage.agentHealthURL().path == "/private/tmp/hob-app-group/Library/Application Support/Hob/agent-health.json")
+    #expect(try storage.taskStateDirectory().path == "/private/tmp/hob-app-group/Library/Application Support/Hob/Runtime")
 }
 
 @Test func missingAppGroupFailsClosed() {
