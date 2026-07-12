@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 import asyncio
+import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -218,6 +219,9 @@ def test_eod_reviews_adopted_sessions_without_inferring_completion():
     assert "plan references no longer in the task store:\n- missing block" in text
     assert "elapsed sessions are not marked complete" in text
     assert store.get_item("a2").status == "open"
+    presented = json.loads(store.get_meta("last_presented_list"))
+    assert presented["kind"] == "eod"
+    assert presented["items"] == [{"id": "a2", "label": "unfinished block"}]
 
 
 def test_eod_falls_back_to_task_recap_when_plan_state_cannot_be_read(monkeypatch):

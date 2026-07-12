@@ -152,6 +152,7 @@ DAY_CODES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 # resolve. Stale focus is ignored after this many minutes.
 FOCUS_KEY = "focus"
 FOCUS_TTL_MINUTES = 15
+PRESENTED_LIST_KEY = "last_presented_list"
 LAST_PLAN_KEY = "last_day_plan"
 # Reactions on a Hob message that maps to an item: these complete it, this drops
 # it. Anything else (hearts on chit-chat) is appreciation, not an instruction.
@@ -652,12 +653,31 @@ class MessageService:
             timezone=self._timezone,
             active_items=active,
             last_digest=last_items,
+            presented_items=self._load_presented_list(),
             pending=json.loads(raw_pending) if raw_pending else [],
             focus=self._load_focus(),
             replied=self._replied_item(reply_to),
             forwarded_from=forwarded_from,
             last_change_at=last_batch[0].ts if last_batch else None,
         )
+
+    def _load_presented_list(self) -> list[dict]:
+        raw = self._store.get_meta(PRESENTED_LIST_KEY)
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+            shown_at = datetime.fromisoformat(data["ts"])
+            age = self._clock.now() - shown_at
+            if not timedelta(0) <= age <= timedelta(hours=24):
+                return []
+            open_ids = {item.id for item in self._store.open_items()}
+            return [
+                item for item in data.get("items", [])
+                if item.get("id") in open_ids and item.get("label")
+            ][:20]
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return []
 
     def _load_focus(self) -> list[dict]:
         """The items the last message touched, if recent enough to still be the
@@ -2244,6 +2264,7 @@ class EODService:
         except Exception as exc:
             log.warning("adopted plan unavailable for evening recap: %s", exc)
             run, sessions = None, []
+        displayed: list[Item] = []
         if run is None:
             if not on_deck:
                 return True  # nothing was on deck; nothing to recap, day is done
@@ -2254,6 +2275,7 @@ class EODService:
                 "evening. what got done today? tell me and i'll check them off.\n"
                 + lines
             )
+            displayed = on_deck
         else:
             done_labels = list(dict.fromkeys(
                 session.label for session in sessions if session.status == "done"
@@ -2283,6 +2305,9 @@ class EODService:
                     if session.item_id in seen:
                         continue
                     seen.add(session.item_id)
+                    item = self._store.get_item(session.item_id)
+                    if item is not None:
+                        displayed.append(item)
                     windows = [
                         f"{part.start[11:16]}-{part.end[11:16]}"
                         for part in open_sessions
@@ -2301,6 +2326,7 @@ class EODService:
             if extra:
                 lines.append("also still on deck:")
                 lines.extend(f"- {item.task}" for item in extra)
+                displayed.extend(extra)
             if open_sessions or extra or missing_sessions:
                 lines.append(
                     "what actually got done? tell me; elapsed sessions are not "
@@ -2313,6 +2339,22 @@ class EODService:
             await self._send(int(chat), text, dedupe_key=f"eod:{today}")
         except TypeError:
             await self._send(int(chat), text)
+        presented = []
+        seen_ids: set[str] = set()
+        for item in displayed:
+            if item.id not in seen_ids:
+                seen_ids.add(item.id)
+                presented.append({"id": item.id, "label": item.task})
+        self._store.set_meta(
+            PRESENTED_LIST_KEY,
+            json.dumps(
+                {
+                    "ts": self._clock.now().isoformat(),
+                    "kind": "eod",
+                    "items": presented,
+                }
+            ),
+        )
         return True
 
 

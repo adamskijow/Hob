@@ -1101,9 +1101,22 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
             plan.questions.append("which day did you mean?")
             return
         target_date = when.date
-    matching = [
-        i for i in ctx.active_items if _in_scope(i, scope, ctx.today, target_date)
-    ]
+    list_reference = re.search(
+        r"\b(?:that|this) list\b|\b(?:those|these) (?:tasks|items|ones)\b",
+        ctx.message,
+        re.IGNORECASE,
+    )
+    if list_reference:
+        if not ctx.presented_items:
+            plan.questions.append("which list did you mean? i changed nothing.")
+            return
+        presented_ids = {item["id"] for item in ctx.presented_items}
+        matching = [i for i in ctx.active_items if i["id"] in presented_ids]
+    else:
+        matching = [
+            i for i in ctx.active_items
+            if _in_scope(i, scope, ctx.today, target_date)
+        ]
     if not matching:
         plan.questions.append("nothing matched, so i changed nothing.")
         return

@@ -229,7 +229,7 @@ Context:
 {active}
 - This morning's digest, in order (for position references):
 {digest}
-{pending}{focus}{forwarded}
+{presented}{pending}{focus}{forwarded}
 The user's message:
 {message}
 
@@ -462,6 +462,18 @@ def _format_digest(items: list[dict]) -> str:
     )
 
 
+def _format_presented(items: list[dict]) -> str:
+    if not items:
+        return ""
+    lines = "\n".join(
+        f"  {n}. {i['id']}: {i['label']}" for n, i in enumerate(items, start=1)
+    )
+    return (
+        "\nMost recently presented proactive list. Phrases such as 'that list' "
+        "refer only to these items:\n" + lines + "\n"
+    )
+
+
 def _format_pending(pending: list[dict]) -> str:
     """Render the clarifications Hob is waiting on, or "" if none. The model is
     told to answer with the user's date words verbatim (the core resolves them),
@@ -557,6 +569,7 @@ def build_prompt(ctx: InterpreterContext) -> str:
         timezone=ctx.timezone,
         active=_format_active(ctx.active_items),
         digest=_format_digest(ctx.last_digest),
+        presented=_format_presented(ctx.presented_items),
         pending=_format_pending(ctx.pending),
         focus=_format_focus(ctx),
         forwarded=_format_forwarded(ctx),

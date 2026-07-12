@@ -37,6 +37,7 @@ class Case:
     desc: str
     active: list | None = None
     focus: list | None = None  # conversational focus, for follow-up cases
+    presented: list | None = None  # most recent proactive list shown to user
     replied: dict | None = None  # replied-to anchor, for reply cases
     last_change_at: str | None = None  # recent undoable batch for retractions
 
@@ -113,6 +114,21 @@ CASES = [
          lambda p: len(p.mutations) >= 1
          and all(m.kind == "reschedule" and m.due_date == "2026-06-30" for m in p.mutations),
          "bulk reschedule to tomorrow"),
+    Case(
+        "Move everything on that list to Monday except the audit, that goes to Sunday",
+        lambda p: {m.target for m in p.mutations} == {"a1", "a2", "a3"}
+        and all(m.target not in {"a4", "a5"} for m in p.mutations),
+        "displayed-list reschedule cannot leak to unrelated tasks",
+        active=ACTIVE + [
+            {"id": "a4", "label": "unrelated future", "due_date": "2026-07-10"},
+            {"id": "a5", "label": "another future", "due_date": "2026-07-12"},
+        ],
+        presented=[
+            {"id": "a1", "label": "prep the prez deck"},
+            {"id": "a2", "label": "call the pool guy"},
+            {"id": "a3", "label": "review the SR audit"},
+        ],
+    ),
     Case("what's overdue",
          lambda p: [q.kind for q in p.queries] == ["overdue"],
          "overdue query"),
@@ -349,6 +365,7 @@ def main() -> int:
         ctx = InterpreterContext(
             message=c.msg, today=TODAY, now=f"{TODAY}T09:00:00", timezone=TZ,
             active_items=c.active or ACTIVE, last_digest=[],
+            presented_items=c.presented or [],
             focus=c.focus or [], replied=c.replied,
             last_change_at=c.last_change_at,
         )
