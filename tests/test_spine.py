@@ -1203,6 +1203,65 @@ def test_bulk_confirm_cancelled_by_non_yes():
     assert "got it" in out.lower()
 
 
+def test_eod_that_list_reschedule_cannot_move_unpresented_tasks():
+    llm = FakeLlm({
+        "actions": [
+            {
+                "type": "bulk",
+                "op": "reschedule",
+                "scope": "all",
+                "when": {"kind": "weekday", "which": "next", "day": "mon"},
+                "except": ["a3"],
+            },
+            {
+                "type": "reschedule",
+                "target": "a3",
+                "when": {"kind": "weekday", "which": "next", "day": "sun"},
+            },
+        ]
+    })
+    svc, store = service(llm)
+    for task_id, label, due in (
+        ("a4", "hit the grift", "2026-07-10"),
+        ("a5", "remind mortgage home insurance", "2026-07-12"),
+    ):
+        store.add_item(Item(
+            id=task_id,
+            raw_text=label,
+            task=label,
+            due_date=due,
+            due_time=None,
+            status="open",
+            source="capture",
+            created_at="2026-06-29T08:00:00-04:00",
+            updated_at="2026-06-29T08:00:00-04:00",
+        ))
+    store.set_meta("item_seq", "5")
+    store.set_meta(
+        "last_presented_list",
+        json.dumps({
+            "ts": "2026-06-29T09:00:00-04:00",
+            "kind": "eod",
+            "items": [
+                {"id": "a1", "label": "org prez"},
+                {"id": "a2", "label": "call the pool guy"},
+                {"id": "a3", "label": "review SR audit"},
+            ],
+        }),
+    )
+
+    svc.handle(msg(
+        "Move everything on that list to Monday except the audit, "
+        "that goes to Sunday"
+    ))
+
+    assert store.get_item("a1").due_date == "2026-07-06"
+    assert store.get_item("a2").due_date == "2026-07-06"
+    assert store.get_item("a3").due_date == "2026-07-05"
+    assert store.get_item("a4").due_date == "2026-07-10"
+    assert store.get_item("a5").due_date == "2026-07-12"
+
+
 def test_query_today_lists_items():
     llm = FakeLlm({"actions": [{"type": "query", "kind": "today"}]})
     svc, store = service(llm)

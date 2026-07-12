@@ -22,7 +22,7 @@ from core.models import (
 from core.planner import reconcile
 
 
-def ctx(active=None, message="", focus=None, replied=None):
+def ctx(active=None, message="", focus=None, replied=None, presented=None):
     return InterpreterContext(
         message=message,
         focus=focus or [],
@@ -32,6 +32,7 @@ def ctx(active=None, message="", focus=None, replied=None):
         timezone="America/New_York",
         active_items=active or [],
         last_digest=[],
+        presented_items=presented or [],
     )
 
 
@@ -385,6 +386,51 @@ def test_bulk_reschedule_moves_matching():
 def test_bulk_reschedule_unresolved_asks():
     plan = reconcile([Bulk(op="reschedule", scope="all", when=None)], ctx(ACTIVE))
     assert not plan.mutations and plan.questions
+
+
+def test_bulk_reschedule_that_list_touches_only_presented_items():
+    active = ACTIVE + [
+        {"id": "a4", "label": "unrelated future", "due_date": "2026-07-10"},
+        {"id": "a5", "label": "another future", "due_date": "2026-07-12"},
+    ]
+    plan = reconcile(
+        [
+            Bulk(
+                op="reschedule",
+                scope="all",
+                when=When(kind="weekday", which="next", day="mon"),
+                exclude=["a3"],
+            ),
+            Reschedule(
+                target="a3",
+                when=When(kind="weekday", which="next", day="sun"),
+            ),
+        ],
+        ctx(
+            active,
+            message=(
+                "move everything on that list to monday except the audit, "
+                "that goes to sunday"
+            ),
+            presented=[
+                {"id": "a1", "label": "org prez"},
+                {"id": "a2", "label": "call the pool guy"},
+                {"id": "a3", "label": "review SR audit"},
+            ],
+        ),
+    )
+
+    assert {mutation.target for mutation in plan.mutations} == {"a1", "a2", "a3"}
+    assert all(mutation.target not in {"a4", "a5"} for mutation in plan.mutations)
+
+
+def test_that_list_without_recent_presented_list_fails_closed():
+    plan = reconcile(
+        [Bulk(op="reschedule", scope="all", when=When(kind="tomorrow"))],
+        ctx(ACTIVE, message="move everything on that list to tomorrow"),
+    )
+    assert not plan.mutations
+    assert plan.questions == ["which list did you mean? i changed nothing."]
 
 
 def test_query_overdue_and_week():

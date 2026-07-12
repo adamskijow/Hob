@@ -396,6 +396,9 @@ class InterpreterContext:
     timezone: str
     active_items: list[dict]  # [{id, label, due_date}], the open items on deck
     last_digest: list[dict]  # [{id, label}], exactly as last presented
+    # Most recent proactive list shown to the user, such as the evening plan
+    # check. List-referential bulk commands are confined to these ids.
+    presented_items: list[dict] = field(default_factory=list)
     # Clarifications from the previous turn, persisted so a short reply resolves
     # against the question it answers. [{kind, question, task?/target?/label?}].
     pending: list[dict] = field(default_factory=list)

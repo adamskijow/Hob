@@ -11,13 +11,13 @@ snapshot.
 - **Live and in daily use.** Runs as a `launchd` daemon on macOS, with
   [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive. Model:
   `qwen2.5:14b-instruct` (7b works; 14b is more reliable on dense messages).
-- **Released:** v0.9.1. v0.9 adds a deterministic weekly capacity outlook,
+- **Released:** v0.9.2. v0.9 adds a deterministic weekly capacity outlook,
   explicit working days, plan-aware EOD, first-adoption coaching, accessible
   media fallback, and privacy-safe activation metrics. Schema remains 10.
-- **Green:** `uv run pytest` (360 passing), 19 native App Store foundation
+- **Green:** `uv run pytest` (363 passing), 19 native App Store foundation
   tests, signed native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
-  evals.interpreter_eval`, 73/73). The v0.9.1 patch head passed Ubuntu and macOS
+  evals.interpreter_eval`, 74/74). The v0.9.1 patch head passed Ubuntu and macOS
   CI in run `29165920137`.
 - **Live v0.9:** release commit `c656459` passed exact Ubuntu/macOS CI in run
   `29165341007`, was tagged and published as v0.9.0, backed up, and deployed by
@@ -35,6 +35,12 @@ snapshot.
   tomorrow task and immediately retracted it with “Nevermind I'm good”; Hob
   reported one undone change, the item is absent from storage, and queues are
   clean.
+- **v0.9.2 list-scope patch:** a live EOD reply exposed that “everything on
+  that list” could inherit the model's broad `all` scope and move unrelated
+  open tasks that were not displayed. Proactive EOD lists are now persisted for
+  24 hours, list-referential bulk turns are deterministically intersected with
+  those exact ids, and a missing or stale list asks instead of guessing. See
+  `docs/audits/v0.9.2.md`.
 - **Mac App Store track:** ADR 0001 establishes one behavior with Open Local
   and Store distribution editions. `native/HobAppFoundation` starts the native
   menu-bar/settings surface, typed setup readiness, bounded Apple Foundation
