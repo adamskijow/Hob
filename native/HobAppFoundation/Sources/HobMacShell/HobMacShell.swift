@@ -3,12 +3,16 @@ import AppKit
 #if canImport(HobAppCore)
 import HobAppCore
 #endif
+#if canImport(HobAppStorage)
+import HobAppStorage
+#endif
 import SwiftUI
 
 @main
 struct HobMacShell: App {
     @StateObject private var backgroundService = BackgroundServiceController()
     @StateObject private var foundationModel = FoundationModelController()
+    @StateObject private var taskStorage = TaskStorageController()
 
     private var readiness: AppReadiness {
         AppReadiness(
@@ -16,7 +20,10 @@ struct HobMacShell: App {
             modelBackend: .appleFoundationModels,
             ownerPaired: false,
             backgroundServiceApproved: backgroundService.isDeliveryReady,
-            modelAvailable: foundationModel.state.isReady
+            modelAvailable: foundationModel.state.isReady,
+            storageAvailable: [.new, .ready].contains(
+                taskStorage.inspection.condition
+            )
         )
     }
 
@@ -25,7 +32,8 @@ struct HobMacShell: App {
             SetupHomeView(
                 readiness: readiness,
                 backgroundService: backgroundService,
-                foundationModel: foundationModel
+                foundationModel: foundationModel,
+                taskStorage: taskStorage
             )
         }
         .defaultSize(width: 680, height: 560)
@@ -42,6 +50,8 @@ struct HobMacShell: App {
                     .tabItem { Label("Model", systemImage: "apple.intelligence") }
                 PrivacyView()
                     .tabItem { Label("Privacy", systemImage: "lock.shield") }
+                TaskStorageView(controller: taskStorage)
+                    .tabItem { Label("Storage", systemImage: "externaldrive") }
                 BackgroundServiceView(controller: backgroundService)
                     .tabItem { Label("Background", systemImage: "clock.arrow.circlepath") }
             }
@@ -85,6 +95,7 @@ private struct SetupHomeView: View {
     let readiness: AppReadiness
     @ObservedObject var backgroundService: BackgroundServiceController
     @ObservedObject var foundationModel: FoundationModelController
+    @ObservedObject var taskStorage: TaskStorageController
 
     var body: some View {
         ScrollView {
@@ -115,6 +126,9 @@ private struct SetupHomeView: View {
                 GroupBox("Background delivery") {
                     BackgroundServiceContent(controller: backgroundService)
                 }
+                GroupBox("Local task safety") {
+                    TaskStorageContent(controller: taskStorage)
+                }
                 GroupBox("Setup journey") {
                     OnboardingContent()
                 }
@@ -124,7 +138,86 @@ private struct SetupHomeView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 backgroundService.refresh()
+                taskStorage.refresh()
             }
+        }
+    }
+}
+
+private struct TaskStorageView: View {
+    @ObservedObject var controller: TaskStorageController
+
+    var body: some View {
+        Form {
+            Section("Local task safety") {
+                TaskStorageContent(controller: controller)
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { controller.refresh() }
+    }
+}
+
+private struct TaskStorageContent: View {
+    @ObservedObject var controller: TaskStorageController
+    @State private var confirmsRecovery = false
+
+    private var inspection: TaskStorageInspection { controller.inspection }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            LabeledContent("Status", value: inspection.condition.title)
+            Text(inspection.condition.guidance)
+                .foregroundStyle(.secondary)
+            if [.new, .ready].contains(inspection.condition) {
+                LabeledContent(
+                    "Waiting to process",
+                    value: "\(inspection.pipeline.pendingInbound)"
+                )
+                LabeledContent(
+                    "Waiting to send",
+                    value: "\(inspection.pipeline.pendingOutbound)"
+                )
+                if inspection.pipeline.quarantinedInbound > 0 {
+                    Label(
+                        "\(inspection.pipeline.quarantinedInbound) message(s) are safely held for review.",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .foregroundStyle(.orange)
+                }
+                if inspection.pipeline.failedDeliveryAttempts > 0 {
+                    Label(
+                        "\(inspection.pipeline.failedDeliveryAttempts) delivery attempt(s) need retry.",
+                        systemImage: "arrow.clockwise"
+                    )
+                    .foregroundStyle(.orange)
+                }
+            }
+            if inspection.backupAvailable && inspection.condition == .ready {
+                Label("A verified previous copy is available.", systemImage: "checkmark.shield")
+                    .foregroundStyle(.secondary)
+            }
+            if controller.canRecover {
+                Button("Restore Previous Copy", role: .destructive) {
+                    confirmsRecovery = true
+                }
+                .accessibilityHint("Asks for confirmation before replacing unreadable task state")
+            }
+            if let result = controller.lastResult {
+                Text(result)
+                    .font(.callout)
+            }
+            Button("Check Storage Again") { controller.refresh() }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 6)
+        .alert("Restore the previous copy?", isPresented: $confirmsRecovery) {
+            Button("Cancel", role: .cancel) {}
+            Button("Restore Previous Copy", role: .destructive) {
+                controller.recoverPreviousCopy()
+            }
+        } message: {
+            Text("This replaces the unreadable task state with Hob's last verified local copy. It cannot recover changes made after that copy.")
         }
     }
 }
@@ -248,6 +341,7 @@ private struct OnboardingContent: View {
         VStack(alignment: .leading, spacing: 10) {
             LabeledContent("Model", value: "Apple on-device")
             LabeledContent("Task storage", value: "This Mac")
+            LabeledContent("Storage health", value: "Visible in Storage settings")
             LabeledContent("Calendar", value: "Busy times only")
             Divider()
             ForEach(OnboardingStep.allCases, id: \.rawValue) { step in

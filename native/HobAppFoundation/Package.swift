@@ -20,7 +20,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "HobMacShell",
-            dependencies: ["HobAppCore"]
+            dependencies: ["HobAppCore", "HobAppStorage"]
         ),
         .executableTarget(
             name: "HobAgent",

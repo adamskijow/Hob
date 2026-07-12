@@ -17,19 +17,22 @@ public struct AppReadiness: Equatable, Sendable {
     public let ownerPaired: Bool
     public let backgroundServiceApproved: Bool
     public let modelAvailable: Bool
+    public let storageAvailable: Bool
 
     public init(
         edition: DistributionEdition,
         modelBackend: ModelBackend,
         ownerPaired: Bool,
         backgroundServiceApproved: Bool,
-        modelAvailable: Bool
+        modelAvailable: Bool,
+        storageAvailable: Bool = true
     ) {
         self.edition = edition
         self.modelBackend = modelBackend
         self.ownerPaired = ownerPaired
         self.backgroundServiceApproved = backgroundServiceApproved
         self.modelAvailable = modelAvailable
+        self.storageAvailable = storageAvailable
     }
 
     public var blockers: [ReadinessBlocker] {
@@ -42,6 +45,9 @@ public struct AppReadiness: Equatable, Sendable {
         }
         if !ownerPaired {
             result.append(.ownerNotPaired)
+        }
+        if !storageAvailable {
+            result.append(.taskStorageUnavailable)
         }
         if !backgroundServiceApproved {
             result.append(.backgroundServiceNotApproved)
@@ -56,6 +62,7 @@ public enum ReadinessBlocker: String, Equatable, Sendable {
     case unsupportedModelBackend
     case modelUnavailable
     case ownerNotPaired
+    case taskStorageUnavailable
     case backgroundServiceNotApproved
 
     public var userMessage: String {
@@ -66,6 +73,8 @@ public enum ReadinessBlocker: String, Equatable, Sendable {
             return "Turn on Apple Intelligence to use Hob's on-device understanding."
         case .ownerNotPaired:
             return "Connect the private Telegram chat Hob should answer."
+        case .taskStorageUnavailable:
+            return "Resolve local task storage before relying on Hob."
         case .backgroundServiceNotApproved:
             return "Allow Hob to run in the background so reminders arrive reliably."
         }
