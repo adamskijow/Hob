@@ -52,7 +52,14 @@ application shell. It is still not an App Store archive:
   confidence holds, atomic application, and undo. The same synthetic golden
   fixture runs through the released Python behavior and Swift implementation.
   Xcode compiles this core into both the app and agent, but activation remains
-  locked until App Group persistence and the complete behavior corpus exist.
+  locked until the complete behavior corpus and delivery edges exist.
+- The agent now opens a versioned task-state store only inside the App Group.
+  Applied turns and undo history are written atomically with private file modes,
+  a 10 MB bound, schema and content validation, symlink refusal, and a verified
+  previous-state copy. A failed write leaves the candidate turn uncommitted, so
+  no edge can acknowledge a task that was not durably stored. Corrupt data never
+  silently becomes an empty list, and recovery from the previous copy is an
+  explicit operation.
 
 The Store targets intentionally contain no Ollama, uv, Homebrew, launchctl,
 shell installer, inbound network server, or arbitrary filesystem entitlement.
@@ -98,7 +105,8 @@ The first shared fixture now covers basic capture, tomorrow and weekday math,
 multi-action correction, complete, drop, reschedule, clarification, confidence
 confirmation, missing targets, and repeated undo. This is a contract seed, not
 parity proof. Recurrence, constraints, planning, queries, settings, durable
-transactions, pending confirmations, reminders, Calendar, migration, and every
+inbox/outbox transactions, pending confirmations, reminders, Calendar,
+migration, and every
 literal correctness backstop remain release gates.
 
 ### D. Store release

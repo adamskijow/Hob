@@ -7,19 +7,24 @@ let package = Package(
     platforms: [.macOS("26.0")],
     products: [
         .library(name: "HobAppCore", targets: ["HobAppCore"]),
+        .library(name: "HobAppStorage", targets: ["HobAppStorage"]),
         .executable(name: "HobMacShell", targets: ["HobMacShell"]),
         .executable(name: "HobAgent", targets: ["HobAgent"]),
         .executable(name: "HobFoundationBridge", targets: ["HobFoundationBridge"]),
     ],
     targets: [
         .target(name: "HobAppCore"),
+        .target(
+            name: "HobAppStorage",
+            dependencies: ["HobAppCore"]
+        ),
         .executableTarget(
             name: "HobMacShell",
             dependencies: ["HobAppCore"]
         ),
         .executableTarget(
             name: "HobAgent",
-            dependencies: ["HobAppCore"]
+            dependencies: ["HobAppCore", "HobAppStorage"]
         ),
         .executableTarget(
             name: "HobFoundationBridge",
@@ -27,7 +32,7 @@ let package = Package(
         ),
         .testTarget(
             name: "HobAppCoreTests",
-            dependencies: ["HobAppCore"]
+            dependencies: ["HobAppCore", "HobAppStorage"]
         ),
     ]
 )

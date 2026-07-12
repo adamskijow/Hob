@@ -117,12 +117,100 @@ public struct RuntimeTurnResponse: Codable, Equatable, Sendable {
     public let outcome: RuntimeTurnOutcome
 }
 
+public enum RuntimeStateError: Error, Equatable, Sendable {
+    case unsupportedVersion
+    case invalidState
+}
+
+public struct RuntimePersistentState: Codable, Equatable, Sendable {
+    public let version: Int
+    public let tasks: [RuntimeTask]
+    public let undoSnapshots: [[RuntimeTask]]
+
+    public init(
+        version: Int = 1,
+        tasks: [RuntimeTask],
+        undoSnapshots: [[RuntimeTask]]
+    ) {
+        self.version = version
+        self.tasks = tasks
+        self.undoSnapshots = undoSnapshots
+    }
+
+    public static let empty = RuntimePersistentState(tasks: [], undoSnapshots: [])
+
+    public func validated() throws -> RuntimePersistentState {
+        guard version == 1 else { throw RuntimeStateError.unsupportedVersion }
+        guard tasks.count <= 10_000, undoSnapshots.count <= 100 else {
+            throw RuntimeStateError.invalidState
+        }
+        try Self.validate(tasks)
+        for snapshot in undoSnapshots {
+            guard snapshot.count <= 10_000 else { throw RuntimeStateError.invalidState }
+            try Self.validate(snapshot)
+        }
+        return self
+    }
+
+    private static func validate(_ tasks: [RuntimeTask]) throws {
+        var identifiers: Set<String> = []
+        for task in tasks {
+            guard !task.id.isEmpty,
+                  task.id.utf8.count <= 128,
+                  identifiers.insert(task.id).inserted,
+                  !task.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  task.task.utf8.count <= 10_000,
+                  !task.rawText.isEmpty,
+                  task.rawText.utf8.count <= 20_000,
+                  ["open", "done", "dropped"].contains(task.status),
+                  ISO8601DateFormatter().date(from: task.createdAt) != nil,
+                  ISO8601DateFormatter().date(from: task.updatedAt) != nil,
+                  validDate(task.dueDate),
+                  validTime(task.dueTime) else {
+                throw RuntimeStateError.invalidState
+            }
+        }
+    }
+
+    private static func validDate(_ value: String?) -> Bool {
+        guard let value else { return true }
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.isLenient = false
+        guard let date = formatter.date(from: value) else { return false }
+        return formatter.string(from: date) == value
+    }
+
+    private static func validTime(_ value: String?) -> Bool {
+        guard let value else { return true }
+        let parts = value.split(separator: ":", omittingEmptySubsequences: false)
+        return parts.count == 2
+            && parts[0].count == 2
+            && parts[1].count == 2
+            && Int(parts[0]).map { (0...23).contains($0) } == true
+            && Int(parts[1]).map { (0...59).contains($0) } == true
+    }
+}
+
 public struct TaskRuntime: Sendable {
     public private(set) var tasks: [RuntimeTask]
     private var undoSnapshots: [[RuntimeTask]] = []
 
     public init(tasks: [RuntimeTask] = []) {
         self.tasks = tasks.sorted { $0.id < $1.id }
+    }
+
+    public init(persistentState: RuntimePersistentState) throws {
+        let state = try persistentState.validated()
+        tasks = state.tasks.sorted { $0.id < $1.id }
+        undoSnapshots = state.undoSnapshots
+    }
+
+    public var persistentState: RuntimePersistentState {
+        RuntimePersistentState(tasks: tasks, undoSnapshots: undoSnapshots)
     }
 
     public mutating func process(_ request: RuntimeTurnRequest) -> RuntimeTurnResponse {

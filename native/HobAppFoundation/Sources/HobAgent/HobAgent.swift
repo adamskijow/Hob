@@ -3,13 +3,18 @@ import Foundation
 #if canImport(HobAppCore)
 import HobAppCore
 #endif
+#if canImport(HobAppStorage)
+import HobAppStorage
+#endif
 
 @MainActor
 private final class AgentRuntime {
     private let healthURL: URL
+    private let taskRuntime: DurableTaskRuntime
 
-    init(healthURL: URL) {
+    init(healthURL: URL, taskRuntime: DurableTaskRuntime) {
         self.healthURL = healthURL
+        self.taskRuntime = taskRuntime
     }
 
     func writeHeartbeat() {
@@ -25,8 +30,12 @@ private final class AgentRuntime {
 private struct HobAgent {
     @MainActor
     static func main() throws {
-        let healthURL = try SharedStorage.system.agentHealthURL()
-        let runtime = AgentRuntime(healthURL: healthURL)
+        let storage = SharedStorage.system
+        let healthURL = try storage.agentHealthURL()
+        let taskRuntime = try DurableTaskRuntime(
+            store: TaskStateStore(directoryURL: try storage.taskStateDirectory())
+        )
+        let runtime = AgentRuntime(healthURL: healthURL, taskRuntime: taskRuntime)
         runtime.writeHeartbeat()
         let timer = Timer(timeInterval: 60, repeats: true) { [weak runtime] _ in
             Task { @MainActor in
@@ -37,4 +46,3 @@ private struct HobAgent {
         RunLoop.main.run()
     }
 }
-
