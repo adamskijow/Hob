@@ -144,8 +144,32 @@ def test_agent_uses_fail_closed_private_durable_task_storage():
     assert ".posixPermissions: 0o600" in storage
     assert ".posixPermissions: 0o700" in storage
     assert "destinationOfSymbolicLink" in storage
-    assert "try store.save(candidate.persistentState)" in storage
+    assert "try store.save(receiptState)" in storage
+    assert "try store.save(candidateState)" in storage
+    assert "return try completePending(requestID: request.requestID)" in storage
     assert "runtime = candidate" in storage
+    assert "state = candidateState" in storage
+
+
+def test_store_app_exposes_content_free_health_and_confirmed_recovery():
+    project = (XCODE_PROJECT / "project.pbxproj").read_text(encoding="utf-8")
+    shell = (
+        FOUNDATION / "Sources" / "HobMacShell" / "HobMacShell.swift"
+    ).read_text(encoding="utf-8")
+    controller = (
+        FOUNDATION
+        / "Sources"
+        / "HobMacShell"
+        / "TaskStorageController.swift"
+    ).read_text(encoding="utf-8")
+
+    assert "TaskStateStore.swift in Sources" in project
+    assert "TaskStorageController.swift in Sources" in project
+    assert 'Label("Storage", systemImage: "externaldrive")' in shell
+    assert 'alert("Restore the previous copy?"' in shell
+    assert "inspection.pipeline.pendingInbound" in shell
+    assert "inspection.pipeline.pendingOutbound" in shell
+    assert "recoverFromBackup()" in controller
 
 
 def test_background_helper_is_sandboxed_and_shares_only_required_storage():

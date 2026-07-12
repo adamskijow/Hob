@@ -109,12 +109,28 @@ public struct RuntimeTurnOutcome: Codable, Equatable, Sendable {
     public let disposition: RuntimeDisposition
     public let appliedKinds: [String]
     public let tasks: [RuntimeTask]
+
+    public init(
+        disposition: RuntimeDisposition,
+        appliedKinds: [String],
+        tasks: [RuntimeTask]
+    ) {
+        self.disposition = disposition
+        self.appliedKinds = appliedKinds
+        self.tasks = tasks
+    }
 }
 
 public struct RuntimeTurnResponse: Codable, Equatable, Sendable {
     public let version: Int
     public let requestID: String
     public let outcome: RuntimeTurnOutcome
+
+    public init(version: Int, requestID: String, outcome: RuntimeTurnOutcome) {
+        self.version = version
+        self.requestID = requestID
+        self.outcome = outcome
+    }
 }
 
 public enum RuntimeStateError: Error, Equatable, Sendable {
@@ -122,34 +138,329 @@ public enum RuntimeStateError: Error, Equatable, Sendable {
     case invalidState
 }
 
+public enum RuntimeInboundStatus: String, Codable, Equatable, Sendable {
+    case pending
+    case completed
+    case quarantined
+}
+
+public struct RuntimeInboundRecord: Codable, Equatable, Sendable {
+    public let sequence: Int
+    public let request: RuntimeTurnRequest
+    public let receivedAt: String
+    public let status: RuntimeInboundStatus
+    public let updatedAt: String
+    public let failureCode: String?
+
+    public init(
+        sequence: Int,
+        request: RuntimeTurnRequest,
+        receivedAt: String,
+        status: RuntimeInboundStatus,
+        updatedAt: String,
+        failureCode: String? = nil
+    ) {
+        self.sequence = sequence
+        self.request = request
+        self.receivedAt = receivedAt
+        self.status = status
+        self.updatedAt = updatedAt
+        self.failureCode = failureCode
+    }
+}
+
+public enum RuntimeOutboundStatus: String, Codable, Equatable, Sendable {
+    case pending
+    case delivered
+}
+
+public struct RuntimeDeliverySummary: Codable, Equatable, Sendable {
+    public let disposition: RuntimeDisposition
+    public let appliedKinds: [String]
+    public let affectedTaskIDs: [String]
+
+    public init(
+        disposition: RuntimeDisposition,
+        appliedKinds: [String],
+        affectedTaskIDs: [String]
+    ) {
+        self.disposition = disposition
+        self.appliedKinds = appliedKinds
+        self.affectedTaskIDs = affectedTaskIDs
+    }
+}
+
+public struct RuntimeOutboundRecord: Codable, Equatable, Sendable {
+    public let sequence: Int
+    public let requestID: String
+    public let dedupeKey: String
+    public let createdAt: String
+    public let status: RuntimeOutboundStatus
+    public let deliveredAt: String?
+    public let attempts: Int
+    public let lastFailureCode: String?
+    public let summary: RuntimeDeliverySummary
+
+    public init(
+        sequence: Int,
+        requestID: String,
+        dedupeKey: String,
+        createdAt: String,
+        status: RuntimeOutboundStatus,
+        deliveredAt: String? = nil,
+        attempts: Int = 0,
+        lastFailureCode: String? = nil,
+        summary: RuntimeDeliverySummary
+    ) {
+        self.sequence = sequence
+        self.requestID = requestID
+        self.dedupeKey = dedupeKey
+        self.createdAt = createdAt
+        self.status = status
+        self.deliveredAt = deliveredAt
+        self.attempts = attempts
+        self.lastFailureCode = lastFailureCode
+        self.summary = summary
+    }
+}
+
+public struct RuntimePipelineStatus: Codable, Equatable, Sendable {
+    public let pendingInbound: Int
+    public let completedInbound: Int
+    public let quarantinedInbound: Int
+    public let pendingOutbound: Int
+    public let deliveredOutbound: Int
+    public let failedDeliveryAttempts: Int
+
+    public var needsAttention: Bool {
+        quarantinedInbound > 0 || failedDeliveryAttempts > 0
+    }
+}
+
 public struct RuntimePersistentState: Codable, Equatable, Sendable {
+    public static let currentVersion = 2
+
     public let version: Int
     public let tasks: [RuntimeTask]
     public let undoSnapshots: [[RuntimeTask]]
+    public let inbox: [RuntimeInboundRecord]
+    public let outbox: [RuntimeOutboundRecord]
+    public let nextSequence: Int
 
     public init(
-        version: Int = 1,
+        version: Int = RuntimePersistentState.currentVersion,
         tasks: [RuntimeTask],
-        undoSnapshots: [[RuntimeTask]]
+        undoSnapshots: [[RuntimeTask]],
+        inbox: [RuntimeInboundRecord] = [],
+        outbox: [RuntimeOutboundRecord] = [],
+        nextSequence: Int = 1
     ) {
         self.version = version
         self.tasks = tasks
         self.undoSnapshots = undoSnapshots
+        self.inbox = inbox
+        self.outbox = outbox
+        self.nextSequence = nextSequence
     }
 
     public static let empty = RuntimePersistentState(tasks: [], undoSnapshots: [])
 
+    public var pipelineStatus: RuntimePipelineStatus {
+        RuntimePipelineStatus(
+            pendingInbound: inbox.count { $0.status == .pending },
+            completedInbound: inbox.count { $0.status == .completed },
+            quarantinedInbound: inbox.count { $0.status == .quarantined },
+            pendingOutbound: outbox.count { $0.status == .pending },
+            deliveredOutbound: outbox.count { $0.status == .delivered },
+            failedDeliveryAttempts: outbox.reduce(0) {
+                $0 + ($1.status == .pending ? $1.attempts : 0)
+            }
+        )
+    }
+
     public func validated() throws -> RuntimePersistentState {
-        guard version == 1 else { throw RuntimeStateError.unsupportedVersion }
-        guard tasks.count <= 10_000, undoSnapshots.count <= 100 else {
+        guard version == 1 || version == Self.currentVersion else {
+            throw RuntimeStateError.unsupportedVersion
+        }
+        let migrated: RuntimePersistentState
+        if version == 1 {
+            guard inbox.isEmpty, outbox.isEmpty, nextSequence == 1 else {
+                throw RuntimeStateError.invalidState
+            }
+            migrated = RuntimePersistentState(
+                tasks: tasks,
+                undoSnapshots: undoSnapshots,
+                inbox: [],
+                outbox: [],
+                nextSequence: 1
+            )
+        } else {
+            migrated = self
+        }
+        guard migrated.tasks.count <= 10_000,
+              migrated.undoSnapshots.count <= 100,
+              migrated.inbox.count <= 10_000,
+              migrated.outbox.count <= 10_000,
+              migrated.nextSequence > 0 else {
             throw RuntimeStateError.invalidState
         }
-        try Self.validate(tasks)
-        for snapshot in undoSnapshots {
+        try Self.validate(migrated.tasks)
+        for snapshot in migrated.undoSnapshots {
             guard snapshot.count <= 10_000 else { throw RuntimeStateError.invalidState }
             try Self.validate(snapshot)
         }
-        return self
+        try Self.validatePipeline(migrated)
+        return migrated
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case tasks
+        case undoSnapshots
+        case inbox
+        case outbox
+        case nextSequence
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(Int.self, forKey: .version)
+        tasks = try container.decode([RuntimeTask].self, forKey: .tasks)
+        undoSnapshots = try container.decode([[RuntimeTask]].self, forKey: .undoSnapshots)
+        inbox = try container.decodeIfPresent(
+            [RuntimeInboundRecord].self,
+            forKey: .inbox
+        ) ?? []
+        outbox = try container.decodeIfPresent(
+            [RuntimeOutboundRecord].self,
+            forKey: .outbox
+        ) ?? []
+        nextSequence = try container.decodeIfPresent(Int.self, forKey: .nextSequence) ?? 1
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(version, forKey: .version)
+        try container.encode(tasks, forKey: .tasks)
+        try container.encode(undoSnapshots, forKey: .undoSnapshots)
+        try container.encode(inbox, forKey: .inbox)
+        try container.encode(outbox, forKey: .outbox)
+        try container.encode(nextSequence, forKey: .nextSequence)
+    }
+
+    private static func validatePipeline(_ state: RuntimePersistentState) throws {
+        var inboundIDs: Set<String> = []
+        var inboundSequences: Set<Int> = []
+        for record in state.inbox {
+            guard record.sequence > 0,
+                  inboundSequences.insert(record.sequence).inserted,
+                  validRequest(record.request),
+                  inboundIDs.insert(record.request.requestID).inserted,
+                  validTimestamp(record.receivedAt),
+                  validTimestamp(record.updatedAt),
+                  validFailureCode(record.failureCode),
+                  (record.status == .quarantined) == (record.failureCode != nil)
+            else { throw RuntimeStateError.invalidState }
+        }
+        let inboundByID = Dictionary(
+            uniqueKeysWithValues: state.inbox.map { ($0.request.requestID, $0) }
+        )
+
+        var outboundIDs: Set<String> = []
+        var outboundKeys: Set<String> = []
+        var outboundSequences: Set<Int> = []
+        var outboundCountByRequestID: [String: Int] = [:]
+        for record in state.outbox {
+            guard record.sequence > 0,
+                  outboundSequences.insert(record.sequence).inserted,
+                  validIdentifier(record.requestID),
+                  outboundIDs.insert(record.requestID).inserted,
+                  validIdentifier(record.dedupeKey, maxBytes: 256),
+                  record.dedupeKey == "turn:\(record.requestID)",
+                  outboundKeys.insert(record.dedupeKey).inserted,
+                  validTimestamp(record.createdAt),
+                  record.attempts >= 0,
+                  record.attempts <= 1_000,
+                  validFailureCode(record.lastFailureCode),
+                  record.summary.appliedKinds.count <= 32,
+                  record.summary.appliedKinds.allSatisfy({ validIdentifier($0) }),
+                  record.summary.affectedTaskIDs.count <= 64,
+                  Set(record.summary.affectedTaskIDs).count == record.summary.affectedTaskIDs.count,
+                  record.summary.affectedTaskIDs.allSatisfy({ validIdentifier($0) })
+            else { throw RuntimeStateError.invalidState }
+            if record.status == .pending && record.deliveredAt != nil {
+                throw RuntimeStateError.invalidState
+            }
+            if record.status == .delivered && !validTimestamp(record.deliveredAt) {
+                throw RuntimeStateError.invalidState
+            }
+            guard let inbound = inboundByID[record.requestID],
+                  inbound.status == .completed,
+                  inbound.sequence == record.sequence else {
+                throw RuntimeStateError.invalidState
+            }
+            outboundCountByRequestID[record.requestID, default: 0] += 1
+        }
+        for inbound in state.inbox {
+            let outboundCount = outboundCountByRequestID[inbound.request.requestID] ?? 0
+            guard (inbound.status == .completed && outboundCount == 1)
+                    || (inbound.status != .completed && outboundCount == 0)
+            else { throw RuntimeStateError.invalidState }
+        }
+        let largestSequence = max(
+            state.inbox.map(\.sequence).max() ?? 0,
+            state.outbox.map(\.sequence).max() ?? 0
+        )
+        guard state.nextSequence > largestSequence else {
+            throw RuntimeStateError.invalidState
+        }
+    }
+
+    private static func validRequest(_ request: RuntimeTurnRequest) -> Bool {
+        request.version == 1
+            && validIdentifier(request.requestID)
+            && request.message.utf8.count <= 20_000
+            && request.now.utf8.count <= 64
+            && request.timezone.utf8.count <= 64
+            && TimeZone(identifier: request.timezone) != nil
+            && validTimestamp(request.now)
+            && !request.actions.isEmpty
+            && request.actions.count <= 32
+            && request.actions.allSatisfy(validAction)
+    }
+
+    private static func validAction(_ action: RuntimeAction) -> Bool {
+        validIdentifier(action.type)
+            && bounded(action.task, maxBytes: 10_000)
+            && bounded(action.raw, maxBytes: 20_000)
+            && bounded(action.target, maxBytes: 128)
+            && bounded(action.time, maxBytes: 16)
+            && (action.confidence.map { $0.isFinite && (0...1).contains($0) } ?? true)
+            && (action.when.map {
+                validIdentifier($0.kind)
+                    && bounded($0.which, maxBytes: 32)
+                    && bounded($0.day, maxBytes: 32)
+            } ?? true)
+    }
+
+    private static func bounded(_ value: String?, maxBytes: Int) -> Bool {
+        value.map { $0.utf8.count <= maxBytes } ?? true
+    }
+
+    private static func validIdentifier(_ value: String, maxBytes: Int = 128) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && trimmed == value && value.utf8.count <= maxBytes
+    }
+
+    private static func validFailureCode(_ value: String?) -> Bool {
+        guard let value else { return true }
+        return validIdentifier(value, maxBytes: 64)
+            && value.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-") }
+    }
+
+    private static func validTimestamp(_ value: String?) -> Bool {
+        guard let value else { return false }
+        return ISO8601DateFormatter().date(from: value) != nil
     }
 
     private static func validate(_ tasks: [RuntimeTask]) throws {

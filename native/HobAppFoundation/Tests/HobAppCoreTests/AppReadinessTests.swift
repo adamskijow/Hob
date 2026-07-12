@@ -42,3 +42,17 @@ import Testing
 
     #expect(readiness.canRun)
 }
+
+@Test func unavailableTaskStorageBlocksReadiness() {
+    let readiness = AppReadiness(
+        edition: .appStore,
+        modelBackend: .appleFoundationModels,
+        ownerPaired: true,
+        backgroundServiceApproved: true,
+        modelAvailable: true,
+        storageAvailable: false
+    )
+
+    #expect(readiness.blockers == [.taskStorageUnavailable])
+    #expect(!readiness.canRun)
+}

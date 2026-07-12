@@ -23,6 +23,8 @@
 		D10000000000000000000001 /* TaskRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000001 /* TaskRuntime.swift */; };
 		D10000000000000000000002 /* TaskRuntime.swift in Agent Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000001 /* TaskRuntime.swift */; };
 		E10000000000000000000001 /* TaskStateStore.swift in Agent Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000001 /* TaskStateStore.swift */; };
+		E10000000000000000000002 /* TaskStateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000001 /* TaskStateStore.swift */; };
+		E10000000000000000000003 /* TaskStorageController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000002 /* TaskStorageController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -87,6 +89,7 @@
 		C20000000000000000000005 /* HobFoundationBridge */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = HobFoundationBridge; sourceTree = BUILT_PRODUCTS_DIR; };
 		D20000000000000000000001 /* TaskRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TaskRuntime.swift; path = ../HobAppFoundation/Sources/HobAppCore/TaskRuntime.swift; sourceTree = "<group>"; };
 		E20000000000000000000001 /* TaskStateStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TaskStateStore.swift; path = ../HobAppFoundation/Sources/HobAppStorage/TaskStateStore.swift; sourceTree = "<group>"; };
+		E20000000000000000000002 /* TaskStorageController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TaskStorageController.swift; path = ../HobAppFoundation/Sources/HobMacShell/TaskStorageController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -137,6 +140,7 @@
 				C20000000000000000000003 /* main.swift */,
 				D20000000000000000000001 /* TaskRuntime.swift */,
 				E20000000000000000000001 /* TaskStateStore.swift */,
+				E20000000000000000000002 /* TaskStorageController.swift */,
 			);
 			name = Sources;
 			sourceTree = "<group>";
@@ -292,6 +296,8 @@
 				C10000000000000000000001 /* ModelReadiness.swift in Sources */,
 				C10000000000000000000002 /* FoundationModelController.swift in Sources */,
 				D10000000000000000000001 /* TaskRuntime.swift in Sources */,
+				E10000000000000000000002 /* TaskStateStore.swift in Sources */,
+				E10000000000000000000003 /* TaskStorageController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

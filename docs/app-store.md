@@ -60,6 +60,14 @@ application shell. It is still not an App Store archive:
   no edge can acknowledge a task that was not durably stored. Corrupt data never
   silently becomes an empty list, and recovery from the previous copy is an
   explicit operation.
+- State schema v2 adds a durable typed-turn inbox and compact reply outbox. A
+  request receipt is stored before deterministic mutation; mutation, completed
+  receipt, and pending reply are then replaced atomically. Restart replay,
+  repeated request ids, ordering, bounded retry metadata, explicit poison-turn
+  quarantine, and v1 migration are tested. The outbox stores no second copy of
+  chat or task text. Setup and Storage settings show content-free queue health
+  and offer confirmed restore only when the previous local copy verifies.
+  Telegram transport is not connected, so registration remains locked.
 
 The Store targets intentionally contain no Ollama, uv, Homebrew, launchctl,
 shell installer, inbound network server, or arbitrary filesystem entitlement.
@@ -106,8 +114,10 @@ multi-action correction, complete, drop, reschedule, clarification, confidence
 confirmation, missing targets, and repeated undo. This is a contract seed, not
 parity proof. Recurrence, constraints, planning, queries, settings, durable
 inbox/outbox transactions, pending confirmations, reminders, Calendar,
-migration, and every
-literal correctness backstop remain release gates.
+migration beyond the new v1-to-v2 state step, and every literal correctness
+backstop remain release gates. The typed-turn inbox/outbox now proves local
+mutation idempotency and ordered retry, but Telegram update receipt and reply
+rendering remain unimplemented.
 
 ### D. Store release
 
