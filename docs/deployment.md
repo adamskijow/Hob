@@ -90,6 +90,9 @@ not manage its own log files.
 - Telegram updates are normalized into a durable inbox before the polling
   offset advances. Model outages and processing failures leave the message
   pending for automatic retry instead of asking the user to resend it.
+- Telegram-generated service events such as pin, membership, and chat-setting
+  changes are committed as no-ops. They advance the offset without entering the
+  user-message handler or creating an outbound reply.
 - Each message's mutations, settings, undo log, conversational state, and reply
   outbox row commit as one transaction. Delivery failures retry the outbox
   without reapplying state. Stable keys deduplicate proactive messages too.

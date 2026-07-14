@@ -6,9 +6,11 @@ offset persistence. Async coroutines are driven with asyncio.run so no
 pytest-asyncio dependency is needed.
 """
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
+
+import telegram
 
 from app import MessageService
 from adapters.store_sqlite import SqliteStore
@@ -78,10 +80,16 @@ def test_resume_from_saved_offset():
 
 def test_non_text_update_gets_accessible_fallback_and_advances():
     store = SqliteStore(":memory:")
-    # update with no text (e.g. a photo); message present but text None
+    # An uncaptioned media attachment is real owner input, not a service event.
     no_text = SimpleNamespace(
         update_id=5,
-        message=SimpleNamespace(text=None, message_id=5, chat=SimpleNamespace(id=1)),
+        message=SimpleNamespace(
+            text=None,
+            caption=None,
+            effective_attachment=object(),
+            message_id=5,
+            chat=SimpleNamespace(id=1),
+        ),
     )
     bot = FakeBot([[no_text]])
     adapter = TelegramAdapter(store, echo_handler, bot=bot)
@@ -94,6 +102,81 @@ def test_non_text_update_gets_accessible_fallback_and_advances():
         "Send the task as text.",
     )]
     assert store.get_meta(OFFSET_KEY) == "6"  # but offset still advanced
+
+
+def test_digest_pin_service_update_is_silent_and_advances():
+    store = SqliteStore(":memory:")
+    pin_event = SimpleNamespace(
+        update_id=6,
+        message=SimpleNamespace(
+            text=None,
+            caption=None,
+            pinned_message=SimpleNamespace(message_id=100),
+            message_id=101,
+            chat=SimpleNamespace(id=1, type="private"),
+            from_user=SimpleNamespace(id=7),
+        ),
+    )
+    bot = FakeBot([[pin_event]])
+    seen = []
+    adapter = TelegramAdapter(
+        store,
+        lambda message: seen.append(message) or "got it",
+        bot=bot,
+    )
+
+    handled = asyncio.run(adapter.poll_once())
+
+    assert handled == 1
+    assert seen == []
+    assert bot.sent == []
+    assert bot.actions == []
+    assert store.get_meta(OFFSET_KEY) == "7"
+
+
+def test_real_telegram_pin_status_update_is_silent():
+    store = SqliteStore(":memory:")
+    chat = telegram.Chat(id=1, type="private")
+    pin_event = telegram.Update(
+        update_id=8,
+        message=telegram.Message(
+            message_id=103,
+            date=datetime(2026, 7, 14, 11, 0, tzinfo=timezone.utc),
+            chat=chat,
+            from_user=telegram.User(id=7, first_name="Owner", is_bot=False),
+            pinned_message=telegram.InaccessibleMessage(chat=chat, message_id=100),
+        ),
+    )
+    bot = FakeBot([[pin_event]])
+    adapter = TelegramAdapter(store, echo_handler, bot=bot)
+
+    asyncio.run(adapter.poll_once())
+
+    assert bot.sent == []
+    assert bot.actions == []
+    assert store.get_meta(OFFSET_KEY) == "9"
+
+
+def test_other_telegram_service_updates_are_silent_too():
+    store = SqliteStore(":memory:")
+    member_event = SimpleNamespace(
+        update_id=7,
+        message=SimpleNamespace(
+            text=None,
+            caption=None,
+            new_chat_members=[SimpleNamespace(id=8)],
+            message_id=102,
+            chat=SimpleNamespace(id=1, type="private"),
+            from_user=SimpleNamespace(id=7),
+        ),
+    )
+    bot = FakeBot([[member_event]])
+    adapter = TelegramAdapter(store, echo_handler, bot=bot)
+
+    asyncio.run(adapter.poll_once())
+
+    assert bot.sent == []
+    assert store.get_meta(OFFSET_KEY) == "8"
 
 
 def test_media_caption_uses_the_normal_message_path():

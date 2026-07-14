@@ -93,7 +93,9 @@ task credited to the sender; react to a reminder with a thumbs-up to complete it
 (thumbs-down drops it); and each morning's digest is pinned in the chat,
 replacing yesterday's pin. A photo or other media caption follows the same text
 capture path. Unsupported media such as an uncaptioned voice message receives a
-short text explanation instead of disappearing silently.
+short text explanation instead of disappearing silently. Telegram-generated
+status events, including the event emitted when Hob pins that digest, advance
+the durable update offset silently because they are not messages from the owner.
 
 ## Notes and waiting-on
 

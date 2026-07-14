@@ -30,6 +30,61 @@ log = logging.getLogger("hob.telegram")
 
 TELEGRAM_TEXT_LIMIT = 4096
 
+# python-telegram-bot's StatusUpdate filter is authoritative for real Update
+# objects. This list is a compatibility fallback for injected test doubles and
+# API-compatible message objects that do not inherit telegram.Update.
+_SERVICE_MESSAGE_FIELDS = (
+    "chat_background_set",
+    "chat_owner_changed",
+    "chat_owner_left",
+    "chat_shared",
+    "checklist_tasks_added",
+    "checklist_tasks_done",
+    "connected_website",
+    "delete_chat_photo",
+    "direct_message_price_changed",
+    "forum_topic_closed",
+    "forum_topic_created",
+    "forum_topic_edited",
+    "forum_topic_reopened",
+    "general_forum_topic_hidden",
+    "general_forum_topic_unhidden",
+    "gift",
+    "gift_upgrade_sent",
+    "giveaway_completed",
+    "giveaway_created",
+    "group_chat_created",
+    "channel_chat_created",
+    "left_chat_member",
+    "managed_bot_created",
+    "message_auto_delete_timer_changed",
+    "migrate_from_chat_id",
+    "migrate_to_chat_id",
+    "new_chat_members",
+    "new_chat_photo",
+    "new_chat_title",
+    "paid_message_price_changed",
+    "pinned_message",
+    "poll_option_added",
+    "poll_option_deleted",
+    "proximity_alert_triggered",
+    "refunded_payment",
+    "suggested_post_approval_failed",
+    "suggested_post_approved",
+    "suggested_post_declined",
+    "suggested_post_paid",
+    "suggested_post_refunded",
+    "supergroup_chat_created",
+    "unique_gift",
+    "users_shared",
+    "video_chat_ended",
+    "video_chat_participants_invited",
+    "video_chat_scheduled",
+    "video_chat_started",
+    "web_app_data",
+    "write_access_allowed",
+)
+
 # Presentation: the core keeps its terse lowercase voice; this dresses it up for
 # display only (stored data, including item ids, and the tested strings are
 # untouched).
@@ -95,6 +150,28 @@ def _forward_name(message: object) -> str | None:
     if chat is not None:
         return getattr(chat, "title", None) or "a chat"
     return "someone"
+
+
+def _is_service_update(update: object, message: object) -> bool:
+    """Return whether Telegram generated this message as a status event.
+
+    Status events such as Hob pinning its morning digest are not owner input and
+    must advance the durable offset without producing a chat reply.
+    """
+    try:
+        from telegram import Update
+        from telegram.ext import filters
+    except ImportError:  # pragma: no cover - runtime dependency is required
+        Update = None
+        filters = None
+    if (
+        filters is not None
+        and Update is not None
+        and isinstance(update, Update)
+        and filters.StatusUpdate.ALL.check_update(update)
+    ):
+        return True
+    return any(bool(getattr(message, field, None)) for field in _SERVICE_MESSAGE_FIELDS)
 
 
 class TelegramAdapter:
@@ -264,7 +341,12 @@ class TelegramAdapter:
             text = getattr(message, "caption", None)
         kind = "noop"
         payload: dict = {}
-        if message is not None and text is not None:
+        if message is not None and _is_service_update(update, message):
+            # Pin/unpin and other Telegram status events are not owner input.
+            # Keep the durable no-op so the polling offset advances exactly as
+            # it does for every other normalized update.
+            pass
+        elif message is not None and text is not None:
             replied = getattr(message, "reply_to_message", None)
             kind = "message"
             payload = {

@@ -327,7 +327,8 @@ def test_upgraded_owner_gets_one_digest_discovery_note_but_fresh_install_does_no
     asyncio.run(service.fire())
 
     assert "new in hob" in sent.calls[0][1]
-    assert "check planning days in /settings" in sent.calls[0][1]
+    assert "pin and status events now stay silent" in sent.calls[0][1]
+    assert "unsupported media still gets clear guidance" in sent.calls[0][1]
     assert "new in hob" not in sent.calls[1][1]
     assert upgraded.get_meta(RELEASE_NOTICE_KEY) == __version__
 
