@@ -11,10 +11,11 @@ snapshot.
 - **Live and in daily use.** Runs as a `launchd` daemon on macOS, with
   [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive. Model:
   `qwen2.5:14b-instruct` (7b works; 14b is more reliable on dense messages).
-- **Released:** v0.9.2. v0.9 adds a deterministic weekly capacity outlook,
+- **Released:** v0.9.3. v0.9 adds a deterministic weekly capacity outlook,
   explicit working days, plan-aware EOD, first-adoption coaching, accessible
-  media fallback, and privacy-safe activation metrics. Schema remains 10.
-- **Green:** `uv run pytest` (363 passing), 19 native App Store foundation
+  media fallback, privacy-safe activation metrics, and correct silent handling
+  of Telegram-generated service events. Schema remains 10.
+- **Green:** `uv run pytest` (367 passing), 29 native App Store foundation
   tests, signed native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
   evals.interpreter_eval`, 74/74). The v0.9.1 patch head passed Ubuntu and macOS
@@ -41,6 +42,11 @@ snapshot.
   24 hours, list-referential bulk turns are deterministically intersected with
   those exact ids, and a missing or stale list asks instead of guessing. See
   `docs/audits/v0.9.2.md`.
+- **v0.9.3 service-event patch:** daily use exposed an unsupported-media reply
+  immediately after Hob pinned the morning digest even though the owner sent
+  nothing. Telegram pin and other status updates are now durable silent no-ops;
+  actual uncaptioned owner media retains its text alternative. See
+  `docs/audits/v0.9.3.md`.
 - **Mac App Store track:** ADR 0001 establishes one behavior with Open Local
   and Store distribution editions. `native/HobAppFoundation` starts the native
   menu-bar/settings surface, typed setup readiness, bounded Apple Foundation
@@ -70,6 +76,12 @@ snapshot.
   A save failure cannot commit the in-memory candidate or return success. The
   agent validates storage at startup but remains health-only and registration
   stays locked. See `docs/audits/app-store-durable-state.md`.
+- **Store delivery-pipeline increment:** state v2 adds a durable typed-turn
+  inbox and compact reply outbox. Interrupted turns replay once, duplicate ids
+  cannot repeat mutation, delivery order and bounded retry state persist, and
+  setup exposes content-free storage health plus confirmed previous-copy
+  recovery. Telegram transport remains disconnected and background registration
+  stays locked. See `docs/audits/app-store-delivery-pipeline.md`.
 - **Live v0.8 evidence:** the exact launchd database contains one active and one
   superseded run, three canceled old sessions, one started and two planned
   revised sessions. The direct nudge reply produced `started`, not completion;
