@@ -398,8 +398,8 @@ def test_upgraded_owner_gets_one_digest_discovery_note_but_fresh_install_does_no
     asyncio.run(service.fire())
 
     assert "new in hob" in sent.calls[0][1]
-    assert 'send "keep", "tomorrow", "drop", or "back on"' in sent.calls[0][1]
-    assert "no longer need to use telegram's reply gesture" in sent.calls[0][1]
+    assert '"finished it all except 1 and 6"' in sent.calls[0][1]
+    assert "never act on an out-of-range number" in sent.calls[0][1]
     assert "new in hob" not in sent.calls[1][1]
     assert upgraded.get_meta(RELEASE_NOTICE_KEY) == __version__
 

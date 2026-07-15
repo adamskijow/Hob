@@ -92,6 +92,11 @@ similarly accepts plain `back on`. The same-day prompt is single-use, and a
 newer task conversation takes precedence over destructive terse choices. A keep
 decision resets the nudge clock without moving the task.
 
+Numbered bulk reports keep the digest's original order even after earlier rows
+close: `finished it all except 1 and 6` completes the other displayed items. An
+excluded position outside that displayed list changes nothing and asks for a
+clearer reference rather than shifting the number to another task.
+
 ## Telegram-native moves
 
 Forward any message to Hob (a "grab milk?" text from someone) and it becomes a
@@ -203,8 +208,10 @@ The first private `/start` pairs Hob to one Telegram user unless
 chats cannot read or mutate the shared task store or redirect its digest.
 `python app.py backup` creates a consistent SQLite backup; `python app.py export`
 writes portable JSON containing tasks, history, digests, and settings. If a
-legacy checkout database and the app-data database both exist, recovery commands
-refuse to guess until `HOB_DB_PATH` explicitly selects one.
+legacy checkout database and the app-data database both exist, daemon startup,
+status, and recovery commands refuse to guess until `HOB_DB_PATH` explicitly
+selects one. A token-scoped local lease also prevents separate databases from
+running the same Telegram bot concurrently.
 
 The Telegram token can live in macOS Keychain (`python app.py token set`) rather
 than plaintext deployment configuration. `python app.py status` reports local

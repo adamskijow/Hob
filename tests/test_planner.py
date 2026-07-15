@@ -8,6 +8,7 @@ from core.models import (
     Complete,
     Drop,
     InterpreterContext,
+    Note,
     PlanAction,
     Prioritize,
     Query,
@@ -23,7 +24,14 @@ from core.models import (
 from core.planner import reconcile
 
 
-def ctx(active=None, message="", focus=None, replied=None, presented=None):
+def ctx(
+    active=None,
+    message="",
+    focus=None,
+    replied=None,
+    presented=None,
+    digest=None,
+):
     return InterpreterContext(
         message=message,
         focus=focus or [],
@@ -32,7 +40,7 @@ def ctx(active=None, message="", focus=None, replied=None, presented=None):
         now="2026-06-29T09:00:00",
         timezone="America/New_York",
         active_items=active or [],
-        last_digest=[],
+        last_digest=digest or [],
         presented_items=presented or [],
     )
 
@@ -756,14 +764,91 @@ def test_everything_but_fills_empty_bulk_exclude():
     assert {m.target for m in plan.mutations} == {"a1", "a2"}
 
 
-def test_everything_but_leaves_a_normal_complete_alone():
-    # A complete that does NOT target the excluded item is not inverted.
+def test_numbered_bulk_exclusions_override_mixed_model_actions():
+    digest = [
+        {"id": f"a{number}", "label": f"task {number}"}
+        for number in range(1, 7)
+    ]
+    active = [digest[index] | {"due_date": None} for index in (0, 1, 3, 5)]
+    plan = reconcile(
+        [
+            Complete(target="a1"),
+            Complete(target="a2"),
+            Note(target="a4", text="finished except for item 1 and item 6"),
+        ],
+        ctx(
+            active,
+            message="Finished it all except 1 and 6",
+            digest=digest,
+        ),
+    )
+
+    assert [(mutation.kind, mutation.target) for mutation in plan.mutations] == [
+        ("complete", "a2"),
+        ("complete", "a4"),
+    ]
+    for phrase in (
+        "Finished it all except one and six please",
+        "Finished it all except the first and sixth",
+    ):
+        alternate = reconcile(
+            [Complete(target="a1")],
+            ctx(active, message=phrase, digest=digest),
+        )
+        assert [mutation.target for mutation in alternate.mutations] == [
+            "a2",
+            "a4",
+        ]
+
+
+def test_numbered_bulk_exclusion_outside_displayed_list_changes_nothing():
+    digest = [
+        {"id": f"a{number}", "label": f"task {number}"}
+        for number in range(1, 5)
+    ]
+    active = [item | {"due_date": None} for item in digest]
+    plan = reconcile(
+        [Complete(target="a1"), Complete(target="a2")],
+        ctx(
+            active,
+            message="Finished it all except 1 and 6",
+            digest=digest,
+        ),
+    )
+
+    assert not plan.mutations
+    assert plan.questions
+
+
+def test_position_reference_does_not_shift_after_a_digest_item_closes():
+    digest = [
+        {"id": "a1", "label": "first task"},
+        {"id": "a2", "label": "second task"},
+        {"id": "a3", "label": "third task"},
+    ]
+    active = [
+        {"id": "a2", "label": "second task", "due_date": None},
+        {"id": "a3", "label": "third task", "due_date": None},
+    ]
+
+    plan = reconcile(
+        [Complete(target="2")],
+        ctx(active, message="done 2", digest=digest),
+    )
+
+    assert [(mutation.kind, mutation.target) for mutation in plan.mutations] == [
+        ("complete", "a2")
+    ]
+
+
+def test_everything_but_repairs_an_incomplete_model_proposal():
+    # The model proposed only one included item, but the literal bulk contract
+    # still owns the complete set.
     plan = reconcile(
         [Complete(target="a1", confidence=1.0)],
         ctx(ACTIVE, message="I did everything today but the SR audit"),
     )
-    # a1 (prez) does not match the tail ("audit"), so the action stands as-is.
-    assert {m.target for m in plan.mutations} == {"a1"}
+    assert {m.target for m in plan.mutations} == {"a1", "a2"}
 
 
 def test_bulk_today_excludes_waiting():

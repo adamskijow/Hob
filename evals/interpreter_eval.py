@@ -36,6 +36,7 @@ class Case:
     check: Callable[[Plan], bool]
     desc: str
     active: list | None = None
+    digest: list | None = None  # exact morning order for numbered references
     focus: list | None = None  # conversational focus, for follow-up cases
     presented: list | None = None  # most recent proactive list shown to user
     replied: dict | None = None  # replied-to anchor, for reply cases
@@ -342,6 +343,21 @@ CASES = [
          and "a1" not in {m.target for m in p.mutations}
          and len(p.mutations) >= 2,
          "bulk complete spares the excluded item"),
+    Case(
+        "Finished it all except 1 and 6",
+        lambda p: kinds(p) == ["complete", "complete", "complete", "complete"]
+        and {mutation.target for mutation in p.mutations}
+        == {"n2", "n3", "n4", "n5"},
+        "numbered bulk exclusions preserve the displayed digest",
+        active=[
+            {"id": f"n{number}", "label": f"numbered task {number}", "due_date": None}
+            for number in range(1, 7)
+        ],
+        digest=[
+            {"id": f"n{number}", "label": f"numbered task {number}"}
+            for number in range(1, 7)
+        ],
+    ),
     Case("did the slides but not the taxes",
          lambda p: {m.target for m in p.mutations if m.kind == "complete"} == {"t2"}
          and not any(m.kind == "complete" and m.target == "t1" for m in p.mutations)
@@ -373,7 +389,7 @@ def main() -> int:
     for c in CASES:
         ctx = InterpreterContext(
             message=c.msg, today=TODAY, now=f"{TODAY}T09:00:00", timezone=TZ,
-            active_items=c.active or ACTIVE, last_digest=[],
+            active_items=c.active or ACTIVE, last_digest=c.digest or [],
             presented_items=c.presented or [],
             focus=c.focus or [], replied=c.replied,
             last_change_at=c.last_change_at,

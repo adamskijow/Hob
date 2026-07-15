@@ -2,6 +2,7 @@
 """Verified, recoverable replacement of Hob's SQLite data file."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -20,6 +21,57 @@ _REQUIRED_TABLES = {"items", "action_log", "digests", "meta"}
 
 class DatabaseBusyError(RuntimeError):
     pass
+
+
+class TelegramBusyError(RuntimeError):
+    pass
+
+
+@contextmanager
+def telegram_lease(
+    token: str, lock_dir: str | Path | None = None
+) -> Iterator[None]:
+    """Allow only one local poller for a Telegram bot, across all databases.
+
+    A database-specific lease cannot protect against a second Hob process that
+    accidentally selects a legacy database. The token digest identifies the
+    shared remote bot without putting its credential in a path or error.
+    """
+    if not token:
+        yield
+        return
+    root = (
+        Path(lock_dir).expanduser()
+        if lock_dir is not None
+        else Path.home()
+        / "Library"
+        / "Application Support"
+        / "Hob"
+        / "Locks"
+    )
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        root.chmod(0o700)
+    except OSError:
+        pass
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    lock_path = root / f"telegram-{digest}.lock"
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    os.fchmod(descriptor, 0o600)
+    handle = os.fdopen(descriptor, "a+")
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise TelegramBusyError(
+                "this Telegram bot is already running in another Hob process"
+            ) from exc
+        yield
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
 
 
 @contextmanager

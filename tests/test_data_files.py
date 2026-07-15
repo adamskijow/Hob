@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 import json
+import multiprocessing
 import tomllib
 from pathlib import Path
 
@@ -7,14 +8,22 @@ import pytest
 
 from adapters.data_files import (
     DatabaseBusyError,
+    TelegramBusyError,
     database_lease,
     import_export,
     restore_database,
+    telegram_lease,
 )
 from core.version import __version__
 from adapters.store_sqlite import SqliteStore
 from core.models import PlanRun, PlanSession, RecurrenceRule
 from tests.test_store import make_item
+
+
+def _hold_telegram_lease(token, lock_dir, ready, release):
+    with telegram_lease(token, lock_dir):
+        ready.set()
+        release.wait(5)
 
 
 def test_runtime_and_package_versions_cannot_drift():
@@ -82,6 +91,34 @@ def test_database_lease_rejects_second_daemon_or_live_restore(tmp_path):
         with pytest.raises(DatabaseBusyError):
             with database_lease(db):
                 pass
+
+
+def test_telegram_lease_rejects_same_bot_across_different_databases(tmp_path):
+    token = "123456:private-token"
+    process_context = multiprocessing.get_context("spawn")
+    ready = process_context.Event()
+    release = process_context.Event()
+    holder = process_context.Process(
+        target=_hold_telegram_lease,
+        args=(token, str(tmp_path), ready, release),
+    )
+    holder.start()
+    try:
+        assert ready.wait(5)
+        with pytest.raises(TelegramBusyError, match="already running"):
+            with telegram_lease(token, tmp_path):
+                pass
+        # A distinct bot remains an independent supported installation.
+        with telegram_lease("654321:other-token", tmp_path):
+            pass
+    finally:
+        release.set()
+        holder.join(5)
+    assert holder.exitcode == 0
+
+    names = [path.name for path in tmp_path.iterdir()]
+    assert names and all(token not in name for name in names)
+    assert all(path.stat().st_mode & 0o777 == 0o600 for path in tmp_path.iterdir())
 
 
 def test_portable_export_preserves_adopted_plan_sessions(tmp_path):

@@ -1106,12 +1106,24 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
         ctx.message,
         re.IGNORECASE,
     )
+    completion_digest_reference = (
+        _EVERYTHING_BUT.search(ctx.message) is not None
+        and _COMPLETION_BULK.search(ctx.message) is not None
+        and bool(ctx.last_digest)
+    )
     if list_reference:
         if not ctx.presented_items:
             plan.questions.append("which list did you mean? i changed nothing.")
             return
         presented_ids = {item["id"] for item in ctx.presented_items}
         matching = [i for i in ctx.active_items if i["id"] in presented_ids]
+    elif completion_digest_reference:
+        active_by_id = {item["id"]: item for item in ctx.active_items}
+        matching = [
+            active_by_id[item["id"]]
+            for item in ctx.last_digest
+            if item["id"] in active_by_id
+        ]
     else:
         matching = [
             i for i in ctx.active_items
@@ -1121,7 +1133,10 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
         plan.questions.append("nothing matched, so i changed nothing.")
         return
     active_all = {i["id"]: i.get("label", "") for i in ctx.active_items}
-    positions = {str(n): i["id"] for n, i in enumerate(ctx.active_items, start=1)}
+    position_items = _position_items(ctx, presented=bool(list_reference))
+    positions = {
+        str(n): item["id"] for n, item in enumerate(position_items, start=1)
+    }
     excluded = {
         r for r in (
             _resolve_ref(e, active_all, positions) for e in action.exclude
@@ -1264,8 +1279,27 @@ def _reconcile_query(action: Query, today: date, ctx, plan: Plan) -> None:
 
 
 _EVERYTHING_BUT = re.compile(
-    r"\b(everything|all of (it|them)|all my \w+)\b.{0,40}?\b(but|except|besides|aside from)\b(?P<tail>.*)",
+    r"\b(?:everything|all(?:\s+of\s+(?:it|them)|\s+my\s+\w+)?)\b"
+    r".{0,40}?\b(?:but|except|besides|aside from)\b(?P<tail>.*)",
     re.IGNORECASE | re.DOTALL,
+)
+
+_COMPLETION_BULK = re.compile(
+    r"\b(?:finish(?:ed)?|complete(?:d)?|did|done|knocked\s+out|"
+    r"wrapped\s+up|got\s+through)\b",
+    re.IGNORECASE,
+)
+
+_POSITION_TOKEN = (
+    r"(?:\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|first|"
+    r"second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)"
+)
+_POSITION_PREFIX = r"(?:the\s+)?(?:(?:items?|tasks?|numbers?|#)\s*)?"
+_POSITION_EXCLUSION_TAIL = re.compile(
+    rf"\s*{_POSITION_PREFIX}{_POSITION_TOKEN}"
+    rf"(?:\s*(?:,|and|&)\s*{_POSITION_PREFIX}"
+    rf"{_POSITION_TOKEN})*\s*(?:for\s+now|please)?\s*[.!]?\s*",
+    re.IGNORECASE,
 )
 
 
@@ -1288,6 +1322,34 @@ def _tail_matches(label: str, tail_words: set[str]) -> bool:
     )
 
 
+def _position_items(ctx, *, presented: bool = False) -> list[dict]:
+    """Return the exact displayed order a numeric reference belongs to."""
+    if presented and ctx.presented_items:
+        return ctx.presented_items
+    return ctx.last_digest or ctx.active_items
+
+
+def _position_exclusions(tail: str, ctx) -> tuple[list[str], bool]:
+    if not _POSITION_EXCLUSION_TAIL.fullmatch(tail):
+        looks_positional = re.match(
+            rf"\s*{_POSITION_PREFIX}{_POSITION_TOKEN}\b",
+            tail,
+            re.IGNORECASE,
+        )
+        return [], bool(looks_positional)
+    items = _position_items(ctx)
+    by_pos = {str(n): item["id"] for n, item in enumerate(items, start=1)}
+    labels = {item["id"]: item.get("label", "") for item in items}
+    excluded = []
+    for token in re.findall(_POSITION_TOKEN, tail, re.IGNORECASE):
+        item_id = _resolve_ref(token, labels, by_pos)
+        if item_id is None:
+            return [], True
+        if item_id not in excluded:
+            excluded.append(item_id)
+    return excluded, True
+
+
 def _fix_everything_but(actions: list, ctx) -> list:
     """Deterministic backstop for "did everything BUT X": the model sometimes
     emits a lone complete of X (the one item the user spared) or a bulk with an
@@ -1296,20 +1358,38 @@ def _fix_everything_but(actions: list, ctx) -> list:
     match = _EVERYTHING_BUT.search(ctx.message)
     if not match:
         return actions
-    tail_words = _tail_words(match.group("tail"))
-    if not tail_words:
-        return actions
+    tail = match.group("tail")
+    excluded, positional = _position_exclusions(tail, ctx)
+    tail_words = _tail_words(tail)
     labels = {i["id"]: i.get("label", "") for i in ctx.active_items}
     by_pos = {str(n): i["id"] for n, i in enumerate(ctx.active_items, start=1)}
-    excluded = [i for i, lab in labels.items() if _tail_matches(lab, tail_words)]
+    if positional and not excluded:
+        return [Unknown(note="numbered exclusion outside the displayed list")]
+    if not positional:
+        if not tail_words:
+            return actions
+        excluded = [
+            item_id
+            for item_id, label in labels.items()
+            if _tail_matches(label, tail_words)
+        ]
     if not excluded:
         return actions
+    if _COMPLETION_BULK.search(ctx.message):
+        return [
+            Bulk(
+                op="complete",
+                scope="today",
+                exclude=list(excluded),
+                confidence=1.0,
+            )
+        ]
     bulks = [a for a in actions if isinstance(a, Bulk)]
     if bulks:
-        # The model got the shape right; guarantee the exclusions are filled.
+        # Guarantee every literal exclusion even when the model proposed a
+        # non-empty but incomplete list.
         for b in bulks:
-            if not b.exclude:
-                b.exclude = list(excluded)
+            b.exclude = list(dict.fromkeys([*b.exclude, *excluded]))
         return actions
     singles = [a for a in actions if isinstance(a, (Complete, Drop))]
     if singles and all(
@@ -1613,8 +1693,12 @@ def reconcile(actions: list, ctx) -> Plan:
     captures = [a for a in actions if isinstance(a, Capture)]
     n_captures = len(captures)
     active_due = {i["id"].lower(): i.get("due_date") for i in ctx.active_items}
-    # 1-based position -> id, so a typed "drop 2" resolves to the displayed item.
-    by_pos = {str(n): i["id"] for n, i in enumerate(ctx.active_items, start=1)}
+    # Preserve the displayed morning order even after earlier rows close. This
+    # prevents a later position from silently shifting to a different item.
+    position_items = _position_items(ctx)
+    by_pos = {
+        str(n): item["id"] for n, item in enumerate(position_items, start=1)
+    }
     if ctx.focus and ctx.focus[0].get("context") == "plan":
         planned = [
             item
