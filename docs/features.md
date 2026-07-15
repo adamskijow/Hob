@@ -86,8 +86,11 @@ evening check-in at 9" in chat; empty disables it) Hob asks "what got done
 today?" and your free-text answer checks items off. And a task that keeps
 rolling over is marked in the digest ("day 4") with a gentle question about
 whether it is still real, so the list does not silently rot. Undated tasks age
-too; reply `keep`, `tomorrow`, or `drop` to the digest. A keep decision resets
-the nudge clock without moving the task.
+too. When the digest asks, send `keep`, `tomorrow`, or `drop` as an ordinary
+message, or use Telegram's reply gesture if you prefer. A stale waiting prompt
+similarly accepts plain `back on`. The same-day prompt is single-use, and a
+newer task conversation takes precedence over destructive terse choices. A keep
+decision resets the nudge clock without moving the task.
 
 ## Telegram-native moves
 

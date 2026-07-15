@@ -4,7 +4,14 @@ import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from app import DigestService, INSTALL_VERSION_KEY, RELEASE_NOTICE_KEY
+import pytest
+
+from app import (
+    DIGEST_DECISION_KEY,
+    DigestService,
+    INSTALL_VERSION_KEY,
+    RELEASE_NOTICE_KEY,
+)
 from core.digest import (
     digest_nudge_item,
     digest_owed,
@@ -257,12 +264,12 @@ def test_render_stale_nudge():
 def test_undated_items_age_and_keep_resets_the_nudge():
     old = item("a1", "call pool", created="2026-06-25T08:00:00")
     out = render_digest([old], "2026-06-29")
-    assert "(day 5)" in out and "reply keep" in out
+    assert "(day 5)" in out and "send keep" in out
     assert digest_nudge_item([old], "2026-06-29") is old
 
     old.updated_at = "2026-06-29T07:00:00"
     quiet = render_digest([old], "2026-06-29")
-    assert "reply keep" not in quiet
+    assert "send keep" not in quiet
     assert digest_nudge_item([old], "2026-06-29") is None
 
 
@@ -278,6 +285,70 @@ def test_digest_records_one_actionable_reply_anchor():
     send = SendWithId()
     asyncio.run(DigestService(store, FakeClock(at(7, 0)), send).fire())
     assert store.ref_for(777) == "a1"
+    assert json.loads(store.get_meta(DIGEST_DECISION_KEY)) == {
+        "item_id": "a1",
+        "sent_at": "2026-06-29T07:00:00-04:00",
+        "kind": "stale_task",
+    }
+
+
+def test_digest_without_a_nudge_clears_any_prior_decision_context():
+    store = SqliteStore(":memory:")
+    store.set_meta("chat_id", "42")
+    store.set_meta(DIGEST_DECISION_KEY, '{"item_id":"old"}')
+    store.add_item(item("a1", "fresh task"))
+
+    asyncio.run(
+        DigestService(store, FakeClock(at(7, 0)), FakeSend()).fire()
+    )
+
+    assert store.get_meta(DIGEST_DECISION_KEY) == ""
+
+
+def test_waiting_digest_persists_its_plain_back_on_decision_context():
+    store = SqliteStore(":memory:")
+    store.set_meta("chat_id", "42")
+    waiting = item("a1", "waiting task")
+    waiting.waiting_since = "2026-06-25"
+    store.add_item(waiting)
+
+    asyncio.run(
+        DigestService(store, FakeClock(at(7, 0)), FakeSend()).fire()
+    )
+
+    assert json.loads(store.get_meta(DIGEST_DECISION_KEY)) == {
+        "item_id": "a1",
+        "sent_at": "2026-06-29T07:00:00-04:00",
+        "kind": "waiting",
+    }
+
+
+def test_digest_decision_state_rolls_back_as_one_unit(monkeypatch):
+    class SendWithId(FakeSend):
+        async def __call__(self, chat_id, text):
+            await super().__call__(chat_id, text)
+            return 777
+
+    store = SqliteStore(":memory:")
+    store.set_meta("chat_id", "42")
+    store.set_meta(RELEASE_NOTICE_KEY, __version__)
+    store.add_item(item("a1", "stale task", created="2026-06-25T08:00:00"))
+    original_set_meta = store.set_meta
+
+    def fail_on_decision_context(key, value):
+        if key == DIGEST_DECISION_KEY:
+            raise RuntimeError("simulated persistence failure")
+        original_set_meta(key, value)
+
+    monkeypatch.setattr(store, "set_meta", fail_on_decision_context)
+
+    with pytest.raises(RuntimeError, match="simulated persistence failure"):
+        asyncio.run(
+            DigestService(store, FakeClock(at(7, 0)), SendWithId()).fire()
+        )
+
+    assert store.last_digest() is None
+    assert store.ref_for(777) is None
 
 
 def test_digest_service_sends_and_persists_order():
@@ -327,8 +398,8 @@ def test_upgraded_owner_gets_one_digest_discovery_note_but_fresh_install_does_no
     asyncio.run(service.fire())
 
     assert "new in hob" in sent.calls[0][1]
-    assert "marks both named tasks done" in sent.calls[0][1]
-    assert "unfinished work open" in sent.calls[0][1]
+    assert 'send "keep", "tomorrow", "drop", or "back on"' in sent.calls[0][1]
+    assert "no longer need to use telegram's reply gesture" in sent.calls[0][1]
     assert "new in hob" not in sent.calls[1][1]
     assert upgraded.get_meta(RELEASE_NOTICE_KEY) == __version__
 

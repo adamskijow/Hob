@@ -98,6 +98,8 @@ HELP = (
     'every monday". correct the same way: "did the prez one", "push it to friday", '
     '"drop 2", or follow up with "make it 4pm" / "that\'s urgent". reply to a '
     'reminder with "done" or "snooze 20"; edit a message and i take the edit. '
+    'when a digest asks about stale work, send "keep", "tomorrow", "drop", '
+    'or "back on" as a plain message; no reply gesture is required. '
     'ask: "what\'s on today", "what\'s overdue", "what did i finish this week", '
     'or "am i overloaded this week?". '
     '/today shows today; /list shows every open item; /settings shows timing; '
@@ -139,6 +141,8 @@ ONBOARDING_DONE_KEY = "onboarding_complete"
 INSTALL_VERSION_KEY = "install_version"
 RELEASE_NOTICE_KEY = "release_notice_version"
 FIRST_PLAN_ADOPTED_KEY = "first_plan_adopted_at"
+DIGEST_DECISION_KEY = "digest_decision"
+PINNED_KEY = "pinned_digest_mid"
 ONBOARDING_STEPS = (
     "work_hours",
     "work_days",
@@ -167,6 +171,16 @@ _NEGATIONS = {
     "no", "n", "nope", "nah", "cancel", "never mind", "nevermind", "stop",
     "do not", "don't", "dont",
 }
+_KEEP_DECISIONS = {"keep", "keep it", "still on", "yes keep it"}
+_TOMORROW_DECISIONS = {"tomorrow", "move it to tomorrow"}
+_DROP_DECISIONS = {"drop", "drop it"}
+_RESUME_DECISIONS = {"back on", "back on deck", "resume", "it cleared"}
+_DIGEST_DECISIONS = (
+    _KEEP_DECISIONS
+    | _TOMORROW_DECISIONS
+    | _DROP_DECISIONS
+    | _RESUME_DECISIONS
+)
 
 PLAN_SCHEMA = {
     "type": "object",
@@ -598,12 +612,20 @@ class MessageService:
         if self._store.has_actions_for_message(message_key):
             return ""
         replied = self._replied_item(msg.reply_to)
-        if replied and low in {"keep", "keep it", "still on", "yes keep it"}:
-            applied = self._apply(
-                [Mutation(kind="keep", target=replied["id"])], message_key
+        if (
+            replied
+            and low in _DIGEST_DECISIONS
+            and (low not in _RESUME_DECISIONS or replied["waiting"])
+        ):
+            return self._apply_digest_decision(
+                replied, low, message_key, consume_prompt=False
             )
-            self._save_focus(applied)
-            return self._reply(applied, [], [])
+        if msg.reply_to is None:
+            digest_item = self._digest_decision_item(low)
+            if digest_item is not None:
+                return self._apply_digest_decision(
+                    digest_item, low, message_key
+                )
         return self._interpret_and_apply(
             text, message_key, reply_to=msg.reply_to,
             forwarded_from=msg.forwarded_from,
@@ -620,7 +642,117 @@ class MessageService:
         item = self._store.get_item(item_id)
         if item is None or item.status != STATUS_OPEN:
             return None
+        return {
+            "id": item.id,
+            "label": item.task,
+            "waiting": bool(item.waiting_since),
+        }
+
+    def _digest_decision_item(self, low: str) -> dict | None:
+        """Resolve a bare choice advertised by today's stale-task digest.
+
+        New digests persist the exact content-free decision context. The pinned
+        message reference is a compatibility path for a digest sent earlier on
+        the day this behavior was upgraded. A consumed/invalid persisted value
+        intentionally suppresses that fallback, so one prompt acts at most once.
+        """
+        if low not in _DIGEST_DECISIONS:
+            return None
+        if self._store.get_meta(PENDING_KEY):
+            return None
+        raw = self._store.get_meta(DIGEST_DECISION_KEY)
+        item_id = None
+        sent_at = None
+        kind = None
+        if raw is not None:
+            try:
+                data = json.loads(raw)
+                if not isinstance(data, dict):
+                    return None
+                item_id = data.get("item_id")
+                sent_at = data.get("sent_at")
+                kind = data.get("kind")
+            except (TypeError, json.JSONDecodeError):
+                return None
+        else:
+            # A v0.9.4 digest already sent today recorded the nudge against its
+            # pinned Telegram id, but predates DIGEST_DECISION_KEY.
+            digest = self._store.last_digest()
+            pinned = self._store.get_meta(PINNED_KEY)
+            if digest is None or not pinned:
+                return None
+            try:
+                item_id = self._store.ref_for(int(pinned))
+            except ValueError:
+                return None
+            sent_at = digest.sent_at
+            legacy_item = self._store.get_item(item_id) if item_id else None
+            kind = (
+                "waiting"
+                if legacy_item is not None and legacy_item.waiting_since
+                else "stale_task"
+            )
+        expected_kind = (
+            "waiting" if low in _RESUME_DECISIONS else "stale_task"
+        )
+        if (
+            kind != expected_kind
+            or not isinstance(item_id, str)
+            or not item_id
+            or not isinstance(sent_at, str)
+            or not sent_at
+            or sent_at[:10] != self._clock.today().isoformat()
+        ):
+            return None
+        item = self._store.get_item(item_id)
+        if item is None or item.status != STATUS_OPEN:
+            return None
+        if (kind == "waiting") != bool(item.waiting_since):
+            return None
+        # "Tomorrow" and "drop" can also be terse follow-ups to a task just
+        # discussed. A newer explicit focus wins over the proactive morning
+        # prompt. "Keep" exists specifically for this prompt and stays eligible.
+        if low in _TOMORROW_DECISIONS | _DROP_DECISIONS:
+            focus = self._store.get_meta(FOCUS_KEY)
+            if focus:
+                try:
+                    focus_data = json.loads(focus)
+                    if not isinstance(focus_data, dict):
+                        return None
+                    focus_at = focus_data.get("ts")
+                    if focus_at and datetime.fromisoformat(
+                        focus_at
+                    ) > datetime.fromisoformat(sent_at):
+                        return None
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    return None
         return {"id": item.id, "label": item.task}
+
+    def _apply_digest_decision(
+        self,
+        item: dict,
+        low: str,
+        message_key: str,
+        *,
+        consume_prompt: bool = True,
+    ) -> str:
+        if low in _KEEP_DECISIONS:
+            mutation = Mutation(kind="keep", target=item["id"])
+        elif low in _TOMORROW_DECISIONS:
+            mutation = Mutation(
+                kind="reschedule",
+                target=item["id"],
+                due_date=(self._clock.today() + timedelta(days=1)).isoformat(),
+            )
+        elif low in _DROP_DECISIONS:
+            mutation = Mutation(kind="drop", target=item["id"])
+        else:
+            mutation = Mutation(kind="resume", target=item["id"])
+        applied = self._apply([mutation], message_key)
+        if consume_prompt:
+            self._store.set_meta(DIGEST_DECISION_KEY, "")
+        self._save_focus(applied)
+        return self._reply(applied, [], [])
 
     def _context(
         self,
@@ -2177,9 +2309,6 @@ class MessageService:
 
 
 # meta key holding the Telegram message id of the currently pinned digest.
-PINNED_KEY = "pinned_digest_mid"
-
-
 class DigestService:
     """Builds the morning digest, sends it, and records what was presented so
     later references resolve. send is an async callable(chat_id, text); pin is
@@ -2208,10 +2337,10 @@ class DigestService:
         )
         if release_notice:
             text += (
-                f"\n\nnew in hob {__version__}: a completion report such as "
-                '"i did taxes and called the bank" now marks both named tasks '
-                "done. explicit future or partial-progress wording still keeps "
-                "unfinished work open. this note appears once."
+                f"\n\nnew in hob {__version__}: when the digest asks about "
+                'stale work, send "keep", "tomorrow", "drop", or "back on" '
+                "as a plain message. you no longer need to use telegram's reply "
+                "gesture. this note appears once."
             )
         digest = Digest(
             sent_at=self._clock.now().isoformat(),
@@ -2229,12 +2358,27 @@ class DigestService:
             )
         except TypeError:
             sent_id = await self._send(int(chat), text)
-        if release_notice:
-            self._store.set_meta(RELEASE_NOTICE_KEY, __version__)
-        self._store.save_digest(digest)
         nudge = digest_nudge_item(ordered, today, waiting)
-        if nudge is not None and isinstance(sent_id, int):
-            self._store.record_sent_ref(sent_id, nudge.id)
+        with self._store.transaction():
+            if release_notice:
+                self._store.set_meta(RELEASE_NOTICE_KEY, __version__)
+            self._store.save_digest(digest)
+            self._store.set_meta(
+                DIGEST_DECISION_KEY,
+                json.dumps(
+                    {
+                        "item_id": nudge.id,
+                        "sent_at": digest.sent_at,
+                        "kind": (
+                            "waiting" if nudge.waiting_since else "stale_task"
+                        ),
+                    }
+                )
+                if nudge is not None
+                else "",
+            )
+            if nudge is not None and isinstance(sent_id, int):
+                self._store.record_sent_ref(sent_id, nudge.id)
         if self._pin is not None and isinstance(sent_id, int):
             old = self._store.get_meta(PINNED_KEY)
             await self._pin(int(chat), sent_id, int(old) if old else None)

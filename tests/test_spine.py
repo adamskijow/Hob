@@ -8,8 +8,14 @@ import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from app import MessageService
-from core.models import Item, PlanRun, PlanSession
+from app import (
+    DIGEST_DECISION_KEY,
+    FOCUS_KEY,
+    PENDING_KEY,
+    PINNED_KEY,
+    MessageService,
+)
+from core.models import Digest, DigestItem, Item, PlanRun, PlanSession
 from adapters.store_sqlite import SqliteStore
 from adapters.telegram_bot import InboundMessage
 from tests.fakes import FakeClock, FakeLlm
@@ -17,8 +23,14 @@ from tests.fakes import FakeClock, FakeLlm
 TZ = ZoneInfo("America/New_York")
 
 
-def msg(text, message_id=1):
-    return InboundMessage(text=text, chat_id=1, message_id=message_id, update_id=message_id)
+def msg(text, message_id=1, reply_to=None):
+    return InboundMessage(
+        text=text,
+        chat_id=1,
+        message_id=message_id,
+        update_id=message_id,
+        reply_to=reply_to,
+    )
 
 
 def seed(store):
@@ -157,6 +169,205 @@ def test_completion_report_shares_past_tense_across_coordinated_tasks():
     assert 'done: "call the pool guy"' in out
     assert 'done: "review SR audit"' in out
     assert "not marked it done" not in out
+
+
+def test_plain_keep_uses_single_use_digest_decision_without_reply_metadata():
+    llm = FakeLlm({"actions": [{"type": "unknown"}]})
+    svc, store = service(llm)
+    store.set_meta(
+        DIGEST_DECISION_KEY,
+        json.dumps(
+            {
+                "item_id": "a1",
+                "sent_at": "2026-06-29T07:00:00-04:00",
+                "kind": "stale_task",
+            }
+        ),
+    )
+
+    out = svc.handle(msg("Keep"))
+
+    kept = store.get_item("a1")
+    assert kept.status == "open"
+    assert kept.updated_at == "2026-06-29T09:00:00-04:00"
+    assert out == 'keeping: "org prez". i will check again later.'
+    assert store.get_meta(DIGEST_DECISION_KEY) == ""
+    assert llm.calls == []
+
+    # The proactive prompt was consumed; the same bare word cannot act twice.
+    assert "did not catch" in svc.handle(msg("Keep", message_id=2))
+    assert len(llm.calls) == 1
+
+
+def test_plain_digest_tomorrow_and_drop_apply_to_the_prompted_item():
+    tomorrow_llm = FakeLlm({"actions": [{"type": "unknown"}]})
+    tomorrow_svc, tomorrow_store = service(tomorrow_llm)
+    tomorrow_store.set_meta(
+        DIGEST_DECISION_KEY,
+        json.dumps(
+            {
+                "item_id": "a2",
+                "sent_at": "2026-06-29T07:00:00-04:00",
+                "kind": "stale_task",
+            }
+        ),
+    )
+    moved = tomorrow_svc.handle(msg("tomorrow"))
+    assert tomorrow_store.get_item("a2").due_date == "2026-06-30"
+    assert 'moved "call the pool guy" to 2026-06-30' in moved
+    assert tomorrow_llm.calls == []
+
+    drop_llm = FakeLlm({"actions": [{"type": "unknown"}]})
+    drop_svc, drop_store = service(drop_llm)
+    drop_store.set_meta(
+        DIGEST_DECISION_KEY,
+        json.dumps(
+            {
+                "item_id": "a3",
+                "sent_at": "2026-06-29T07:00:00-04:00",
+                "kind": "stale_task",
+            }
+        ),
+    )
+    dropped = drop_svc.handle(msg("drop"))
+    assert drop_store.get_item("a3").status == "dropped"
+    assert dropped == 'dropped: "review SR audit"'
+    assert drop_llm.calls == []
+
+
+def test_digest_decision_is_same_day_and_newer_task_focus_wins():
+    expired_llm = FakeLlm({"actions": [{"type": "unknown"}]})
+    expired_svc, expired_store = service(expired_llm)
+    expired_store.set_meta(
+        DIGEST_DECISION_KEY,
+        json.dumps(
+            {
+                "item_id": "a1",
+                "sent_at": "2026-06-28T07:00:00-04:00",
+                "kind": "stale_task",
+            }
+        ),
+    )
+    assert "did not catch" in expired_svc.handle(msg("Keep"))
+    assert expired_store.get_item("a1").updated_at == "2026-06-25T08:00:00"
+
+    focused_llm = FakeLlm({"actions": [{"type": "unknown"}]})
+    focused_svc, focused_store = service(focused_llm)
+    focused_store.set_meta(
+        DIGEST_DECISION_KEY,
+        json.dumps(
+            {
+                "item_id": "a1",
+                "sent_at": "2026-06-29T07:00:00-04:00",
+                "kind": "stale_task",
+            }
+        ),
+    )
+    focused_store.set_meta(
+        FOCUS_KEY,
+        json.dumps(
+            {
+                "ts": "2026-06-29T08:00:00-04:00",
+                "items": [{"id": "a2", "label": "call the pool guy"}],
+            }
+        ),
+    )
+    assert "did not catch" in focused_svc.handle(msg("drop"))
+    assert focused_store.get_item("a1").status == "open"
+
+
+def test_upgrade_uses_todays_pinned_digest_anchor_for_plain_keep():
+    llm = FakeLlm({"actions": [{"type": "unknown"}]})
+    svc, store = service(llm)
+    store.save_digest(
+        Digest(
+            sent_at="2026-06-29T07:00:00-04:00",
+            items=[DigestItem(id="a1", label="org prez")],
+        )
+    )
+    store.record_sent_ref(777, "a1")
+    store.set_meta(PINNED_KEY, "777")
+
+    out = svc.handle(msg("Keep"))
+
+    assert out == 'keeping: "org prez". i will check again later.'
+    assert store.get_item("a1").updated_at == "2026-06-29T09:00:00-04:00"
+    assert store.get_meta(DIGEST_DECISION_KEY) == ""
+    assert llm.calls == []
+
+
+def test_plain_back_on_resolves_the_waiting_digest_prompt():
+    llm = FakeLlm({"actions": [{"type": "unknown"}]})
+    svc, store = service(llm)
+    waiting = store.get_item("a2")
+    waiting.waiting_since = "2026-06-25"
+    store.update_item(waiting)
+    store.set_meta(
+        DIGEST_DECISION_KEY,
+        json.dumps(
+            {
+                "item_id": "a2",
+                "sent_at": "2026-06-29T07:00:00-04:00",
+                "kind": "waiting",
+            }
+        ),
+    )
+
+    out = svc.handle(msg("back on"))
+
+    assert out == 'back on: "call the pool guy"'
+    assert store.get_item("a2").waiting_since is None
+    assert store.get_meta(DIGEST_DECISION_KEY) == ""
+    assert llm.calls == []
+
+
+def test_plain_digest_decisions_fail_closed_on_invalid_or_competing_context():
+    llm = FakeLlm({"actions": [{"type": "unknown"}]})
+    svc, store = service(llm)
+
+    store.set_meta(DIGEST_DECISION_KEY, "not json")
+    assert "did not catch" in svc.handle(msg("Keep"))
+    assert store.get_item("a1").updated_at == "2026-06-25T08:00:00"
+
+    store.set_meta(
+        DIGEST_DECISION_KEY,
+        json.dumps(
+            {
+                "item_id": "a1",
+                "sent_at": 123,
+                "kind": "stale_task",
+            }
+        ),
+    )
+    assert "did not catch" in svc.handle(msg("Keep", message_id=2))
+    assert store.get_item("a1").updated_at == "2026-06-25T08:00:00"
+
+    store.set_meta(
+        DIGEST_DECISION_KEY,
+        json.dumps(
+            {
+                "item_id": "a1",
+                "sent_at": "2026-06-29T07:00:00-04:00",
+                "kind": "waiting",
+            }
+        ),
+    )
+    assert "did not catch" in svc.handle(msg("back on", message_id=3))
+    assert store.get_item("a1").waiting_since is None
+
+    store.set_meta(
+        DIGEST_DECISION_KEY,
+        json.dumps(
+            {
+                "item_id": "a1",
+                "sent_at": "2026-06-29T07:00:00-04:00",
+                "kind": "stale_task",
+            }
+        ),
+    )
+    store.set_meta(PENDING_KEY, "[]")
+    assert "did not catch" in svc.handle(msg("Keep", message_id=4))
+    assert store.get_item("a1").updated_at == "2026-06-25T08:00:00"
 
 
 def test_pending_clarification_resume():
