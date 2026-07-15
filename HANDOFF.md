@@ -11,12 +11,12 @@ snapshot.
 - **Live and in daily use.** Runs as a `launchd` daemon on macOS, with
   [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive. Model:
   `qwen2.5:14b-instruct` (7b works; 14b is more reliable on dense messages).
-- **Released:** v0.9.4. v0.9 adds a deterministic weekly capacity outlook,
+- **Released:** v0.9.5. v0.9 adds a deterministic weekly capacity outlook,
   explicit working days, plan-aware EOD, first-adoption coaching, accessible
   media fallback, privacy-safe activation metrics, and correct silent handling
   of Telegram-generated service events, and guarded shared-tense completion
-  reports. Schema remains 10.
-- **Green:** `uv run pytest` (371 passing), 29 native App Store foundation
+  reports and plain-message digest decisions. Schema remains 10.
+- **Green:** `uv run pytest` (380 passing), 29 native App Store foundation
   tests, signed native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
   evals.interpreter_eval`, 75/75). The v0.9.1 patch head passed Ubuntu and macOS
@@ -53,6 +53,11 @@ snapshot.
   present and past form. A conservative deterministic core correction now
   closes both tasks unless future, imperative, or partial-progress wording
   changes the second clause. See `docs/audits/v0.9.4.md`.
+- **v0.9.5 digest-decision patch:** daily use exposed that the digest advertised
+  “Reply keep” but only an explicit Telegram reply carried the item anchor. A
+  content-free, same-day, single-use decision context now makes plain `keep`,
+  `tomorrow`, `drop`, and `back on` work, while newer task focus wins for terse
+  destructive choices. See `docs/audits/v0.9.5.md`.
 - **Mac App Store track:** ADR 0001 establishes one behavior with Open Local
   and Store distribution editions. `native/HobAppFoundation` starts the native
   menu-bar/settings surface, typed setup readiness, bounded Apple Foundation
