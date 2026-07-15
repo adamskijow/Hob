@@ -73,6 +73,15 @@ CASES = [
     Case("did the prez one",
          lambda p: kinds(p) == ["complete"] and p.mutations[0].target == "a1",
          "complete by description"),
+    Case("I did home insurance and hit the grift",
+         lambda p: kinds(p) == ["complete", "complete"]
+         and {m.target for m in p.mutations} == {"t1", "t2"}
+         and not p.starts,
+         "shared past tense completes both coordinated tasks",
+         active=[
+             {"id": "t1", "label": "remind mortgage home insurance", "due_date": None},
+             {"id": "t2", "label": "hit the grift", "due_date": None},
+         ]),
     Case("drop 2",
          lambda p: kinds(p) == ["drop"] and p.mutations[0].target == "a2",
          "reference by position number"),

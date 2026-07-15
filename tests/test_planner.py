@@ -15,6 +15,7 @@ from core.models import (
     Reschedule,
     Schedule,
     Setting,
+    Start,
     Undo,
     Unknown,
     When,
@@ -93,6 +94,60 @@ def test_complete_valid_target():
     assert plan.mutations[0].kind == "complete"
     assert plan.mutations[0].target == "a1"
     assert not plan.questions
+
+
+def test_shared_past_tense_converts_misread_start_to_completion():
+    active = [
+        {"id": "a1", "label": "remind mortgage home insurance", "due_date": None},
+        {"id": "a2", "label": "hit the grift", "due_date": None},
+    ]
+    plan = reconcile(
+        [
+            Complete(target="a1", confidence=0.95),
+            Start(target="a2", confidence=0.95),
+        ],
+        ctx(active, message="I did home insurance and hit the grift"),
+    )
+
+    assert [(m.kind, m.target) for m in plan.mutations] == [
+        ("complete", "a1"),
+        ("complete", "a2"),
+    ]
+    assert not plan.starts
+
+
+def test_explicit_future_breaks_shared_completion_tense():
+    active = [
+        {"id": "a1", "label": "remind mortgage home insurance", "due_date": None},
+        {"id": "a2", "label": "hit the grift", "due_date": None},
+    ]
+    plan = reconcile(
+        [
+            Complete(target="a1", confidence=0.95),
+            Start(target="a2", confidence=0.95),
+        ],
+        ctx(active, message="I did home insurance and will hit the grift"),
+    )
+
+    assert [(m.kind, m.target) for m in plan.mutations] == [("complete", "a1")]
+    assert plan.starts == ["a2"]
+
+
+def test_partial_progress_breaks_shared_completion_tense():
+    active = [
+        {"id": "a1", "label": "remind mortgage home insurance", "due_date": None},
+        {"id": "a2", "label": "hit the grift", "due_date": None},
+    ]
+    plan = reconcile(
+        [
+            Complete(target="a1", confidence=0.95),
+            Start(target="a2", confidence=0.95),
+        ],
+        ctx(active, message="I did home insurance and worked on the grift"),
+    )
+
+    assert [(m.kind, m.target) for m in plan.mutations] == [("complete", "a1")]
+    assert plan.starts == ["a2"]
 
 
 def test_resolve_ref_tolerates_model_forms():

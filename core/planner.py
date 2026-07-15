@@ -1482,6 +1482,47 @@ def _drop_redundant_new_recur(actions: list, message: str) -> list:
     return actions
 
 
+_PAST_COMPLETION_OPEN = re.compile(
+    r"^\s*(?:i\s+|we\s+)?(?:already\s+|just\s+)?"
+    r"(?:did|finished|completed|wrapped up|knocked out)\b",
+    re.IGNORECASE,
+)
+_COMPLETION_SCOPE_BREAK = re.compile(
+    r"\b(?:and|then|but)\s+(?:i\s+|we\s+)?(?:"
+    r"will|shall|am|are|was|were|want|need|plan|intend|start|started|"
+    r"begin|began|work|worked|working|continue|continued|progressed|try|tried|"
+    r"attempt|attempted|do|doing|finish|finishing|complete|completing"
+    r")\b|\b(?:next|now)\b",
+    re.IGNORECASE,
+)
+
+
+def _share_past_completion_scope(actions: list, message: str) -> list:
+    """Recover a coordinated completion that the model split into done + start.
+
+    English verbs such as "hit" have identical present and past forms. Small
+    models can therefore read "I did A and hit B" as a completion followed by a
+    request to start B. When the sentence opens in explicit past-completion
+    tense, contains both model-proposed shapes, and never changes to future,
+    ongoing, partial-progress, or imperative intent, the same tense safely
+    scopes across "and".
+    """
+    if (
+        not _PAST_COMPLETION_OPEN.search(message)
+        or " and " not in message.lower()
+        or _COMPLETION_SCOPE_BREAK.search(message)
+        or not any(isinstance(action, Complete) for action in actions)
+        or not any(isinstance(action, Start) for action in actions)
+    ):
+        return actions
+    return [
+        Complete(target=action.target, confidence=action.confidence)
+        if isinstance(action, Start)
+        else action
+        for action in actions
+    ]
+
+
 def reconcile(actions: list, ctx) -> Plan:
     today = date.fromisoformat(ctx.today)
     if _is_recent_literal_retraction(ctx):
@@ -1490,6 +1531,7 @@ def reconcile(actions: list, ctx) -> Plan:
     actions = _drop_redundant_new_recur(actions, ctx.message)
     actions = _recover_new_recurrence(actions, ctx)
     actions = _merge_new_capture_constraints(actions, ctx)
+    actions = _share_past_completion_scope(actions, ctx.message)
     low = ctx.message.strip().lower()
     queries = [action for action in actions if isinstance(action, Query)]
     outlook_words = re.search(

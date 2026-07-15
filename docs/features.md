@@ -54,7 +54,10 @@ captures it for Thursday, rather than the reply being misread on its own. The
 context Hob keeps is deliberately small (the one open question), not a running
 chat transcript; the task list itself carries the rest. You can also act on many
 items at once in plain language ("did everything today", "did everything but the
-slides", "clear my whole list", "drop all of friday").
+slides", "clear my whole list", "drop all of friday"). Past-tense completion
+also scopes across named tasks: "I did home insurance and called the bank"
+closes both. An explicit tense change remains literal: "I did home insurance
+and will call the bank" closes only the first task and keeps the second open.
 
 ## Reminders
 

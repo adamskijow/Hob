@@ -139,6 +139,26 @@ def test_eod_report_completes_multiple():
     assert store.get_item("a3").status == "done"
 
 
+def test_completion_report_shares_past_tense_across_coordinated_tasks():
+    llm = FakeLlm(
+        {
+            "actions": [
+                {"type": "complete", "target": "a2", "confidence": 0.95},
+                {"type": "start", "target": "a3", "confidence": 0.95},
+            ]
+        }
+    )
+    svc, store = service(llm)
+
+    out = svc.handle(msg("I did the pool call and reviewed the audit"))
+
+    assert store.get_item("a2").status == "done"
+    assert store.get_item("a3").status == "done"
+    assert 'done: "call the pool guy"' in out
+    assert 'done: "review SR audit"' in out
+    assert "not marked it done" not in out
+
+
 def test_pending_clarification_resume():
     # Turn 1 asks about an ambiguous date and persists the pending capture; turn 2
     # answers it, and the prompt for turn 2 carries the pending context.

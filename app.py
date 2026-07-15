@@ -2208,10 +2208,10 @@ class DigestService:
         )
         if release_notice:
             text += (
-                f"\n\nnew in hob {__version__}: telegram's own pin and status "
-                "events now stay silent; real unsupported media still gets "
-                'clear guidance. you can also ask "am i overloaded this week?" '
-                "for a read-only outlook. this note appears once."
+                f"\n\nnew in hob {__version__}: a completion report such as "
+                '"i did taxes and called the bank" now marks both named tasks '
+                "done. explicit future or partial-progress wording still keeps "
+                "unfinished work open. this note appears once."
             )
         digest = Digest(
             sent_at=self._clock.now().isoformat(),
