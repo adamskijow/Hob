@@ -171,6 +171,69 @@ def test_completion_report_shares_past_tense_across_coordinated_tasks():
     assert "not marked it done" not in out
 
 
+def test_numbered_digest_exclusions_repair_mixed_model_output_end_to_end():
+    llm = FakeLlm(
+        {
+            "actions": [
+                {"type": "complete", "target": "a1"},
+                {"type": "complete", "target": "a2"},
+                {
+                    "type": "note",
+                    "target": "a4",
+                    "text": "finished except for item 1 and item 6",
+                },
+            ]
+        }
+    )
+    svc, store = service(llm)
+    third = store.get_item("a3")
+    third.status = "done"
+    store.update_item(third)
+    for item_id, label, status in (
+        ("a4", "business case", "open"),
+        ("a5", "home insurance", "done"),
+        ("a6", "add two paths", "open"),
+    ):
+        store.add_item(
+            Item(
+                id=item_id,
+                raw_text=label,
+                task=label,
+                due_date=None,
+                due_time=None,
+                status=status,
+                source="capture",
+                created_at="2026-06-25T08:00:00-04:00",
+                updated_at="2026-06-25T08:00:00-04:00",
+            )
+        )
+    store.set_meta("item_seq", "6")
+    store.save_digest(
+        Digest(
+            sent_at="2026-06-29T07:00:00-04:00",
+            items=[
+                DigestItem(id="a1", label="org prez"),
+                DigestItem(id="a2", label="call the pool guy"),
+                DigestItem(id="a3", label="review SR audit"),
+                DigestItem(id="a4", label="business case"),
+                DigestItem(id="a5", label="home insurance"),
+                DigestItem(id="a6", label="add two paths"),
+            ],
+        )
+    )
+
+    out = svc.handle(msg("Finished it all except 1 and 6"))
+
+    assert store.get_item("a1").status == "open"
+    assert store.get_item("a2").status == "done"
+    assert store.get_item("a3").status == "done"
+    assert store.get_item("a4").status == "done"
+    assert store.get_item("a4").note is None
+    assert store.get_item("a5").status == "done"
+    assert store.get_item("a6").status == "open"
+    assert out == 'done: "call the pool guy"\ndone: "business case"'
+
+
 def test_plain_keep_uses_single_use_digest_decision_without_reply_metadata():
     llm = FakeLlm({"actions": [{"type": "unknown"}]})
     svc, store = service(llm)

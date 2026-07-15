@@ -196,7 +196,9 @@ uv run python app.py import /safe/place/hob-export.json
 Backup files are integrity-checked after writing. Restore and import validate a
 candidate in isolation, save the current database beside it, and only then swap
 the data file atomically. If both a legacy checkout database and the app-data
-database exist, data commands refuse to guess; set `HOB_DB_PATH` explicitly.
+database exist, daemon startup, status, and data commands refuse to guess; set
+`HOB_DB_PATH` explicitly. Hob also takes a content-free, token-scoped process
+lease so two local databases cannot poll or send through the same Telegram bot.
 Portable export and verified restore include proposal and adopted-plan sessions.
 
 ## Reliability

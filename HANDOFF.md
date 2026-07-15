@@ -11,16 +11,17 @@ snapshot.
 - **Live and in daily use.** Runs as a `launchd` daemon on macOS, with
   [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive. Model:
   `qwen2.5:14b-instruct` (7b works; 14b is more reliable on dense messages).
-- **Released:** v0.9.5. v0.9 adds a deterministic weekly capacity outlook,
+- **Released:** v0.9.6. v0.9 adds a deterministic weekly capacity outlook,
   explicit working days, plan-aware EOD, first-adoption coaching, accessible
   media fallback, privacy-safe activation metrics, and correct silent handling
   of Telegram-generated service events, and guarded shared-tense completion
-  reports and plain-message digest decisions. Schema remains 10.
-- **Green:** `uv run pytest` (380 passing), 29 native App Store foundation
+  reports, plain-message digest decisions, safe numbered exclusions, and
+  token-wide Telegram singleton ownership. Schema remains 10.
+- **Green:** `uv run pytest` (387 passing), 29 native App Store foundation
   tests, signed native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
-  evals.interpreter_eval`, 75/75). The v0.9.1 patch head passed Ubuntu and macOS
-  CI in run `29165920137`.
+  evals.interpreter_eval`, 76/76). The release head passes exact Ubuntu and
+  macOS CI before tagging.
 - **Live v0.9:** release commit `c656459` passed exact Ubuntu/macOS CI in run
   `29165341007`, was tagged and published as v0.9.0, backed up, and deployed by
   graceful launchd restart. Status is healthy on schema 10 with clean queues and
@@ -58,6 +59,13 @@ snapshot.
   content-free, same-day, single-use decision context now makes plain `keep`,
   `tomorrow`, `drop`, and `back on` work, while newer task focus wins for terse
   destructive choices. See `docs/audits/v0.9.5.md`.
+- **v0.9.6 numbered-exclusion and singleton patch:** an unrecognized local CLI
+  flag started a second process on the legacy database, which could share the
+  Telegram bot because ownership was only database-scoped. The stale six-row
+  digest then disagreed with the live four-row context. CLI commands and
+  ambiguous database selection now fail fast, a content-free token-wide lease
+  permits only one local poller, and numbered `all except` reports preserve the
+  exact digest order or change nothing. See `docs/audits/v0.9.6.md`.
 - **Mac App Store track:** ADR 0001 establishes one behavior with Open Local
   and Store distribution editions. `native/HobAppFoundation` starts the native
   menu-bar/settings surface, typed setup readiness, bounded Apple Foundation

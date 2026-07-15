@@ -62,9 +62,11 @@ from adapters.calendar_eventkit import EventKitCalendar
 from adapters.clock import SystemClock
 from adapters.data_files import (
     DatabaseBusyError,
+    TelegramBusyError,
     database_lease,
     import_export,
     restore_database,
+    telegram_lease,
 )
 from adapters.keychain import (
     KeychainError,
@@ -100,6 +102,7 @@ HELP = (
     'reminder with "done" or "snooze 20"; edit a message and i take the edit. '
     'when a digest asks about stale work, send "keep", "tomorrow", "drop", '
     'or "back on" as a plain message; no reply gesture is required. '
+    'bulk reports work too: "finished it all except 1 and 6". '
     'ask: "what\'s on today", "what\'s overdue", "what did i finish this week", '
     'or "am i overloaded this week?". '
     '/today shows today; /list shows every open item; /settings shows timing; '
@@ -2337,10 +2340,10 @@ class DigestService:
         )
         if release_notice:
             text += (
-                f"\n\nnew in hob {__version__}: when the digest asks about "
-                'stale work, send "keep", "tomorrow", "drop", or "back on" '
-                "as a plain message. you no longer need to use telegram's reply "
-                "gesture. this note appears once."
+                f"\n\nnew in hob {__version__}: numbered completion reports "
+                'such as "finished it all except 1 and 6" now preserve the '
+                "exact digest order and never act on an out-of-range number. "
+                "this note appears once."
             )
         digest = Digest(
             sent_at=self._clock.now().isoformat(),
@@ -3041,6 +3044,23 @@ def main(argv: list[str] | None = None) -> int:
     # token in the URL. Quiet it so the token never lands in the log file.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    if argv and argv[0] in {"-h", "--help"}:
+        print(
+            "usage: python app.py [doctor|status|calendar [status|authorize]|"
+            "token [status|set|delete]|export [FILE]|backup [FILE]|"
+            "restore FILE|import FILE]"
+        )
+        return 0
+    commands = {
+        "token", "doctor", "status", "calendar", "export", "backup",
+        "restore", "import",
+    }
+    if argv and argv[0] not in commands:
+        print(
+            f"hob: unknown command {argv[0]!r}; run `python app.py --help`",
+            file=sys.stderr,
+        )
+        return 2
     if argv and argv[0] == "token":
         return _token_command(argv)
     if argv and argv[0] == "doctor":
@@ -3059,7 +3079,16 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] == "calendar":
         return _calendar_command(cfg, argv)
     if argv and argv[0] == "status":
+        ambiguity = _database_choice_error(cfg)
+        if ambiguity:
+            print(f"hob: status refused: {ambiguity}", file=sys.stderr)
+            return 2
         return _status(cfg)
+
+    ambiguity = _database_choice_error(cfg)
+    if ambiguity:
+        print(f"hob: start refused: {ambiguity}", file=sys.stderr)
+        return 2
 
     log = logging.getLogger("hob")
     log.info(
@@ -3071,22 +3100,23 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        with database_lease(cfg.db_path):
-            with SqliteStore(cfg.db_path) as store:
-                if not cfg.telegram_enabled:
-                    print(
-                        "hob: Telegram token not configured, nothing to run. "
-                        "Create a bot with @BotFather, run `python app.py token set`, "
-                        "and check setup with "
-                        "`python app.py doctor`. See README.",
-                        file=sys.stderr,
-                    )
-                    return 0
-                try:
-                    asyncio.run(_run_daemon(cfg, store))
-                except KeyboardInterrupt:
-                    log.info("interrupted, shutting down")
-    except DatabaseBusyError as exc:
+        with telegram_lease(cfg.telegram_token):
+            with database_lease(cfg.db_path):
+                with SqliteStore(cfg.db_path) as store:
+                    if not cfg.telegram_enabled:
+                        print(
+                            "hob: Telegram token not configured, nothing to run. "
+                            "Create a bot with @BotFather, run `python app.py token set`, "
+                            "and check setup with "
+                            "`python app.py doctor`. See README.",
+                            file=sys.stderr,
+                        )
+                        return 0
+                    try:
+                        asyncio.run(_run_daemon(cfg, store))
+                    except KeyboardInterrupt:
+                        log.info("interrupted, shutting down")
+    except (DatabaseBusyError, TelegramBusyError) as exc:
         print(f"hob: {exc}", file=sys.stderr)
         return 1
     return 0
