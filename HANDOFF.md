@@ -11,14 +11,15 @@ snapshot.
 - **Live and in daily use.** Runs as a `launchd` daemon on macOS, with
   [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive. Model:
   `qwen2.5:14b-instruct` (7b works; 14b is more reliable on dense messages).
-- **Released:** v0.9.3. v0.9 adds a deterministic weekly capacity outlook,
+- **Released:** v0.9.4. v0.9 adds a deterministic weekly capacity outlook,
   explicit working days, plan-aware EOD, first-adoption coaching, accessible
   media fallback, privacy-safe activation metrics, and correct silent handling
-  of Telegram-generated service events. Schema remains 10.
-- **Green:** `uv run pytest` (367 passing), 29 native App Store foundation
+  of Telegram-generated service events, and guarded shared-tense completion
+  reports. Schema remains 10.
+- **Green:** `uv run pytest` (371 passing), 29 native App Store foundation
   tests, signed native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
-  evals.interpreter_eval`, 74/74). The v0.9.1 patch head passed Ubuntu and macOS
+  evals.interpreter_eval`, 75/75). The v0.9.1 patch head passed Ubuntu and macOS
   CI in run `29165920137`.
 - **Live v0.9:** release commit `c656459` passed exact Ubuntu/macOS CI in run
   `29165341007`, was tagged and published as v0.9.0, backed up, and deployed by
@@ -47,6 +48,11 @@ snapshot.
   nothing. Telegram pin and other status updates are now durable silent no-ops;
   actual uncaptioned owner media retains its text alternative. See
   `docs/audits/v0.9.3.md`.
+- **v0.9.4 shared-tense patch:** daily use exposed “I did A and hit B” being
+  split into one completion plus a false start because “hit” has the same
+  present and past form. A conservative deterministic core correction now
+  closes both tasks unless future, imperative, or partial-progress wording
+  changes the second clause. See `docs/audits/v0.9.4.md`.
 - **Mac App Store track:** ADR 0001 establishes one behavior with Open Local
   and Store distribution editions. `native/HobAppFoundation` starts the native
   menu-bar/settings surface, typed setup readiness, bounded Apple Foundation

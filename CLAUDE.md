@@ -56,6 +56,9 @@ each keyed on the literal message and each with tests + an eval case:
 - `planner._is_typo_correction`: a short message ending in `*` is a texting
   typo-fix, acked not nagged.
 - `planner._fix_everything_but`: "did everything but X" spares X.
+- `planner._share_past_completion_scope`: "I did A and hit B" keeps the opening
+  completion tense across coordinated tasks, unless future, partial-progress,
+  or imperative wording explicitly breaks that scope.
 - `planner._apply_reference_guards`: verifies the target against the literal
   words. A negated clause ("did the slides but *not* the taxes") suppresses any
   complete/drop/wait/note on that item, and drops a capture that just re-states
