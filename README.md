@@ -37,6 +37,9 @@ one natural-language interpreter. When a message is ambiguous, Hob asks instead
 of guessing, and every change is undoable. The model and your data stay on your
 machine; only the Telegram transport leaves it.
 
+The evening loop accepts quiet days too: `nothing got done` leaves every
+displayed item open and gets a clear acknowledgement instead of an error.
+
 Unlike a command parser, Hob can also answer "what should I do next?" or "I
 have 40 minutes and low energy" with a short plan grounded in the actual task
 list. Semantic recall finds related work across labels, notes, projects, and

@@ -31,6 +31,8 @@ def ctx(
     replied=None,
     presented=None,
     digest=None,
+    pending=None,
+    forwarded=None,
 ):
     return InterpreterContext(
         message=message,
@@ -42,6 +44,8 @@ def ctx(
         active_items=active or [],
         last_digest=digest or [],
         presented_items=presented or [],
+        pending=pending or [],
+        forwarded_from=forwarded,
     )
 
 
@@ -869,6 +873,76 @@ def test_chitchat_sets_reply():
     plan = reconcile([Chitchat(reply="anytime!")], ctx())
     assert plan.chitchat == "anytime!"
     assert not plan.mutations and not plan.questions
+
+
+def test_zero_completion_reports_override_model_edits_and_acknowledge_noop():
+    presented = ACTIVE[:2]
+    variants = (
+        "Nothing got done",
+        "I didn't get anything done today",
+        "We made no progress",
+        "None of them were completed",
+        "No tasks were finished",
+        "Unfortunately, nothing was done tonight.",
+        "none",
+    )
+    for message in variants:
+        plan = reconcile(
+            [Complete(target="a1", confidence=1.0)],
+            ctx(ACTIVE, message=message, presented=presented),
+        )
+        assert not plan.mutations, message
+        assert plan.acknowledgement == (
+            "okay. nothing marked done. both items stay open on deck."
+        )
+        assert not plan.questions
+
+
+def test_zero_completion_report_does_not_hide_a_mixed_completion():
+    plan = reconcile(
+        [Complete(target="a2", confidence=1.0)],
+        ctx(
+            ACTIVE,
+            message="Nothing got done on taxes, but I finished the pool call",
+            presented=ACTIVE[:2],
+        ),
+    )
+    assert plan.acknowledgement is None
+    assert [(m.kind, m.target) for m in plan.mutations] == [("complete", "a2")]
+
+
+def test_context_free_none_remains_unknown():
+    plan = reconcile([Unknown(note="unclear")], ctx(ACTIVE, message="none"))
+    assert plan.acknowledgement is None
+    assert plan.questions
+
+
+def test_zero_completion_short_answer_does_not_override_setup_or_forwarding():
+    setup = reconcile(
+        [Setting(key="break_window", raw="none")],
+        ctx(
+            ACTIVE,
+            message="none",
+            presented=ACTIVE[:2],
+            pending=[{"kind": "setting", "key": "break_window"}],
+        ),
+    )
+    assert setup.acknowledgement is None
+    assert [(change.key, change.value) for change in setup.settings] == [
+        ("break_window", "none")
+    ]
+
+    forwarded = reconcile(
+        [Capture(task="Nothing got done", raw="Nothing got done")],
+        ctx(
+            ACTIVE,
+            message="Nothing got done",
+            presented=ACTIVE[:2],
+            forwarded="Sam",
+        ),
+    )
+    assert forwarded.acknowledgement is None
+    assert [mutation.kind for mutation in forwarded.mutations] == ["capture"]
 
 
 def test_typo_correction_acked_not_nagged():

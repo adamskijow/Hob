@@ -83,6 +83,78 @@ def _is_recent_literal_retraction(ctx) -> bool:
     return timedelta(0) <= age <= timedelta(minutes=RETRACTION_TTL_MINUTES)
 
 
+_ZERO_COMPLETION_REPORT = re.compile(
+    r"(?:"
+    r"nothing(?: at all)?(?: really)? (?:(?:got|was|is|has been) )?"
+    r"(?:done|finished|completed)"
+    r"|(?:i|we) (?:did|finished|completed) nothing"
+    r"|(?:i|we) got nothing done"
+    r"|(?:(?:i|we) )?(?:didn't|did not|haven't|have not) "
+    r"(?:get anything done|finish anything|complete anything|do anything|"
+    r"done anything|get any tasks? done|finish any tasks?|complete any tasks?|"
+    r"get any of (?:it|them|these|those) done|"
+    r"finish any of (?:it|them|these|those)|"
+    r"complete any of (?:it|them|these|those))"
+    r"|(?:(?:i|we) )?(?:couldn't|could not|wasn't able to|weren't able to|"
+    r"was not able to|were not able to) "
+    r"(?:get anything done|finish anything|complete anything|do anything)"
+    r"|(?:i|we) (?:made|had) no progress"
+    r"|(?:i|we) got none of (?:it|them|these|those) done"
+    r"|none of (?:it|them|these|those) "
+    r"(?:(?:got|was|were) )?(?:done|finished|completed)"
+    r"|no (?:tasks?|items?|work) "
+    r"(?:(?:got|was|were) )?(?:done|finished|completed)"
+    r"|(?:no|zero) progress"
+    r")"
+    r"(?: today| tonight| this evening)?",
+    re.IGNORECASE,
+)
+
+
+def zero_completion_ack(ctx) -> str | None:
+    """Acknowledge an explicit report that no work was completed.
+
+    This is a first-class, mutation-free outcome, not an unknown task command.
+    Full-string matching prevents a negative clause from hiding a completion in
+    a mixed report such as "nothing on taxes, but I finished the deck". Very
+    terse answers are accepted only when a recent proactive list supplies the
+    conversational context.
+    """
+    if ctx.forwarded_from or any(
+        pending.get("kind") == "setting" for pending in ctx.pending
+    ):
+        return None
+    low = (ctx.message or "").lower().replace("\u2019", "'")
+    low = re.sub(r"\s+", " ", low).strip(" \t\r\n.!?,;:")
+    low = re.sub(
+        r"^(?:sorry|sadly|honestly|unfortunately)[,:]?\s+|"
+        r"^(?:no|nope)[,:]\s+",
+        "",
+        low,
+    )
+    short_contextual = {
+        "none",
+        "nothing",
+        "nothing today",
+        "no progress",
+        "no progress today",
+        "not a thing",
+        "zero",
+    }
+    if not _ZERO_COMPLETION_REPORT.fullmatch(low) and not (
+        ctx.presented_items and not ctx.pending and low in short_contextual
+    ):
+        return None
+    count = len(ctx.presented_items)
+    if count == 1:
+        return "okay. nothing marked done. that item stays open on deck."
+    if count == 2:
+        return "okay. nothing marked done. both items stay open on deck."
+    if count > 2:
+        return f"okay. nothing marked done. all {count} items stay open on deck."
+    return "okay. nothing marked done."
+
+
 @dataclass
 class Mutation:
     kind: str  # capture | complete | drop | reschedule | amend | prioritize
@@ -167,6 +239,7 @@ class Plan:
     starts: list[str] = field(default_factory=list)
     plan_action: str | None = None  # adopt | replace | cancel
     chitchat: str | None = None  # a warm reply to a social pleasantry
+    acknowledgement: str | None = None  # deterministic mutation-free outcome
 
 
 def _too_far(due_iso: str, today: date) -> int | None:
@@ -1605,6 +1678,9 @@ def _share_past_completion_scope(actions: list, message: str) -> list:
 
 def reconcile(actions: list, ctx) -> Plan:
     today = date.fromisoformat(ctx.today)
+    acknowledgement = zero_completion_ack(ctx)
+    if acknowledgement is not None:
+        return Plan(acknowledgement=acknowledgement)
     if _is_recent_literal_retraction(ctx):
         actions = [Undo()]
     actions = _fix_everything_but(actions, ctx)
