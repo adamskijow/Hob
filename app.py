@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: MIT
 """Composition root: wire adapters into the core and run the daemon.
 
-Every inbound message takes one path: interpret -> reconcile -> apply. Captures,
-EOD reports, corrections, and queries all flow through it. MessageService and
-DigestService are edge orchestrators, unit-testable with an in-memory store, a
-fake clock, and a fake LLM; the daemon wiring lives in _run_daemon.
+Every inbound message takes one path: deterministic preflight -> interpret when
+needed -> reconcile -> apply. Captures, EOD reports, corrections, and queries
+all flow through it. MessageService and DigestService are edge orchestrators,
+unit-testable with an in-memory store, a fake clock, and a fake LLM; the daemon
+wiring lives in _run_daemon.
 """
 from __future__ import annotations
 
@@ -54,7 +55,14 @@ from core.models import (
     RecurrenceRule,
     Unknown,
 )
-from core.planner import Mutation, Pending, QueryIntent, SettingChange, reconcile
+from core.planner import (
+    Mutation,
+    Pending,
+    QueryIntent,
+    SettingChange,
+    reconcile,
+    zero_completion_ack,
+)
 from core.ports import Calendar, Clock, Llm, Store
 from core.undo import plan_undo
 from core.version import __version__
@@ -103,6 +111,7 @@ HELP = (
     'when a digest asks about stale work, send "keep", "tomorrow", "drop", '
     'or "back on" as a plain message; no reply gesture is required. '
     'bulk reports work too: "finished it all except 1 and 6". '
+    'answer an evening recap with "nothing got done" to leave every item open. '
     'ask: "what\'s on today", "what\'s overdue", "what did i finish this week", '
     'or "am i overloaded this week?". '
     '/today shows today; /list shows every open item; /settings shows timing; '
@@ -301,9 +310,9 @@ def _dump(item: Item) -> str:
 
 
 class MessageService:
-    """Runs every inbound message through the interpreter, reconciles the result,
-    applies mutations, and produces a reply. The transport (Telegram) and the
-    core stay on opposite sides of this seam.
+    """Runs each inbound message through deterministic preflight and, when
+    needed, the interpreter; reconciles the result; applies mutations; and
+    produces a reply. Transport and core stay on opposite sides of this seam.
     """
 
     def __init__(
@@ -998,7 +1007,12 @@ class MessageService:
         restore_on_outage: list[ActionLogEntry] | None = None,
     ) -> str:
         ctx = self._context(text, reply_to, forwarded_from)
-        actions = interpret(self._llm, ctx)
+        # An explicit zero-completion report is a complete answer to the recap,
+        # not an unknown task command. Recognize it before the model so this
+        # safe no-op still works during a local-model outage.
+        actions = (
+            [] if zero_completion_ack(ctx) is not None else interpret(self._llm, ctx)
+        )
         # A model outage degrades to a single Unknown with this note. Don't treat
         # it as a confusing message: say so, change nothing, and leave any pending
         # clarification intact so a retry still resolves it.
@@ -1023,7 +1037,8 @@ class MessageService:
         )
         applied = self._apply(plan.mutations, message_id, batch_id=batch_id)
         self._save_focus(applied)
-        answers = [self._answer_start(item_id) for item_id in plan.starts]
+        answers = [plan.acknowledgement] if plan.acknowledgement else []
+        answers += [self._answer_start(item_id) for item_id in plan.starts]
         answers += [self._answer_query(q) for q in plan.queries]
         setting_answers = [
             self._apply_setting(s, message_id, batch_id) for s in plan.settings
@@ -2340,9 +2355,9 @@ class DigestService:
         )
         if release_notice:
             text += (
-                f"\n\nnew in hob {__version__}: numbered completion reports "
-                'such as "finished it all except 1 and 6" now preserve the '
-                "exact digest order and never act on an out-of-range number. "
+                f"\n\nnew in hob {__version__}: evening recaps now accept "
+                '"nothing got done", "none", or "no progress" and confirm '
+                "that every listed item stays open. "
                 "this note appears once."
             )
         digest = Digest(
@@ -2391,8 +2406,8 @@ class DigestService:
 
 class EODService:
     """The evening close of the loop the morning digest opens: ask what got
-    done. The user's free-text answer flows through the normal interpreter
-    (completes / bulk complete), so this needs no machinery of its own."""
+    done. The user's free-text answer flows through the normal message path,
+    including deterministic zero-result reports and interpreted completions."""
 
     def __init__(self, store: Store, clock: Clock, send) -> None:
         self._store = store
@@ -2419,7 +2434,8 @@ class EODService:
                 f"{n}: {i.task}" for n, i in enumerate(on_deck, start=1)
             )
             text = (
-                "evening. what got done today? tell me and i'll check them off.\n"
+                "evening. what got done today? tell me and i'll check them off. "
+                'if the answer is none, say "nothing got done".\n'
                 + lines
             )
             displayed = on_deck
@@ -2476,8 +2492,8 @@ class EODService:
                 displayed.extend(extra)
             if open_sessions or extra or missing_sessions:
                 lines.append(
-                    "what actually got done? tell me; elapsed sessions are not "
-                    "marked complete on their own."
+                    "what actually got done? tell me, or say \"nothing got done\". "
+                    "elapsed sessions are not marked complete on their own."
                 )
             else:
                 lines.append("everything in the adopted plan is explicitly done.")

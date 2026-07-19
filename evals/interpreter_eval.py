@@ -108,6 +108,15 @@ CASES = [
     Case("did everything today",
          lambda p: kinds(p) and all(k == "complete" for k in kinds(p)),
          "bulk complete"),
+    Case(
+        "Nothing got done",
+        lambda p: not p.mutations
+        and p.acknowledgement == (
+            "okay. nothing marked done. both items stay open on deck."
+        ),
+        "zero-completion evening report is acknowledged without mutations",
+        presented=ACTIVE[:2],
+    ),
     Case("delete everything",
          lambda p: p.confirm is not None,
          "multi-day delete confirms"),

@@ -13,6 +13,7 @@ from app import (
     FOCUS_KEY,
     PENDING_KEY,
     PINNED_KEY,
+    PRESENTED_LIST_KEY,
     MessageService,
 )
 from core.models import Digest, DigestItem, Item, PlanRun, PlanSession
@@ -149,6 +150,64 @@ def test_eod_report_completes_multiple():
 
     assert store.get_item("a1").status == "done"
     assert store.get_item("a3").status == "done"
+
+
+def test_eod_zero_completion_report_is_model_independent_and_mutation_free():
+    llm = FakeLlm(
+        {"actions": [{"type": "complete", "target": "a1", "confidence": 1.0}]}
+    )
+    svc, store = service(llm)
+    store.set_meta(
+        PRESENTED_LIST_KEY,
+        json.dumps(
+            {
+                "ts": "2026-06-29T08:30:00-04:00",
+                "kind": "eod",
+                "items": [
+                    {"id": "a1", "label": "org prez"},
+                    {"id": "a2", "label": "call the pool guy"},
+                ],
+            }
+        ),
+    )
+
+    out = svc.handle(msg("Nothing got done"))
+
+    assert out == "okay. nothing marked done. both items stay open on deck."
+    assert store.get_item("a1").status == "open"
+    assert store.get_item("a2").status == "open"
+    assert store.last_batch() == []
+    assert llm.calls == []
+
+
+def test_zero_completion_report_preserves_previous_batch_for_undo():
+    llm = FakeLlm(
+        {"actions": [{"type": "complete", "target": "a1", "confidence": 1.0}]}
+    )
+    svc, store = service(llm)
+    svc.handle(msg("did the prez", message_id=1))
+    assert store.get_item("a1").status == "done"
+    store.set_meta(
+        PRESENTED_LIST_KEY,
+        json.dumps(
+            {
+                "ts": "2026-06-29T08:30:00-04:00",
+                "kind": "eod",
+                "items": [
+                    {"id": "a2", "label": "call the pool guy"},
+                    {"id": "a3", "label": "review SR audit"},
+                ],
+            }
+        ),
+    )
+
+    out = svc.handle(msg("Nothing got done", message_id=2))
+    undone = svc.handle(msg("/undo", message_id=3))
+
+    assert out == "okay. nothing marked done. both items stay open on deck."
+    assert "undid 1 change" in undone
+    assert store.get_item("a1").status == "open"
+    assert len(llm.calls) == 1
 
 
 def test_completion_report_shares_past_tense_across_coordinated_tasks():
