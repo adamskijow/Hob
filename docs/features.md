@@ -83,9 +83,11 @@ text, so fixing a typo fixes the task.
 
 The loop closes in the evening: at `HOB_EOD_TIME` (20:30 by default, or "do the
 evening check-in at 9" in chat; empty disables it) Hob asks "what got done
-today?" and your free-text answer checks items off. `Nothing got done`, `none`,
-or `no progress` is also a complete answer: Hob changes nothing and confirms
-that the displayed items stay open. A task that keeps
+today?" and your free-text answer checks items off. Answer naturally: Hob uses
+the local model and the active recap context to understand completed work,
+partial progress, or a zero-result answer such as `nada` or `today was a wash`.
+There is no fixed command phrase. A zero-result report changes nothing and
+confirms that the displayed items stay open. A task that keeps
 rolling over is marked in the digest ("day 4") with a gentle question about
 whether it is still real, so the list does not silently rot. Undated tasks age
 too. When the digest asks, send `keep`, `tomorrow`, or `drop` as an ordinary

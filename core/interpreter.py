@@ -6,8 +6,9 @@ The model call is injected via core.ports.Llm; this module performs no I/O. The
 model proposes; the core decides. Malformed or surprising output degrades to a
 single Unknown action so the edge can ask rather than crash.
 
-The model only ever proposes a target id and a date phrase. The core validates
-the id against the active list and re-resolves every date itself.
+The model proposes typed actions and date intents. The core validates item ids,
+machine-owned conversational context, confidence, and every resulting effect;
+it also resolves all calendar dates itself.
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ from core.models import (
     PlanAction,
     Prioritize,
     Query,
+    Recap,
     Recur,
     Reschedule,
     Resume,
@@ -206,6 +208,17 @@ ACTION_SCHEMA = {
                         {"target": _STR, "minutes": _NUM, "confidence": _NUM},
                         ["type", "target", "minutes"],
                     ),
+                    _variant(
+                        "recap",
+                        {
+                            "outcome": {
+                                "type": "string",
+                                "enum": ["none"],
+                            },
+                            "confidence": _NUM,
+                        },
+                        ["type", "outcome"],
+                    ),
                     _variant("undo", {}, ["type"]),
                     _variant("chitchat", {"reply": _STR}, ["type"]),
                     _variant("unknown", {"note": _STR}, ["type"]),
@@ -214,6 +227,21 @@ ACTION_SCHEMA = {
         }
     },
     "required": ["actions"],
+}
+
+# A deliberately small second-pass contract for replies to a current evening
+# recap. It validates direct recap proposals and recovers terse answers that the
+# main model called chitchat or unknown, without a language-specific phrase list.
+RECAP_OUTCOME_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "outcome": {
+            "type": "string",
+            "enum": ["none", "social", "other"],
+        },
+        "confidence": {"type": "number"},
+    },
+    "required": ["outcome", "confidence"],
 }
 
 _PROMPT = """\
@@ -358,6 +386,16 @@ tomorrow"). Pick scope:
 bare "snooze"/"not now" -> 10), confidence. Use when the user reacts to a \
 reminder with snooze/"not now"/"remind me again in N"; a new date or time for \
 the task itself is a reschedule instead.
+- recap: the user is answering the most recently presented EVENING RECAP and \
+reports that zero listed items were completed. Fields: type "recap", outcome \
+"none", confidence. Infer the meaning from ordinary language, including terse, \
+idiomatic, humorous, or multilingual answers; do not require completion \
+keywords or any particular stock phrase. Use it only when the semantic answer \
+to the active evening recap is that no listed item was completed. Never use \
+recap for a morning digest, forwarded content, a setup answer, or an unanchored \
+message. If the user names completed work or gives task-specific progress, emit \
+complete or note actions instead. Never combine recap outcome none with another \
+action.
 - undo: the user wants to reverse their last change ("scratch that", "undo \
 that"). Fields: type "undo".
 - chitchat: a social remark to hob with NO task - a greeting, thanks, an \
@@ -368,7 +406,8 @@ short, warm reply that fits what they said, hob's friendly voice, a sentence at 
 most: "anytime!", "aw, love you too", "doing great, thanks for asking", "glad i \
 could help"). Use chitchat for these even though they are not tasks. Do NOT use \
 it for a task, a question about the user's own tasks or schedule (that is a \
-query), or a general-knowledge question (that is unknown).
+query), a semantic answer to an active evening recap, or a general-knowledge \
+question (that is unknown).
 - unknown: you cannot tell what task they want, or it is some other message you \
 cannot act on (a non-task question, small talk that is not a pleasantry). \
 Fields: type "unknown", note (short).
@@ -400,6 +439,10 @@ repeat: if the task recurs, set repeat to one of: "daily", "weekdays", \
 repeat; leave repeat null and set when instead.
 
 Choosing the action:
+- A recent evening recap is a question from Hob, not merely a list. Read a \
+short follow-up as an answer to that question unless it clearly starts a new \
+task, command, or question. When its semantic meaning is zero completed items, \
+use recap outcome none rather than chitchat or unknown.
 - If the user adds a detail to an existing item itself, use amend. If it is a \
 distinct new task that belongs with an existing event, use capture with relate.
 - A question about the user's tasks or schedule is a query, never an edit. A \
@@ -462,14 +505,16 @@ def _format_digest(items: list[dict]) -> str:
     )
 
 
-def _format_presented(items: list[dict]) -> str:
+def _format_presented(items: list[dict], kind: str | None) -> str:
     if not items:
         return ""
     lines = "\n".join(
         f"  {n}. {i['id']}: {i['label']}" for n, i in enumerate(items, start=1)
     )
+    label = "evening recap" if kind == "eod" else (kind or "proactive list")
     return (
-        "\nMost recently presented proactive list. Phrases such as 'that list' "
+        f"\nMost recently presented proactive list (kind: {label}). "
+        "Phrases such as 'that list' "
         "refer only to these items:\n" + lines + "\n"
     )
 
@@ -569,7 +614,7 @@ def build_prompt(ctx: InterpreterContext) -> str:
         timezone=ctx.timezone,
         active=_format_active(ctx.active_items),
         digest=_format_digest(ctx.last_digest),
-        presented=_format_presented(ctx.presented_items),
+        presented=_format_presented(ctx.presented_items, ctx.presented_kind),
         pending=_format_pending(ctx.pending),
         focus=_format_focus(ctx),
         forwarded=_format_forwarded(ctx),
@@ -806,6 +851,13 @@ def _parse_one(action: object):
         if not target:
             return Unknown(note="snooze without target")
         return Snooze(target=target, minutes=_int(action.get("minutes")) or 10, confidence=conf)
+    if kind == "recap":
+        outcome = _str(action.get("outcome"))
+        return (
+            Recap(outcome=outcome, confidence=conf)
+            if outcome == "none"
+            else Unknown(note="recap without a valid outcome")
+        )
     if kind == "undo":
         return Undo()
     if kind == "chitchat":
@@ -825,10 +877,73 @@ def parse_actions(payload: object) -> list:
     return parsed or [Unknown(note="empty actions")]
 
 
+def _recap_adjudication_prompt(ctx: InterpreterContext) -> str:
+    listed = "\n".join(
+        f"- {item.get('id', '?')}: {item.get('label', '')}"
+        for item in ctx.presented_items
+    )
+    return f"""\
+The assistant most recently asked the user an evening recap question about
+which displayed tasks they completed:
+{listed}
+
+The user's answer:
+{ctx.message}
+
+Classify the answer by meaning in this conversational context, not by matching
+particular words. Interpret terse language, slang, idiom, humor, and the user's
+language naturally.
+
+The existence of the recap is not evidence that every later message answers it.
+First decide whether the message actually makes a claim about the user's work
+outcome. Gratitude, a greeting, affection, or a conversational acknowledgment
+alone is social and does not imply zero work.
+
+Return outcome "none" only when the message semantically reports that zero
+displayed tasks were completed. Return outcome "social" for a social remark
+with no task or recap answer. Return outcome "other" for questions, new tasks,
+commands, partial progress, or any report that some work was completed. Include
+a confidence from 0 to 1.
+"""
+
+
+def _needs_recap_adjudication(actions: list, ctx: InterpreterContext) -> bool:
+    """Whether a recap-adjacent result needs focused semantic validation."""
+    return (
+        ctx.presented_kind == "eod"
+        and bool(ctx.presented_items)
+        and not ctx.forwarded_from
+        and not ctx.pending
+        and len(actions) == 1
+        and isinstance(actions[0], (Recap, Chitchat, Unknown))
+    )
+
+
 def interpret(llm: Llm, ctx: InterpreterContext) -> list:
     prompt = build_prompt(ctx)
     try:
         payload = llm.complete_json(prompt, ACTION_SCHEMA)
     except Exception:
         return [Unknown(note=MODEL_UNREACHABLE)]
-    return parse_actions(payload)
+    actions = parse_actions(payload)
+    if not _needs_recap_adjudication(actions, ctx):
+        return actions
+    try:
+        verdict = llm.complete_json(
+            _recap_adjudication_prompt(ctx), RECAP_OUTCOME_SCHEMA
+        )
+    except Exception:
+        return [Unknown(note=MODEL_UNREACHABLE)]
+    outcome = verdict.get("outcome") if isinstance(verdict, dict) else None
+    if outcome == "none":
+        return [
+            Recap(
+                outcome="none",
+                confidence=_float(verdict.get("confidence"), 0.0),
+            )
+        ]
+    if outcome == "social":
+        return actions if isinstance(actions[0], Chitchat) else [Chitchat()]
+    if isinstance(actions[0], Recap):
+        return [Unknown(note="recap outcome not confirmed")]
+    return actions

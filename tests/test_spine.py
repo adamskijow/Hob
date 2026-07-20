@@ -152,10 +152,11 @@ def test_eod_report_completes_multiple():
     assert store.get_item("a3").status == "done"
 
 
-def test_eod_zero_completion_report_is_model_independent_and_mutation_free():
-    llm = FakeLlm(
-        {"actions": [{"type": "complete", "target": "a1", "confidence": 1.0}]}
-    )
+def test_eod_zero_completion_report_is_model_interpreted_and_mutation_free():
+    llm = FakeLlm([
+        {"actions": [{"type": "recap", "outcome": "none", "confidence": 1.0}]},
+        {"outcome": "none", "confidence": 1.0},
+    ])
     svc, store = service(llm)
     store.set_meta(
         PRESENTED_LIST_KEY,
@@ -177,13 +178,101 @@ def test_eod_zero_completion_report_is_model_independent_and_mutation_free():
     assert store.get_item("a1").status == "open"
     assert store.get_item("a2").status == "open"
     assert store.last_batch() == []
-    assert llm.calls == []
+    assert len(llm.calls) == 2
+    assert "kind: evening recap" in llm.calls[0][0]
+
+
+def test_eod_zero_completion_idiom_is_semantically_recovered_by_model():
+    llm = FakeLlm([
+        {"actions": [{"type": "chitchat", "reply": "got it"}]},
+        {"outcome": "none", "confidence": 0.96},
+    ])
+    svc, store = service(llm)
+    store.set_meta(
+        PRESENTED_LIST_KEY,
+        json.dumps(
+            {
+                "ts": "2026-06-29T08:30:00-04:00",
+                "kind": "eod",
+                "items": [
+                    {"id": "a1", "label": "org prez"},
+                    {"id": "a2", "label": "call the pool guy"},
+                ],
+            }
+        ),
+    )
+
+    out = svc.handle(msg("nada"))
+
+    assert out == "okay. nothing marked done. both items stay open on deck."
+    assert all(item.status == "open" for item in store.open_items())
+    assert store.last_batch() == []
+    assert len(llm.calls) == 2
+
+
+def test_eod_ambiguous_recap_fails_closed_if_semantic_model_pass_stops():
+    class StopsOnAdjudication:
+        def __init__(self):
+            self.calls = 0
+
+        def complete_json(self, prompt, schema, temperature=0.0):
+            self.calls += 1
+            if self.calls == 1:
+                return {"actions": [{"type": "unknown", "note": "unclear"}]}
+            raise RuntimeError("model stopped between passes")
+
+    llm = StopsOnAdjudication()
+    svc, store = service(llm)
+    store.set_meta(
+        PRESENTED_LIST_KEY,
+        json.dumps(
+            {
+                "ts": "2026-06-29T08:30:00-04:00",
+                "kind": "eod",
+                "items": [{"id": "a1", "label": "org prez"}],
+            }
+        ),
+    )
+
+    out = svc.handle(msg("the scoreboard stayed empty"))
+
+    assert "can't reach the model" in out
+    assert all(item.status == "open" for item in store.open_items())
+    assert store.last_batch() == []
+
+
+def test_chitchat_after_eod_survives_semantic_adjudication():
+    llm = FakeLlm([
+        {"actions": [{"type": "chitchat", "reply": "anytime"}]},
+        {"outcome": "social", "confidence": 1.0},
+        {"reply": "always happy to help"},
+    ])
+    svc, store = service(llm)
+    store.set_meta(
+        PRESENTED_LIST_KEY,
+        json.dumps(
+            {
+                "ts": "2026-06-29T08:30:00-04:00",
+                "kind": "eod",
+                "items": [{"id": "a1", "label": "org prez"}],
+            }
+        ),
+    )
+
+    out = svc.handle(msg("thanks hob"))
+
+    assert out == "always happy to help"
+    assert len(llm.calls) == 3
+    assert llm.calls[2][2] > 0.0
+    assert store.get_item("a1").status == "open"
 
 
 def test_zero_completion_report_preserves_previous_batch_for_undo():
-    llm = FakeLlm(
-        {"actions": [{"type": "complete", "target": "a1", "confidence": 1.0}]}
-    )
+    llm = FakeLlm([
+        {"actions": [{"type": "complete", "target": "a1", "confidence": 1.0}]},
+        {"actions": [{"type": "recap", "outcome": "none", "confidence": 1.0}]},
+        {"outcome": "none", "confidence": 1.0},
+    ])
     svc, store = service(llm)
     svc.handle(msg("did the prez", message_id=1))
     assert store.get_item("a1").status == "done"
@@ -207,7 +296,33 @@ def test_zero_completion_report_preserves_previous_batch_for_undo():
     assert out == "okay. nothing marked done. both items stay open on deck."
     assert "undid 1 change" in undone
     assert store.get_item("a1").status == "open"
-    assert len(llm.calls) == 1
+    assert len(llm.calls) == 3
+
+
+def test_eod_zero_completion_report_degrades_honestly_when_model_is_down():
+    store = SqliteStore(":memory:")
+    seed(store)
+    store.set_meta(
+        PRESENTED_LIST_KEY,
+        json.dumps(
+            {
+                "ts": "2026-06-29T08:30:00-04:00",
+                "kind": "eod",
+                "items": [
+                    {"id": "a1", "label": "org prez"},
+                    {"id": "a2", "label": "call the pool guy"},
+                ],
+            }
+        ),
+    )
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, _BoomLlm(), "America/New_York")
+
+    out = svc.handle(msg("nada"))
+
+    assert "can't reach the model" in out
+    assert all(item.status == "open" for item in store.open_items())
+    assert store.last_batch() == []
 
 
 def test_completion_report_shares_past_tense_across_coordinated_tasks():

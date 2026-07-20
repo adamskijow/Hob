@@ -169,7 +169,7 @@ def test_eod_service_lists_on_deck_or_skips():
     svc = EODService(store, FakeClock(at(20, 30)), send)
     assert asyncio.run(svc.fire()) is True
     assert "what got done today" in send.calls[0][1]
-    assert '"nothing got done"' in send.calls[0][1]
+    assert "say that however you like" in send.calls[0][1]
     assert "1: call pool" in send.calls[0][1]
 
     empty = SqliteStore(":memory:")
@@ -226,7 +226,7 @@ def test_eod_reviews_adopted_sessions_without_inferring_completion():
     assert "canceled block" not in text
     assert "plan references no longer in the task store:\n- missing block" in text
     assert "elapsed sessions are not marked complete" in text
-    assert '"nothing got done"' in text
+    assert "including if nothing did" in text
     assert store.get_item("a2").status == "open"
     presented = json.loads(store.get_meta("last_presented_list"))
     assert presented["kind"] == "eod"
@@ -400,7 +400,8 @@ def test_upgraded_owner_gets_one_digest_discovery_note_but_fresh_install_does_no
     asyncio.run(service.fire())
 
     assert "new in hob" in sent.calls[0][1]
-    assert '"nothing got done"' in sent.calls[0][1]
+    assert '"nada"' in sent.calls[0][1]
+    assert "no fixed phrase is required" in sent.calls[0][1]
     assert "every listed item stays open" in sent.calls[0][1]
     assert "new in hob" not in sent.calls[1][1]
     assert upgraded.get_meta(RELEASE_NOTICE_KEY) == __version__

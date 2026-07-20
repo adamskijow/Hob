@@ -5,11 +5,13 @@ from core.models import (
     Amend,
     Bulk,
     Capture,
+    Chitchat,
     Complete,
     Drop,
     InterpreterContext,
     PlanAction,
     Query,
+    Recap,
     Reschedule,
     Unknown,
 )
@@ -113,6 +115,21 @@ def test_parse_complete_drop_reschedule_query():
     assert isinstance(res[3], Query) and res[3].kind == "date"
 
 
+def test_parse_typed_recap_outcome():
+    action = parse_actions(
+        {"actions": [{"type": "recap", "outcome": "none", "confidence": 0.9}]}
+    )[0]
+    assert isinstance(action, Recap)
+    assert action.outcome == "none" and action.confidence == 0.9
+
+
+def test_invalid_recap_outcome_is_unknown():
+    action = parse_actions(
+        {"actions": [{"type": "recap", "outcome": "all"}]}
+    )[0]
+    assert isinstance(action, Unknown)
+
+
 def test_reference_action_without_target_is_unknown():
     assert isinstance(parse_actions({"actions": [{"type": "complete"}]})[0], Unknown)
 
@@ -153,6 +170,145 @@ def test_prompt_includes_digest_positions():
     prompt = build_prompt(c)
     assert "1. a3: review audit" in prompt
     assert "2. a5: call pool" in prompt
+
+
+def test_prompt_identifies_presented_evening_recap_context():
+    c = ctx()
+    c.presented_items = [{"id": "a1", "label": "call pool"}]
+    c.presented_kind = "eod"
+    prompt = build_prompt(c)
+    assert "kind: evening recap" in prompt
+    assert 'type "recap"' in prompt
+
+
+def test_ambiguous_eod_answer_gets_model_semantic_adjudication():
+    c = ctx("nada")
+    c.presented_items = [{"id": "a1", "label": "call pool"}]
+    c.presented_kind = "eod"
+    llm = FakeLlm([
+        {"actions": [{"type": "chitchat", "reply": "got it"}]},
+        {"outcome": "none", "confidence": 0.94},
+    ])
+
+    action = interpret(llm, c)[0]
+
+    assert isinstance(action, Recap)
+    assert action.outcome == "none" and action.confidence == 0.94
+    assert len(llm.calls) == 2
+    assert "meaning in this conversational context" in llm.calls[1][0]
+
+
+def test_eod_adjudication_preserves_actual_chitchat():
+    c = ctx("thanks hob")
+    c.presented_items = [{"id": "a1", "label": "call pool"}]
+    c.presented_kind = "eod"
+    llm = FakeLlm([
+        {"actions": [{"type": "chitchat", "reply": "anytime"}]},
+        {"outcome": "social", "confidence": 0.99},
+    ])
+
+    action = interpret(llm, c)[0]
+
+    assert action.reply == "anytime"
+    assert len(llm.calls) == 2
+
+
+def test_eod_adjudication_corrects_direct_recap_false_positive():
+    c = ctx("thanks hob")
+    c.presented_items = [{"id": "a1", "label": "call pool"}]
+    c.presented_kind = "eod"
+    llm = FakeLlm([
+        {"actions": [{"type": "recap", "outcome": "none", "confidence": 1.0}]},
+        {"outcome": "social", "confidence": 0.99},
+    ])
+
+    action = interpret(llm, c)[0]
+
+    assert isinstance(action, Chitchat)
+    assert len(llm.calls) == 2
+
+
+def test_eod_adjudication_rejects_unconfirmed_direct_recap():
+    c = ctx("what is tomorrow's schedule?")
+    c.presented_items = [{"id": "a1", "label": "call pool"}]
+    c.presented_kind = "eod"
+    llm = FakeLlm([
+        {"actions": [{"type": "recap", "outcome": "none", "confidence": 1.0}]},
+        {"outcome": "other", "confidence": 0.99},
+    ])
+
+    action = interpret(llm, c)[0]
+
+    assert isinstance(action, Unknown)
+    assert action.note == "recap outcome not confirmed"
+
+
+def test_eod_adjudication_does_not_override_concrete_action():
+    c = ctx("buy milk")
+    c.presented_items = [{"id": "a1", "label": "call pool"}]
+    c.presented_kind = "eod"
+    llm = FakeLlm({
+        "actions": [{
+            "type": "capture",
+            "task": "buy milk",
+            "raw": "buy milk",
+            "when": {"kind": "none"},
+        }]
+    })
+
+    action = interpret(llm, c)[0]
+
+    assert isinstance(action, Capture)
+    assert len(llm.calls) == 1
+
+
+def test_eod_adjudication_requires_uncontested_machine_context():
+    for mutate in (
+        lambda c: setattr(c, "presented_kind", "morning"),
+        lambda c: setattr(c, "forwarded_from", "Alice"),
+        lambda c: setattr(
+            c,
+            "pending",
+            [{
+                "kind": "capture",
+                "question": "when is call mom due?",
+                "task": "call mom",
+            }],
+        ),
+    ):
+        c = ctx("nada")
+        c.presented_items = [{"id": "a1", "label": "call pool"}]
+        c.presented_kind = "eod"
+        mutate(c)
+        llm = FakeLlm(
+            {"actions": [{"type": "unknown", "note": "unclear"}]}
+        )
+
+        action = interpret(llm, c)[0]
+
+        assert isinstance(action, Unknown)
+        assert len(llm.calls) == 1
+
+
+def test_eod_adjudication_outage_fails_closed():
+    class FailsSecondCall:
+        def __init__(self):
+            self.calls = 0
+
+        def complete_json(self, prompt, schema):
+            self.calls += 1
+            if self.calls == 1:
+                return {"actions": [{"type": "chitchat", "reply": "got it"}]}
+            raise RuntimeError("model stopped between passes")
+
+    c = ctx("the scoreboard stayed empty")
+    c.presented_items = [{"id": "a1", "label": "call pool"}]
+    c.presented_kind = "eod"
+
+    action = interpret(FailsSecondCall(), c)[0]
+
+    assert isinstance(action, Unknown)
+    assert action.note == MODEL_UNREACHABLE
 
 
 def test_empty_actions_list_is_unknown():

@@ -369,6 +369,14 @@ class Snooze:
 
 
 @dataclass
+class Recap:
+    """A semantic outcome reported against a recent evening recap."""
+
+    outcome: str  # none; future outcomes require their own core contract
+    confidence: float = 1.0
+
+
+@dataclass
 class Chitchat:
     """A social pleasantry with no task and no question (a greeting, thanks, an
     acknowledgment). The model supplies a short, warm reply."""
@@ -399,6 +407,9 @@ class InterpreterContext:
     # Most recent proactive list shown to the user, such as the evening plan
     # check. List-referential bulk commands are confined to these ids.
     presented_items: list[dict] = field(default_factory=list)
+    # Machine-owned provenance for that list. The model may propose a recap
+    # outcome, but the core accepts it only when this is exactly "eod".
+    presented_kind: str | None = None
     # Clarifications from the previous turn, persisted so a short reply resolves
     # against the question it answers. [{kind, question, task?/target?/label?}].
     pending: list[dict] = field(default_factory=list)

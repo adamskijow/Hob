@@ -39,6 +39,7 @@ class Case:
     digest: list | None = None  # exact morning order for numbered references
     focus: list | None = None  # conversational focus, for follow-up cases
     presented: list | None = None  # most recent proactive list shown to user
+    presented_kind: str | None = None  # machine-owned provenance, e.g. eod
     replied: dict | None = None  # replied-to anchor, for reply cases
     last_change_at: str | None = None  # recent undoable batch for retractions
 
@@ -50,6 +51,12 @@ def kinds(p: Plan) -> list[str]:
 def cap_due(p: Plan):
     caps = [m for m in p.mutations if m.kind == "capture"]
     return caps[0].due_date if caps else "<no capture>"
+
+
+def zero_recap(p: Plan) -> bool:
+    return not p.mutations and p.acknowledgement == (
+        "okay. nothing marked done. both items stay open on deck."
+    )
 
 
 CASES = [
@@ -108,15 +115,36 @@ CASES = [
     Case("did everything today",
          lambda p: kinds(p) and all(k == "complete" for k in kinds(p)),
          "bulk complete"),
-    Case(
-        "Nothing got done",
-        lambda p: not p.mutations
-        and p.acknowledgement == (
-            "okay. nothing marked done. both items stay open on deck."
-        ),
-        "zero-completion evening report is acknowledged without mutations",
-        presented=ACTIVE[:2],
-    ),
+    Case("Nothing got done", zero_recap,
+         "literal zero-completion evening report",
+         presented=ACTIVE[:2], presented_kind="eod"),
+    Case("nada", zero_recap,
+         "terse multilingual zero-completion evening report",
+         presented=ACTIVE[:2], presented_kind="eod"),
+    Case("today was a wash", zero_recap,
+         "idiomatic zero-completion evening report",
+         presented=ACTIVE[:2], presented_kind="eod"),
+    Case("the scoreboard stayed empty", zero_recap,
+         "unseen metaphorical zero-completion evening report",
+         presented=ACTIVE[:2], presented_kind="eod"),
+    Case("thanks hob",
+         lambda p: bool(p.chitchat) and not p.mutations and not p.acknowledgement,
+         "social reply is not swallowed by active evening recap",
+         presented=ACTIVE[:2], presented_kind="eod"),
+    Case("new task: buy milk",
+         lambda p: kinds(p) == ["capture"] and not p.acknowledgement,
+         "concrete new task outranks active evening recap",
+         presented=ACTIVE[:2], presented_kind="eod"),
+    Case("I made a little progress on the prez deck",
+         lambda p: kinds(p) == ["note"]
+         and p.mutations[0].target == "a1"
+         and not p.acknowledgement,
+         "partial progress remains a task note during evening recap",
+         presented=ACTIVE[:2], presented_kind="eod"),
+    Case("nada",
+         lambda p: not p.mutations and not p.acknowledgement,
+         "terse zero wording is not a recap without EOD provenance",
+         presented=ACTIVE[:2], presented_kind="morning"),
     Case("delete everything",
          lambda p: p.confirm is not None,
          "multi-day delete confirms"),
@@ -400,6 +428,7 @@ def main() -> int:
             message=c.msg, today=TODAY, now=f"{TODAY}T09:00:00", timezone=TZ,
             active_items=c.active or ACTIVE, last_digest=c.digest or [],
             presented_items=c.presented or [],
+            presented_kind=c.presented_kind,
             focus=c.focus or [], replied=c.replied,
             last_change_at=c.last_change_at,
         )

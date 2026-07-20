@@ -12,6 +12,7 @@ from core.models import (
     PlanAction,
     Prioritize,
     Query,
+    Recap,
     Recur,
     Reschedule,
     Schedule,
@@ -33,6 +34,7 @@ def ctx(
     digest=None,
     pending=None,
     forwarded=None,
+    presented_kind=None,
 ):
     return InterpreterContext(
         message=message,
@@ -44,6 +46,7 @@ def ctx(
         active_items=active or [],
         last_digest=digest or [],
         presented_items=presented or [],
+        presented_kind=presented_kind,
         pending=pending or [],
         forwarded_from=forwarded,
     )
@@ -875,74 +878,103 @@ def test_chitchat_sets_reply():
     assert not plan.mutations and not plan.questions
 
 
-def test_zero_completion_reports_override_model_edits_and_acknowledge_noop():
-    presented = ACTIVE[:2]
-    variants = (
-        "Nothing got done",
-        "I didn't get anything done today",
-        "We made no progress",
-        "None of them were completed",
-        "No tasks were finished",
-        "Unfortunately, nothing was done tonight.",
-        "none",
-    )
-    for message in variants:
-        plan = reconcile(
-            [Complete(target="a1", confidence=1.0)],
-            ctx(ACTIVE, message=message, presented=presented),
-        )
-        assert not plan.mutations, message
-        assert plan.acknowledgement == (
-            "okay. nothing marked done. both items stay open on deck."
-        )
-        assert not plan.questions
-
-
-def test_zero_completion_report_does_not_hide_a_mixed_completion():
+def test_typed_zero_completion_recap_acknowledges_noop_in_eod_context():
     plan = reconcile(
-        [Complete(target="a2", confidence=1.0)],
+        [Recap(outcome="none", confidence=1.0)],
+        ctx(
+            ACTIVE,
+            message="nada",
+            presented=ACTIVE[:2],
+            presented_kind="eod",
+        ),
+    )
+    assert not plan.mutations
+    assert plan.acknowledgement == (
+        "okay. nothing marked done. both items stay open on deck."
+    )
+    assert not plan.questions
+
+
+def test_contradictory_zero_recap_proposal_does_not_hide_a_completion():
+    plan = reconcile(
+        [
+            Recap(outcome="none", confidence=1.0),
+            Complete(target="a2", confidence=1.0),
+        ],
         ctx(
             ACTIVE,
             message="Nothing got done on taxes, but I finished the pool call",
             presented=ACTIVE[:2],
+            presented_kind="eod",
         ),
     )
     assert plan.acknowledgement is None
     assert [(m.kind, m.target) for m in plan.mutations] == [("complete", "a2")]
 
 
-def test_context_free_none_remains_unknown():
-    plan = reconcile([Unknown(note="unclear")], ctx(ACTIVE, message="none"))
+def test_recap_requires_machine_owned_eod_context_and_confidence():
+    plan = reconcile(
+        [Recap(outcome="none", confidence=1.0)],
+        ctx(ACTIVE, message="nada", presented=ACTIVE[:2]),
+    )
     assert plan.acknowledgement is None
     assert plan.questions
 
+    low = reconcile(
+        [Recap(outcome="none", confidence=0.2)],
+        ctx(
+            ACTIVE,
+            message="nada",
+            presented=ACTIVE[:2],
+            presented_kind="eod",
+        ),
+    )
+    assert low.acknowledgement is None and low.questions
 
-def test_zero_completion_short_answer_does_not_override_setup_or_forwarding():
+
+def test_misclassified_recap_does_not_override_setup_or_forwarding():
     setup = reconcile(
-        [Setting(key="break_window", raw="none")],
+        [Recap(outcome="none")],
         ctx(
             ACTIVE,
             message="none",
             presented=ACTIVE[:2],
+            presented_kind="eod",
             pending=[{"kind": "setting", "key": "break_window"}],
         ),
     )
     assert setup.acknowledgement is None
-    assert [(change.key, change.value) for change in setup.settings] == [
-        ("break_window", "none")
-    ]
+    assert not setup.settings and setup.questions
+
+    clarification = reconcile(
+        [Recap(outcome="none")],
+        ctx(
+            ACTIVE,
+            message="none",
+            presented=ACTIVE[:2],
+            presented_kind="eod",
+            pending=[{
+                "kind": "capture",
+                "question": "when is call mom due?",
+                "task": "call mom",
+            }],
+        ),
+    )
+    assert clarification.acknowledgement is None
+    assert not clarification.mutations and clarification.questions
 
     forwarded = reconcile(
-        [Capture(task="Nothing got done", raw="Nothing got done")],
+        [Recap(outcome="none")],
         ctx(
             ACTIVE,
             message="Nothing got done",
             presented=ACTIVE[:2],
+            presented_kind="eod",
             forwarded="Sam",
         ),
     )
     assert forwarded.acknowledgement is None
-    assert [mutation.kind for mutation in forwarded.mutations] == ["capture"]
+    assert not forwarded.mutations and forwarded.questions
 
 
 def test_typo_correction_acked_not_nagged():

@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
 """Composition root: wire adapters into the core and run the daemon.
 
-Every inbound message takes one path: deterministic preflight -> interpret when
-needed -> reconcile -> apply. Captures, EOD reports, corrections, and queries
-all flow through it. MessageService and DigestService are edge orchestrators,
+Every inbound message takes one path: interpret -> reconcile -> apply. Captures,
+EOD reports, corrections, and queries all flow through it. MessageService and
+DigestService are edge orchestrators,
 unit-testable with an in-memory store, a fake clock, and a fake LLM; the daemon
 wiring lives in _run_daemon.
 """
@@ -61,7 +61,6 @@ from core.planner import (
     QueryIntent,
     SettingChange,
     reconcile,
-    zero_completion_ack,
 )
 from core.ports import Calendar, Clock, Llm, Store
 from core.undo import plan_undo
@@ -111,7 +110,8 @@ HELP = (
     'when a digest asks about stale work, send "keep", "tomorrow", "drop", '
     'or "back on" as a plain message; no reply gesture is required. '
     'bulk reports work too: "finished it all except 1 and 6". '
-    'answer an evening recap with "nothing got done" to leave every item open. '
+    'answer an evening recap naturally with what finished, what progressed, or '
+    'that nothing happened; there is no required phrase. '
     'ask: "what\'s on today", "what\'s overdue", "what did i finish this week", '
     'or "am i overloaded this week?". '
     '/today shows today; /list shows every open item; /settings shows timing; '
@@ -310,9 +310,9 @@ def _dump(item: Item) -> str:
 
 
 class MessageService:
-    """Runs each inbound message through deterministic preflight and, when
-    needed, the interpreter; reconciles the result; applies mutations; and
-    produces a reply. Transport and core stay on opposite sides of this seam.
+    """Interprets each inbound message, reconciles the proposed actions, applies
+    mutations, and produces a reply. Transport and core stay on opposite sides
+    of this seam.
     """
 
     def __init__(
@@ -789,6 +789,7 @@ class MessageService:
             [{"id": d.id, "label": d.label} for d in last.items] if last else []
         )
         last_batch = self._store.last_batch()
+        presented_items, presented_kind = self._load_presented_context()
         raw_pending = self._store.get_meta(PENDING_KEY)
         return InterpreterContext(
             message=text,
@@ -797,7 +798,8 @@ class MessageService:
             timezone=self._timezone,
             active_items=active,
             last_digest=last_items,
-            presented_items=self._load_presented_list(),
+            presented_items=presented_items,
+            presented_kind=presented_kind,
             pending=json.loads(raw_pending) if raw_pending else [],
             focus=self._load_focus(),
             replied=self._replied_item(reply_to),
@@ -805,23 +807,26 @@ class MessageService:
             last_change_at=last_batch[0].ts if last_batch else None,
         )
 
-    def _load_presented_list(self) -> list[dict]:
+    def _load_presented_context(self) -> tuple[list[dict], str | None]:
         raw = self._store.get_meta(PRESENTED_LIST_KEY)
         if not raw:
-            return []
+            return [], None
         try:
             data = json.loads(raw)
             shown_at = datetime.fromisoformat(data["ts"])
             age = self._clock.now() - shown_at
             if not timedelta(0) <= age <= timedelta(hours=24):
-                return []
+                return [], None
             open_ids = {item.id for item in self._store.open_items()}
-            return [
-                item for item in data.get("items", [])
+            items = [
+                item
+                for item in data.get("items", [])
                 if item.get("id") in open_ids and item.get("label")
             ][:20]
+            kind = data.get("kind")
+            return items, kind if isinstance(kind, str) else None
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-            return []
+            return [], None
 
     def _load_focus(self) -> list[dict]:
         """The items the last message touched, if recent enough to still be the
@@ -1007,12 +1012,7 @@ class MessageService:
         restore_on_outage: list[ActionLogEntry] | None = None,
     ) -> str:
         ctx = self._context(text, reply_to, forwarded_from)
-        # An explicit zero-completion report is a complete answer to the recap,
-        # not an unknown task command. Recognize it before the model so this
-        # safe no-op still works during a local-model outage.
-        actions = (
-            [] if zero_completion_ack(ctx) is not None else interpret(self._llm, ctx)
-        )
+        actions = interpret(self._llm, ctx)
         # A model outage degrades to a single Unknown with this note. Don't treat
         # it as a confusing message: say so, change nothing, and leave any pending
         # clarification intact so a retry still resolves it.
@@ -2355,9 +2355,10 @@ class DigestService:
         )
         if release_notice:
             text += (
-                f"\n\nnew in hob {__version__}: evening recaps now accept "
-                '"nothing got done", "none", or "no progress" and confirm '
-                "that every listed item stays open. "
+                f"\n\nnew in hob {__version__}: evening recaps now use the "
+                "local model to understand natural zero-result answers in "
+                'context, including terse replies such as "nada". every '
+                "listed item stays open and no fixed phrase is required. "
                 "this note appears once."
             )
         digest = Digest(
@@ -2434,8 +2435,8 @@ class EODService:
                 f"{n}: {i.task}" for n, i in enumerate(on_deck, start=1)
             )
             text = (
-                "evening. what got done today? tell me and i'll check them off. "
-                'if the answer is none, say "nothing got done".\n'
+                "evening. what got done today? tell me naturally and i'll check "
+                "it off. if nothing did, say that however you like.\n"
                 + lines
             )
             displayed = on_deck
@@ -2492,8 +2493,9 @@ class EODService:
                 displayed.extend(extra)
             if open_sessions or extra or missing_sessions:
                 lines.append(
-                    "what actually got done? tell me, or say \"nothing got done\". "
-                    "elapsed sessions are not marked complete on their own."
+                    "what actually got done? tell me naturally, including if "
+                    "nothing did. elapsed sessions are not marked complete on "
+                    "their own."
                 )
             else:
                 lines.append("everything in the adopted plan is explicitly done.")
