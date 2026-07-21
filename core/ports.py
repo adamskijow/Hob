@@ -164,6 +164,9 @@ class Store(Protocol):
     def set_meta(self, key: str, value: str) -> None:
         ...
 
+    def delete_meta(self, key: str) -> None:
+        ...
+
     # one inbound turn is committed or rolled back as a unit
     def transaction(self) -> ContextManager[None]:
         ...

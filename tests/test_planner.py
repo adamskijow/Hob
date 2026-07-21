@@ -6,12 +6,16 @@ from core.models import (
     Capture,
     Chitchat,
     Complete,
+    ConfirmationDecision,
     Drop,
     InterpreterContext,
     Note,
+    NudgeDecision,
+    OnboardingDecision,
     PlanAction,
     Prioritize,
     Query,
+    Recap,
     Recur,
     Reschedule,
     Schedule,
@@ -19,6 +23,7 @@ from core.models import (
     Start,
     Undo,
     Unknown,
+    Wait,
     When,
 )
 from core.planner import reconcile
@@ -33,6 +38,10 @@ def ctx(
     digest=None,
     pending=None,
     forwarded=None,
+    presented_kind=None,
+    nudge=None,
+    confirmation_pending=False,
+    onboarding_stage=None,
 ):
     return InterpreterContext(
         message=message,
@@ -44,8 +53,12 @@ def ctx(
         active_items=active or [],
         last_digest=digest or [],
         presented_items=presented or [],
+        presented_kind=presented_kind,
         pending=pending or [],
         forwarded_from=forwarded,
+        nudge=nudge,
+        confirmation_pending=confirmation_pending,
+        onboarding_stage=onboarding_stage,
     )
 
 
@@ -54,6 +67,40 @@ ACTIVE = [
     {"id": "a2", "label": "call the pool guy", "due_date": None},
     {"id": "a3", "label": "review SR audit", "due_date": "2026-06-28"},
 ]
+
+
+def test_contextual_decisions_are_confined_to_machine_owned_state():
+    nudge = {
+        "item_id": "a1",
+        "label": "org prez",
+        "kind": "stale_task",
+        "sent_at": "2026-06-29T07:00:00",
+    }
+    kept = reconcile(
+        [NudgeDecision(decision="keep", confidence=0.9)],
+        ctx(ACTIVE, message="leave it there", nudge=nudge),
+    )
+    assert [(mutation.kind, mutation.target) for mutation in kept.mutations] == [
+        ("keep", "a1")
+    ]
+    assert kept.nudge_decision == "keep"
+
+    no_prompt = reconcile(
+        [NudgeDecision(decision="drop", confidence=1.0)], ctx(ACTIVE)
+    )
+    assert not no_prompt.mutations and no_prompt.questions
+
+    approved = reconcile(
+        [ConfirmationDecision(decision="approve", confidence=1.0)],
+        ctx(ACTIVE, confirmation_pending=True),
+    )
+    assert approved.confirmation_decision == "approve" and not approved.mutations
+
+    skipped = reconcile(
+        [OnboardingDecision(decision="skip", confidence=1.0)],
+        ctx(ACTIVE, onboarding_stage="work_hours"),
+    )
+    assert skipped.onboarding_decision == "skip"
 
 
 def test_capture_without_date():
@@ -108,7 +155,7 @@ def test_complete_valid_target():
     assert not plan.questions
 
 
-def test_shared_past_tense_converts_misread_start_to_completion():
+def test_core_does_not_rewrite_a_misread_start_into_completion():
     active = [
         {"id": "a1", "label": "remind mortgage home insurance", "due_date": None},
         {"id": "a2", "label": "hit the grift", "due_date": None},
@@ -121,11 +168,16 @@ def test_shared_past_tense_converts_misread_start_to_completion():
         ctx(active, message="I did home insurance and hit the grift"),
     )
 
-    assert [(m.kind, m.target) for m in plan.mutations] == [
-        ("complete", "a1"),
-        ("complete", "a2"),
+    assert [(m.kind, m.target) for m in plan.mutations] == [("complete", "a1")]
+    assert plan.starts == ["a2"]
+
+    correct = reconcile(
+        [Complete(target="a1"), Complete(target="a2")],
+        ctx(active, message="I did home insurance and hit the grift"),
+    )
+    assert [(m.kind, m.target) for m in correct.mutations] == [
+        ("complete", "a1"), ("complete", "a2")
     ]
-    assert not plan.starts
 
 
 def test_explicit_future_breaks_shared_completion_tense():
@@ -197,14 +249,14 @@ def test_plan_start_uses_displayed_order_without_completing():
         {"id": "a3", "label": "review SR audit", "context": "plan"},
     ]
     plan = reconcile(
-        [Prioritize(target="a2", level="normal")],
+        [Start(target="a2")],
         ctx(ACTIVE, message="do the second one", focus=focus),
     )
     assert plan.starts == ["a3"]
     assert not plan.mutations
 
 
-def test_pronoun_constraint_clause_merges_into_new_capture():
+def test_new_capture_constraints_are_model_owned():
     plan = reconcile(
         [
             Capture(
@@ -213,11 +265,7 @@ def test_pronoun_constraint_clause_merges_into_new_capture():
                 when=When(kind="weekday", day="fri"),
                 duration_minutes=180,
                 splittable=True,
-            ),
-            Schedule(
-                target="a3",
                 deadline=When(kind="absolute", date="2026-07-06"),
-                clear=["deadline"],
             ),
         ],
         ctx(
@@ -298,15 +346,13 @@ def test_reschedule_time_only():
     assert not plan.questions
 
 
-def test_reschedule_time_only_padded_today_keeps_day():
-    # The model pads "make it 4pm" with kind today; no today-word in the message
-    # means the day is not changing.
+def test_reschedule_time_only_uses_typed_no_date_intent():
     plan = reconcile(
-        [Reschedule(target="a3", when=When(kind="today"), time="4pm", confidence=0.9)],
+        [Reschedule(target="a3", when=When(kind="none"), time="4pm", confidence=0.9)],
         ctx(ACTIVE, message="make it 4pm",
             focus=[{"id": "a3", "label": "review SR audit"}]),
     )
-    assert plan.mutations[0].due_date is None  # padded today ignored
+    assert plan.mutations[0].due_date is None
     assert plan.mutations[0].due_time == "16:00"
     # but an explicit "today at 4" keeps the date change
     plan2 = reconcile(
@@ -464,7 +510,7 @@ def test_bulk_reschedule_that_list_touches_only_presented_items():
         [
             Bulk(
                 op="reschedule",
-                scope="all",
+                scope="presented",
                 when=When(kind="weekday", which="next", day="mon"),
                 exclude=["a3"],
             ),
@@ -493,7 +539,7 @@ def test_bulk_reschedule_that_list_touches_only_presented_items():
 
 def test_that_list_without_recent_presented_list_fails_closed():
     plan = reconcile(
-        [Bulk(op="reschedule", scope="all", when=When(kind="tomorrow"))],
+        [Bulk(op="reschedule", scope="presented", when=When(kind="tomorrow"))],
         ctx(ACTIVE, message="move everything on that list to tomorrow"),
     )
     assert not plan.mutations
@@ -513,7 +559,7 @@ def test_query_search_from_term():
 def test_query_done_period():
     today = reconcile([Query(kind="done")], ctx(ACTIVE, message="what did i finish today"))
     assert today.queries[0].kind == "done" and today.queries[0].date == "2026-06-29"
-    week = reconcile([Query(kind="done")], ctx(ACTIVE, message="what did i do this week"))
+    week = reconcile([Query(kind="done", period="week")], ctx(ACTIVE, message="what did i do this week"))
     assert week.queries[0].date == "2026-06-23"  # today - 6 days
 
 
@@ -521,12 +567,13 @@ def test_undo_action_sets_flag():
     assert reconcile([Undo()], ctx()).undo is True
 
 
-def test_recent_standalone_nevermind_overrides_model_but_stale_or_task_text_does_not():
+def test_retraction_meaning_is_model_owned():
     recent = ctx(message="Nevermind I'm good")
     recent.now = "2026-06-29T10:00:00-04:00"
     recent.last_change_at = "2026-06-29T09:55:00-04:00"
     plan = reconcile([Chitchat(reply="sounds good")], recent)
-    assert plan.undo and plan.chitchat is None and not plan.mutations
+    assert not plan.undo and plan.chitchat == "sounds good"
+    assert reconcile([Undo()], recent).undo
 
     stale = ctx(message="Nevermind I'm good")
     stale.now = "2026-06-29T10:20:01-04:00"
@@ -565,7 +612,7 @@ def test_capture_carries_waiting_and_note():
     assert plan.mutations[0].note == "about the leak"
 
 
-def test_waiting_capture_that_names_existing_item_becomes_wait_action():
+def test_waiting_existing_item_requires_typed_wait_action():
     plan = reconcile(
         [
             Capture(
@@ -576,9 +623,12 @@ def test_waiting_capture_that_names_existing_item_becomes_wait_action():
         ],
         ctx(ACTIVE, message="the prez deck is waiting on sam's slides"),
     )
-    assert len(plan.mutations) == 1
-    assert plan.mutations[0].kind == "wait"
-    assert plan.mutations[0].target == "a1"
+    assert len(plan.mutations) == 1 and plan.mutations[0].kind == "capture"
+    typed = reconcile(
+        [Wait(target="a1")],
+        ctx(ACTIVE, message="the prez deck is waiting on sam's slides"),
+    )
+    assert typed.mutations[0].kind == "wait" and typed.mutations[0].target == "a1"
 
 
 def test_waiting_new_task_with_one_shared_word_stays_a_capture():
@@ -598,7 +648,7 @@ def test_waiting_new_task_with_one_shared_word_stays_a_capture():
     assert plan.mutations[0].kind == "capture"
 
 
-def test_new_recurrence_misclassified_as_series_edit_is_recovered():
+def test_new_recurrence_requires_a_typed_capture():
     plan = reconcile(
         [Recur(target="default", op="anchor", count=5)],
         ctx(
@@ -606,47 +656,22 @@ def test_new_recurrence_misclassified_as_series_edit_is_recovered():
             message="check the filters every 2 weeks after I finish, stop after 5 times",
         ),
     )
-    mutation = plan.mutations[0]
-    assert mutation.kind == "capture" and mutation.task == "check the filters"
-    assert mutation.recurrence["frequency"] == "week"
-    assert mutation.recurrence["interval"] == 2
-    assert mutation.recurrence["anchor"] == "completion"
-    assert mutation.recurrence["count"] == 5
+    assert not plan.mutations and plan.questions
 
     dropped_count = reconcile(
         [Capture(
             task="check the filters",
             raw="check the filters every 2 weeks after I finish, stop after 5 times",
             repeat="every:2:week",
+            repeat_anchor="completion",
+            repeat_count=5,
         )],
         ctx(message="check the filters every 2 weeks after I finish, stop after 5 times"),
     )
     assert dropped_count.mutations[0].recurrence["anchor"] == "completion"
     assert dropped_count.mutations[0].recurrence["count"] == 5
 
-    redundant_edit = reconcile(
-        [
-            Capture(
-                task="check the filters every 2 weeks after I finish",
-                raw=(
-                    "check the filters every 2 weeks after I finish, "
-                    "stop after 5 times"
-                ),
-                repeat="every:2:week",
-            ),
-            Recur(target="a2", op="stop", end=When(kind="offset", n=5)),
-        ],
-        ctx(
-            ACTIVE,
-            message=(
-                "check the filters every 2 weeks after I finish, "
-                "stop after 5 times"
-            ),
-        ),
-    )
-    assert [mutation.kind for mutation in redundant_edit.mutations] == ["capture"]
-    assert redundant_edit.mutations[0].recurrence["anchor"] == "completion"
-    assert redundant_edit.mutations[0].recurrence["count"] == 5
+    assert dropped_count.mutations[0].recurrence["frequency"] == "week"
 
 
 def test_resume_retargets_to_the_only_waiting_item():
@@ -665,10 +690,9 @@ def test_resume_retargets_to_the_only_waiting_item():
     assert not plan2.mutations and plan2.questions
 
 
-def test_weekday_in_message_beats_misclassified_intent():
-    # The model read "monday" as tomorrow; the named weekday wins.
+def test_capture_weekday_uses_typed_model_intent():
     plan = reconcile(
-        [Capture(task="pay my taxes", raw="pay my taxes Monday", when=When(kind="tomorrow"))],
+        [Capture(task="pay my taxes", raw="pay my taxes Monday", when=When(kind="weekday", day="mon"))],
         ctx(message="Remind me to pay my taxes Monday"),
     )
     assert plan.mutations[0].due_date == "2026-07-06"  # next Monday, not 06-30
@@ -716,7 +740,8 @@ def test_complex_temporal_capture_keeps_a_clean_task_label():
             Capture(
                 task="draft the board report Friday; it is due Monday and takes three hours",
                 raw="draft the board report Friday; it is due Monday and takes three hours",
-                when=When(kind="weekday", day="fri"),
+                    when=When(kind="weekday", day="fri"),
+                    deadline=When(kind="weekday", day="mon"),
                 duration_minutes=180,
                 splittable=True,
             )
@@ -741,45 +766,38 @@ def test_bulk_complete_with_exclusions():
     assert not plan2.mutations and plan2.questions
 
 
-def test_everything_but_inverts_a_lone_complete():
-    # The model completed exactly the item the user excluded; the backstop
-    # inverts it into a bulk over the rest.
+def test_core_does_not_invent_bulk_semantics_from_a_lone_complete():
     plan = reconcile(
         [Complete(target="a3", confidence=1.0)],
         ctx(ACTIVE, message="I did everything today but the SR audit"),
     )
-    assert {m.target for m in plan.mutations} == {"a1", "a2"}
-    assert all(m.kind == "complete" for m in plan.mutations)
+    assert [(m.kind, m.target) for m in plan.mutations] == [("complete", "a3")]
 
 
-def test_everything_but_resolves_a_noisy_excluded_target():
+def test_typed_bulk_exclusions_are_confined_to_selected_scope():
     plan = reconcile(
-        [Complete(target="id: a1", confidence=1.0)],
+        [Bulk(op="complete", scope="today", exclude=["a1"])],
         ctx(ACTIVE, message="I did everything today but the prez deck"),
     )
     assert {m.target for m in plan.mutations} == {"a2", "a3"}
 
 
-def test_everything_but_fills_empty_bulk_exclude():
+def test_core_does_not_invent_a_missing_bulk_exclusion():
     plan = reconcile(
         [Bulk(op="complete", scope="today", exclude=[])],
         ctx(ACTIVE, message="did everything except the audit"),
     )
-    assert {m.target for m in plan.mutations} == {"a1", "a2"}
+    assert {m.target for m in plan.mutations} == {"a1", "a2", "a3"}
 
 
-def test_numbered_bulk_exclusions_override_mixed_model_actions():
+def test_numbered_bulk_exclusions_are_model_owned_ids():
     digest = [
         {"id": f"a{number}", "label": f"task {number}"}
         for number in range(1, 7)
     ]
     active = [digest[index] | {"due_date": None} for index in (0, 1, 3, 5)]
     plan = reconcile(
-        [
-            Complete(target="a1"),
-            Complete(target="a2"),
-            Note(target="a4", text="finished except for item 1 and item 6"),
-        ],
+        [Bulk(op="complete", scope="today", exclude=["a1", "a6"])],
         ctx(
             active,
             message="Finished it all except 1 and 6",
@@ -791,28 +809,16 @@ def test_numbered_bulk_exclusions_override_mixed_model_actions():
         ("complete", "a2"),
         ("complete", "a4"),
     ]
-    for phrase in (
-        "Finished it all except one and six please",
-        "Finished it all except the first and sixth",
-    ):
-        alternate = reconcile(
-            [Complete(target="a1")],
-            ctx(active, message=phrase, digest=digest),
-        )
-        assert [mutation.target for mutation in alternate.mutations] == [
-            "a2",
-            "a4",
-        ]
 
 
-def test_numbered_bulk_exclusion_outside_displayed_list_changes_nothing():
+def test_unknown_bulk_exclusion_id_does_not_expand_the_selected_set():
     digest = [
         {"id": f"a{number}", "label": f"task {number}"}
         for number in range(1, 5)
     ]
     active = [item | {"due_date": None} for item in digest]
     plan = reconcile(
-        [Complete(target="a1"), Complete(target="a2")],
+        [Bulk(op="complete", scope="today", exclude=["a1", "a6"])],
         ctx(
             active,
             message="Finished it all except 1 and 6",
@@ -820,8 +826,7 @@ def test_numbered_bulk_exclusion_outside_displayed_list_changes_nothing():
         ),
     )
 
-    assert not plan.mutations
-    assert plan.questions
+    assert {mutation.target for mutation in plan.mutations} == {"a2", "a3", "a4"}
 
 
 def test_position_reference_does_not_shift_after_a_digest_item_closes():
@@ -845,14 +850,13 @@ def test_position_reference_does_not_shift_after_a_digest_item_closes():
     ]
 
 
-def test_everything_but_repairs_an_incomplete_model_proposal():
-    # The model proposed only one included item, but the literal bulk contract
-    # still owns the complete set.
+def test_incomplete_model_proposal_is_not_widened_by_raw_text():
     plan = reconcile(
         [Complete(target="a1", confidence=1.0)],
         ctx(ACTIVE, message="I did everything today but the SR audit"),
     )
-    assert {m.target for m in plan.mutations} == {"a1", "a2"}
+    assert {m.target for m in plan.mutations} <= {"a1"}
+    assert not any(m.target in {"a2", "a3"} for m in plan.mutations)
 
 
 def test_bulk_today_excludes_waiting():
@@ -875,74 +879,103 @@ def test_chitchat_sets_reply():
     assert not plan.mutations and not plan.questions
 
 
-def test_zero_completion_reports_override_model_edits_and_acknowledge_noop():
-    presented = ACTIVE[:2]
-    variants = (
-        "Nothing got done",
-        "I didn't get anything done today",
-        "We made no progress",
-        "None of them were completed",
-        "No tasks were finished",
-        "Unfortunately, nothing was done tonight.",
-        "none",
-    )
-    for message in variants:
-        plan = reconcile(
-            [Complete(target="a1", confidence=1.0)],
-            ctx(ACTIVE, message=message, presented=presented),
-        )
-        assert not plan.mutations, message
-        assert plan.acknowledgement == (
-            "okay. nothing marked done. both items stay open on deck."
-        )
-        assert not plan.questions
-
-
-def test_zero_completion_report_does_not_hide_a_mixed_completion():
+def test_typed_zero_completion_recap_acknowledges_noop_in_eod_context():
     plan = reconcile(
-        [Complete(target="a2", confidence=1.0)],
+        [Recap(outcome="none", confidence=1.0)],
+        ctx(
+            ACTIVE,
+            message="nada",
+            presented=ACTIVE[:2],
+            presented_kind="eod",
+        ),
+    )
+    assert not plan.mutations
+    assert plan.acknowledgement == (
+        "okay. nothing marked done. both items stay open on deck."
+    )
+    assert not plan.questions
+
+
+def test_contradictory_zero_recap_proposal_does_not_hide_a_completion():
+    plan = reconcile(
+        [
+            Recap(outcome="none", confidence=1.0),
+            Complete(target="a2", confidence=1.0),
+        ],
         ctx(
             ACTIVE,
             message="Nothing got done on taxes, but I finished the pool call",
             presented=ACTIVE[:2],
+            presented_kind="eod",
         ),
     )
     assert plan.acknowledgement is None
     assert [(m.kind, m.target) for m in plan.mutations] == [("complete", "a2")]
 
 
-def test_context_free_none_remains_unknown():
-    plan = reconcile([Unknown(note="unclear")], ctx(ACTIVE, message="none"))
+def test_recap_requires_machine_owned_eod_context_and_confidence():
+    plan = reconcile(
+        [Recap(outcome="none", confidence=1.0)],
+        ctx(ACTIVE, message="nada", presented=ACTIVE[:2]),
+    )
     assert plan.acknowledgement is None
     assert plan.questions
 
+    low = reconcile(
+        [Recap(outcome="none", confidence=0.2)],
+        ctx(
+            ACTIVE,
+            message="nada",
+            presented=ACTIVE[:2],
+            presented_kind="eod",
+        ),
+    )
+    assert low.acknowledgement is None and low.questions
 
-def test_zero_completion_short_answer_does_not_override_setup_or_forwarding():
+
+def test_misclassified_recap_does_not_override_setup_or_forwarding():
     setup = reconcile(
-        [Setting(key="break_window", raw="none")],
+        [Recap(outcome="none")],
         ctx(
             ACTIVE,
             message="none",
             presented=ACTIVE[:2],
+            presented_kind="eod",
             pending=[{"kind": "setting", "key": "break_window"}],
         ),
     )
     assert setup.acknowledgement is None
-    assert [(change.key, change.value) for change in setup.settings] == [
-        ("break_window", "none")
-    ]
+    assert not setup.settings and setup.questions
+
+    clarification = reconcile(
+        [Recap(outcome="none")],
+        ctx(
+            ACTIVE,
+            message="none",
+            presented=ACTIVE[:2],
+            presented_kind="eod",
+            pending=[{
+                "kind": "capture",
+                "question": "when is call mom due?",
+                "task": "call mom",
+            }],
+        ),
+    )
+    assert clarification.acknowledgement is None
+    assert not clarification.mutations and clarification.questions
 
     forwarded = reconcile(
-        [Capture(task="Nothing got done", raw="Nothing got done")],
+        [Recap(outcome="none")],
         ctx(
             ACTIVE,
             message="Nothing got done",
             presented=ACTIVE[:2],
+            presented_kind="eod",
             forwarded="Sam",
         ),
     )
     assert forwarded.acknowledgement is None
-    assert [mutation.kind for mutation in forwarded.mutations] == ["capture"]
+    assert not forwarded.mutations and forwarded.questions
 
 
 def test_typo_correction_acked_not_nagged():
@@ -994,22 +1027,27 @@ def test_query_term_beats_tag():
 
 
 def test_setting_wake_time_parsed():
-    plan = reconcile([Setting(key="wake_time", raw="6:30")], ctx())
+    plan = reconcile(
+        [Setting(key="wake_time", raw="6:30", time="06:30")],
+        ctx(message="send it at 6:30"),
+    )
     assert [(s.key, s.value) for s in plan.settings] == [("wake_time", "06:30")]
 
 
 def test_setting_unparseable_asks():
-    plan = reconcile([Setting(key="wake_time", raw="whenever")], ctx())
+    plan = reconcile(
+        [Setting(key="wake_time", raw="whenever")], ctx(message="whenever")
+    )
     assert not plan.settings and plan.questions
 
 
 def test_planning_frame_settings_parse_ranges_deterministically():
     plan = reconcile(
         [
-            Setting(key="work_hours", raw="9 to 5"),
-            Setting(key="break_window", raw="noon to 1"),
+            Setting(key="work_hours", raw="9 to 5", start_time="09:00", end_time="17:00"),
+            Setting(key="break_window", raw="noon to 1", start_time="12:00", end_time="13:00"),
         ],
-        ctx(),
+        ctx(message="plan 9 to 5 and protect noon to 1"),
     )
     assert [(s.key, s.value) for s in plan.settings] == [
         ("work_hours", "09:00-17:00"),
@@ -1020,38 +1058,41 @@ def test_planning_frame_settings_parse_ranges_deterministically():
 def test_effort_and_buffer_settings_parse_and_validate_minutes():
     plan = reconcile(
         [
-            Setting(key="default_duration", raw="assume 45 minutes"),
-            Setting(key="transition_buffer", raw="leave 10 minutes"),
+            Setting(key="default_duration", raw="45 minutes", minutes=45),
+            Setting(key="transition_buffer", raw="10 minute", minutes=10),
         ],
-        ctx(),
+        ctx(message="assume 45 minutes and leave a 10 minute buffer"),
     )
     assert [(s.key, s.value) for s in plan.settings] == [
         ("default_duration", "45"),
         ("transition_buffer", "10"),
     ]
     no_buffer = reconcile(
-        [Setting(key="transition_buffer", raw="no buffer")], ctx()
+        [Setting(key="transition_buffer", raw="no buffer", clear=True)],
+        ctx(message="no buffer"),
     )
     assert no_buffer.settings[0].value == "0"
     invalid = reconcile(
-        [Setting(key="default_duration", raw="900 minutes")], ctx()
+        [Setting(key="default_duration", raw="900 minutes", minutes=900)],
+        ctx(message="900 minutes"),
     )
     assert not invalid.settings and invalid.pending
 
 
-def test_work_days_setting_parses_ranges_every_day_exclusions_and_invalid():
-    for raw, expected in (
-        ("weekdays", "mon,tue,wed,thu,fri"),
-        ("monday through saturday", "mon,tue,wed,thu,fri,sat"),
-        ("every day except sunday", "mon,tue,wed,thu,fri,sat"),
-        ("weekends", "sat,sun"),
-        ("not weekends", "mon,tue,wed,thu,fri"),
-        ("weekdays and saturday", "mon,tue,wed,thu,fri,sat"),
-        ("monday through friday but not wednesday", "mon,tue,thu,fri"),
+def test_work_days_setting_validates_typed_day_codes_and_grounding():
+    for raw, days, expected in (
+        ("weekdays", ["mon", "tue", "wed", "thu", "fri"], "mon,tue,wed,thu,fri"),
+        ("monday through saturday", ["mon", "tue", "wed", "thu", "fri", "sat"], "mon,tue,wed,thu,fri,sat"),
+        ("weekends", ["sat", "sun"], "sat,sun"),
     ):
-        plan = reconcile([Setting(key="work_days", raw=raw)], ctx())
+        plan = reconcile(
+            [Setting(key="work_days", raw=raw, days=days)], ctx(message=raw)
+        )
         assert plan.settings[0].value == expected
-    invalid = reconcile([Setting(key="work_days", raw="never")], ctx())
+    invalid = reconcile(
+        [Setting(key="work_days", raw="never", days=["someday"])],
+        ctx(message="never"),
+    )
     assert not invalid.settings and invalid.pending[0].key == "work_days"
 
 
@@ -1086,17 +1127,16 @@ def test_plan_query_resolves_named_day_and_refuses_past_day():
         [Query(kind="date", when=When(kind="tomorrow"))],
         ctx(ACTIVE, message="plan tomorrow"),
     )
-    assert misclassified.queries[0].kind == "plan"
-    assert misclassified.queries[0].date == "2026-06-30"
+    assert misclassified.queries[0].kind == "date"
     status = reconcile(
-        [Query(kind="today")], ctx(ACTIVE, message="what is on my plan?")
+        [Query(kind="plan_status")], ctx(ACTIVE, message="what is on my plan?")
     )
     assert status.queries[0].kind == "plan_status"
 
 
-def test_outlook_literal_backstop_corrects_flat_week_query():
+def test_outlook_semantics_are_typed_by_the_model():
     plan = reconcile(
-        [Query(kind="week")],
+        [Query(kind="outlook", constraint="what won't fit this week?")],
         ctx(ACTIVE, message="what won't fit this week?"),
     )
     assert len(plan.queries) == 1
@@ -1104,19 +1144,19 @@ def test_outlook_literal_backstop_corrects_flat_week_query():
     assert "fit this week" in plan.queries[0].constraint
 
     deadline = reconcile(
-        [Query(kind="outlook")],
+        [Query(kind="outlook", when=When(kind="weekday", day="fri"))],
         ctx(ACTIVE, message="can I finish everything by Friday?"),
     )
     assert deadline.queries[0].date == "2026-07-03"
 
 
-def test_plan_actions_have_literal_consent_backstops():
+def test_plan_actions_require_typed_model_consent():
     for message, expected in (
         ("use this plan", "adopt"),
         ("replace my plan with this", "replace"),
         ("cancel my plan", "cancel"),
     ):
-        plan = reconcile([Unknown()], ctx(ACTIVE, message=message))
+        plan = reconcile([PlanAction(op=expected)], ctx(ACTIVE, message=message))
         assert plan.plan_action == expected
     low = reconcile(
         [PlanAction(op="adopt", confidence=0.2)],
@@ -1127,7 +1167,7 @@ def test_plan_actions_have_literal_consent_backstops():
 
 def test_session_nudge_interruption_becomes_replan_not_anchored_task_mutation():
     plan = reconcile(
-        [Reschedule(target="a2", time="10:00")],
+        [Query(kind="plan", constraint="meeting ran over; replan")],
         ctx(
             ACTIVE,
             message="meeting ran over, I got interrupted; replan",
@@ -1136,7 +1176,7 @@ def test_session_nudge_interruption_becomes_replan_not_anchored_task_mutation():
     )
     assert not plan.mutations
     assert len(plan.queries) == 1 and plan.queries[0].kind == "plan"
-    assert "interrupted" in plan.queries[0].constraint
+    assert plan.queries[0].constraint == "meeting ran over; replan"
 
 
 def test_query_today_intent_is_today_query():
@@ -1144,10 +1184,10 @@ def test_query_today_intent_is_today_query():
     assert plan.queries[0].kind == "today"
 
 
-def test_query_dropped_tomorrow_corrected():
-    # "What about tomorrow" came back as a bare today query; the day word wins.
+def test_query_tomorrow_uses_typed_date_intent():
     plan = reconcile(
-        [Query(kind="today", when=None)], ctx(ACTIVE, message="What about tomorrow")
+        [Query(kind="date", when=When(kind="tomorrow"))],
+        ctx(ACTIVE, message="What about tomorrow"),
     )
     assert plan.queries[0].kind == "date"
     assert plan.queries[0].date == "2026-06-30"
@@ -1259,11 +1299,10 @@ def test_amend_low_confidence_asks():
     assert not plan.mutations and plan.confirm is not None
 
 
-def test_multi_capture_shares_leading_date():
-    # "Tomorrow I need to A, B" -> the leading date reaches both tasks.
+def test_multi_capture_leading_date_is_typed_on_every_capture():
     plan = reconcile(
-        [Capture(task="look at slides", raw="look at slides"),
-         Capture(task="prep meeting", raw="prep meeting")],
+        [Capture(task="look at slides", raw="look at slides", when=When(kind="tomorrow")),
+         Capture(task="prep meeting", raw="prep meeting", when=When(kind="tomorrow"))],
         ctx(message="Tomorrow I need to look at slides and prep meeting"),
     )
     assert [m.due_date for m in plan.mutations] == ["2026-06-30", "2026-06-30"]
@@ -1355,14 +1394,12 @@ def test_legit_capture_survives_alongside_a_negation():
     assert [m.kind for m in plan.mutations] == ["capture"]
 
 
-def test_wrong_target_completion_asks_did_you_mean():
-    # An Unknown where the words fuzzy-match an item -> confirm, not silence.
+def test_unknown_with_item_match_asks_for_action_without_inventing_completion():
     plan = reconcile(
         [Unknown()],
         ctx([{"id": "a1", "label": "on Tuesday fable goes away", "due_date": None,
               "waiting": False}],
             message="finished the fabel thing"),
     )
-    assert plan.confirm is not None
-    assert plan.confirm.mutations[0].kind == "complete"
-    assert plan.confirm.mutations[0].target == "a1"
+    assert plan.confirm is None and not plan.mutations
+    assert "tell me what you want" in plan.questions[0]

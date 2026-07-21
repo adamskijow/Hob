@@ -115,24 +115,50 @@ def test_low_confidence_reference_asks():
 
 
 def test_low_confidence_confirmation_resumes_on_yes_and_cancels_on_no():
-    llm = FakeLlm(
-        {"actions": [{"type": "complete", "target": "a1", "confidence": 0.2}]}
-    )
+    llm = FakeLlm([
+        {"actions": [{"type": "complete", "target": "a1", "confidence": 0.2}]},
+        {"actions": [{"type": "confirmation_decision", "decision": "approve"}]},
+        {"outcome": "approve", "confidence": 1.0},
+    ])
     svc, store = service(llm)
 
     first = svc.handle(msg("maybe the prez"))
-    assert "reply yes" in first
+    assert "whether to mark it done" in first
     confirmed = svc.handle(msg("yes", message_id=2))
     assert 'done: "org prez"' in confirmed
     assert store.get_item("a1").status == "done"
 
-    llm2 = FakeLlm(
-        {"actions": [{"type": "drop", "target": "a2", "confidence": 0.2}]}
-    )
+    llm2 = FakeLlm([
+        {"actions": [{"type": "drop", "target": "a2", "confidence": 0.2}]},
+        {"actions": [{"type": "confirmation_decision", "decision": "reject"}]},
+        {"outcome": "reject", "confidence": 1.0},
+    ])
     svc2, store2 = service(llm2)
     svc2.handle(msg("maybe drop the pool one"))
     assert svc2.handle(msg("no", message_id=2)) == "canceled. nothing changed."
     assert store2.get_item("a2").status == "open"
+
+
+def test_confirmation_requires_semantic_approval_not_a_yes_prefix():
+    llm = FakeLlm([
+        {"actions": [{"type": "complete", "target": "a1", "confidence": 0.2}]},
+        {"actions": [{
+            "type": "capture",
+            "task": "review yesterday notes",
+            "raw": "yesterday notes need review",
+            "when": {"kind": "none"},
+        }]},
+        {"outcome": "other", "confidence": 1.0},
+    ])
+    svc, store = service(llm)
+
+    svc.handle(msg("maybe the prez"))
+    out = svc.handle(msg("yesterday notes need review", message_id=2))
+
+    assert store.get_item("a1").status == "open"
+    assert any(item.task == "review yesterday notes" for item in store.open_items())
+    assert "got it" in out
+    assert store.get_meta("pending_confirm") == ""
 
 
 def test_eod_report_completes_multiple():
@@ -152,10 +178,11 @@ def test_eod_report_completes_multiple():
     assert store.get_item("a3").status == "done"
 
 
-def test_eod_zero_completion_report_is_model_independent_and_mutation_free():
-    llm = FakeLlm(
-        {"actions": [{"type": "complete", "target": "a1", "confidence": 1.0}]}
-    )
+def test_eod_zero_completion_report_is_model_interpreted_and_mutation_free():
+    llm = FakeLlm([
+        {"actions": [{"type": "recap", "outcome": "none", "confidence": 1.0}]},
+        {"outcome": "none", "confidence": 1.0},
+    ])
     svc, store = service(llm)
     store.set_meta(
         PRESENTED_LIST_KEY,
@@ -177,13 +204,101 @@ def test_eod_zero_completion_report_is_model_independent_and_mutation_free():
     assert store.get_item("a1").status == "open"
     assert store.get_item("a2").status == "open"
     assert store.last_batch() == []
-    assert llm.calls == []
+    assert len(llm.calls) == 2
+    assert "kind: evening recap" in llm.calls[0][0]
+
+
+def test_eod_zero_completion_idiom_is_semantically_recovered_by_model():
+    llm = FakeLlm([
+        {"actions": [{"type": "chitchat", "reply": "got it"}]},
+        {"outcome": "none", "confidence": 0.96},
+    ])
+    svc, store = service(llm)
+    store.set_meta(
+        PRESENTED_LIST_KEY,
+        json.dumps(
+            {
+                "ts": "2026-06-29T08:30:00-04:00",
+                "kind": "eod",
+                "items": [
+                    {"id": "a1", "label": "org prez"},
+                    {"id": "a2", "label": "call the pool guy"},
+                ],
+            }
+        ),
+    )
+
+    out = svc.handle(msg("nada"))
+
+    assert out == "okay. nothing marked done. both items stay open on deck."
+    assert all(item.status == "open" for item in store.open_items())
+    assert store.last_batch() == []
+    assert len(llm.calls) == 2
+
+
+def test_eod_ambiguous_recap_outage_preserves_safe_main_result():
+    class StopsOnAdjudication:
+        def __init__(self):
+            self.calls = 0
+
+        def complete_json(self, prompt, schema, temperature=0.0):
+            self.calls += 1
+            if self.calls == 1:
+                return {"actions": [{"type": "unknown", "note": "unclear"}]}
+            raise RuntimeError("model stopped between passes")
+
+    llm = StopsOnAdjudication()
+    svc, store = service(llm)
+    store.set_meta(
+        PRESENTED_LIST_KEY,
+        json.dumps(
+            {
+                "ts": "2026-06-29T08:30:00-04:00",
+                "kind": "eod",
+                "items": [{"id": "a1", "label": "org prez"}],
+            }
+        ),
+    )
+
+    out = svc.handle(msg("the scoreboard stayed empty"))
+
+    assert "did not catch" in out
+    assert all(item.status == "open" for item in store.open_items())
+    assert store.last_batch() == []
+
+
+def test_chitchat_after_eod_survives_semantic_adjudication():
+    llm = FakeLlm([
+        {"actions": [{"type": "chitchat", "reply": "anytime"}]},
+        {"outcome": "social", "confidence": 1.0},
+        {"reply": "always happy to help"},
+    ])
+    svc, store = service(llm)
+    store.set_meta(
+        PRESENTED_LIST_KEY,
+        json.dumps(
+            {
+                "ts": "2026-06-29T08:30:00-04:00",
+                "kind": "eod",
+                "items": [{"id": "a1", "label": "org prez"}],
+            }
+        ),
+    )
+
+    out = svc.handle(msg("thanks hob"))
+
+    assert out == "always happy to help"
+    assert len(llm.calls) == 3
+    assert llm.calls[2][2] > 0.0
+    assert store.get_item("a1").status == "open"
 
 
 def test_zero_completion_report_preserves_previous_batch_for_undo():
-    llm = FakeLlm(
-        {"actions": [{"type": "complete", "target": "a1", "confidence": 1.0}]}
-    )
+    llm = FakeLlm([
+        {"actions": [{"type": "complete", "target": "a1", "confidence": 1.0}]},
+        {"actions": [{"type": "recap", "outcome": "none", "confidence": 1.0}]},
+        {"outcome": "none", "confidence": 1.0},
+    ])
     svc, store = service(llm)
     svc.handle(msg("did the prez", message_id=1))
     assert store.get_item("a1").status == "done"
@@ -207,15 +322,41 @@ def test_zero_completion_report_preserves_previous_batch_for_undo():
     assert out == "okay. nothing marked done. both items stay open on deck."
     assert "undid 1 change" in undone
     assert store.get_item("a1").status == "open"
-    assert len(llm.calls) == 1
+    assert len(llm.calls) == 3
 
 
-def test_completion_report_shares_past_tense_across_coordinated_tasks():
+def test_eod_zero_completion_report_degrades_honestly_when_model_is_down():
+    store = SqliteStore(":memory:")
+    seed(store)
+    store.set_meta(
+        PRESENTED_LIST_KEY,
+        json.dumps(
+            {
+                "ts": "2026-06-29T08:30:00-04:00",
+                "kind": "eod",
+                "items": [
+                    {"id": "a1", "label": "org prez"},
+                    {"id": "a2", "label": "call the pool guy"},
+                ],
+            }
+        ),
+    )
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, _BoomLlm(), "America/New_York")
+
+    out = svc.handle(msg("nada"))
+
+    assert "can't reach the model" in out
+    assert all(item.status == "open" for item in store.open_items())
+    assert store.last_batch() == []
+
+
+def test_completion_report_uses_model_owned_coordinated_tense():
     llm = FakeLlm(
         {
             "actions": [
                 {"type": "complete", "target": "a2", "confidence": 0.95},
-                {"type": "start", "target": "a3", "confidence": 0.95},
+                {"type": "complete", "target": "a3", "confidence": 0.95},
             ]
         }
     )
@@ -230,20 +371,14 @@ def test_completion_report_shares_past_tense_across_coordinated_tasks():
     assert "not marked it done" not in out
 
 
-def test_numbered_digest_exclusions_repair_mixed_model_output_end_to_end():
-    llm = FakeLlm(
-        {
-            "actions": [
-                {"type": "complete", "target": "a1"},
-                {"type": "complete", "target": "a2"},
-                {
-                    "type": "note",
-                    "target": "a4",
-                    "text": "finished except for item 1 and item 6",
-                },
-            ]
-        }
-    )
+def test_numbered_digest_exclusions_are_typed_end_to_end():
+    llm = FakeLlm([
+        {"actions": [{
+            "type": "bulk", "op": "complete", "scope": "today",
+            "except": ["a1", "a6"],
+        }]},
+        {"scope": "today", "confidence": 1.0},
+    ])
     svc, store = service(llm)
     third = store.get_item("a3")
     third.status = "done"
@@ -290,11 +425,16 @@ def test_numbered_digest_exclusions_repair_mixed_model_output_end_to_end():
     assert store.get_item("a4").note is None
     assert store.get_item("a5").status == "done"
     assert store.get_item("a6").status == "open"
-    assert out == 'done: "call the pool guy"\ndone: "business case"'
+    assert set(out.splitlines()) == {
+        'done: "call the pool guy"',
+        'done: "business case"',
+    }
 
 
 def test_plain_keep_uses_single_use_digest_decision_without_reply_metadata():
-    llm = FakeLlm({"actions": [{"type": "unknown"}]})
+    llm = FakeLlm({"actions": [{
+        "type": "nudge_decision", "decision": "keep", "confidence": 1.0,
+    }]})
     svc, store = service(llm)
     store.set_meta(
         DIGEST_DECISION_KEY,
@@ -314,15 +454,46 @@ def test_plain_keep_uses_single_use_digest_decision_without_reply_metadata():
     assert kept.updated_at == "2026-06-29T09:00:00-04:00"
     assert out == 'keeping: "org prez". i will check again later.'
     assert store.get_meta(DIGEST_DECISION_KEY) == ""
-    assert llm.calls == []
+    assert len(llm.calls) == 2
 
     # The proactive prompt was consumed; the same bare word cannot act twice.
-    assert "did not catch" in svc.handle(msg("Keep", message_id=2))
-    assert len(llm.calls) == 1
+    assert "current digest question" in svc.handle(msg("Keep", message_id=2))
+    assert len(llm.calls) == 3
+
+
+def test_natural_digest_answer_overrides_a_bad_setting_guess_safely():
+    llm = FakeLlm([
+        {"actions": [{
+            "type": "setting",
+            "key": "eod_time",
+            "raw": "stay on",
+            "time": "20:00",
+            "confidence": 0.9,
+        }]},
+        {"outcome": "keep", "confidence": 0.98},
+    ])
+    svc, store = service(llm)
+    store.set_meta(
+        DIGEST_DECISION_KEY,
+        json.dumps({
+            "item_id": "a1",
+            "sent_at": "2026-06-29T07:00:00-04:00",
+            "kind": "stale_task",
+        }),
+    )
+
+    out = svc.handle(msg("It needs to stay on"))
+
+    assert out == 'keeping: "org prez". i will check again later.'
+    assert store.get_meta("eod_time") is None
+    assert store.get_meta(DIGEST_DECISION_KEY) == ""
+    assert "Active morning digest nudge" in llm.calls[0][0]
 
 
 def test_plain_digest_tomorrow_and_drop_apply_to_the_prompted_item():
-    tomorrow_llm = FakeLlm({"actions": [{"type": "unknown"}]})
+    tomorrow_llm = FakeLlm({"actions": [{
+        "type": "nudge_decision", "decision": "tomorrow", "confidence": 1.0,
+    }]})
     tomorrow_svc, tomorrow_store = service(tomorrow_llm)
     tomorrow_store.set_meta(
         DIGEST_DECISION_KEY,
@@ -337,9 +508,11 @@ def test_plain_digest_tomorrow_and_drop_apply_to_the_prompted_item():
     moved = tomorrow_svc.handle(msg("tomorrow"))
     assert tomorrow_store.get_item("a2").due_date == "2026-06-30"
     assert 'moved "call the pool guy" to 2026-06-30' in moved
-    assert tomorrow_llm.calls == []
+    assert len(tomorrow_llm.calls) == 2
 
-    drop_llm = FakeLlm({"actions": [{"type": "unknown"}]})
+    drop_llm = FakeLlm({"actions": [{
+        "type": "nudge_decision", "decision": "drop", "confidence": 1.0,
+    }]})
     drop_svc, drop_store = service(drop_llm)
     drop_store.set_meta(
         DIGEST_DECISION_KEY,
@@ -354,7 +527,7 @@ def test_plain_digest_tomorrow_and_drop_apply_to_the_prompted_item():
     dropped = drop_svc.handle(msg("drop"))
     assert drop_store.get_item("a3").status == "dropped"
     assert dropped == 'dropped: "review SR audit"'
-    assert drop_llm.calls == []
+    assert len(drop_llm.calls) == 2
 
 
 def test_digest_decision_is_same_day_and_newer_task_focus_wins():
@@ -399,7 +572,9 @@ def test_digest_decision_is_same_day_and_newer_task_focus_wins():
 
 
 def test_upgrade_uses_todays_pinned_digest_anchor_for_plain_keep():
-    llm = FakeLlm({"actions": [{"type": "unknown"}]})
+    llm = FakeLlm({"actions": [{
+        "type": "nudge_decision", "decision": "keep", "confidence": 1.0,
+    }]})
     svc, store = service(llm)
     store.save_digest(
         Digest(
@@ -415,11 +590,13 @@ def test_upgrade_uses_todays_pinned_digest_anchor_for_plain_keep():
     assert out == 'keeping: "org prez". i will check again later.'
     assert store.get_item("a1").updated_at == "2026-06-29T09:00:00-04:00"
     assert store.get_meta(DIGEST_DECISION_KEY) == ""
-    assert llm.calls == []
+    assert len(llm.calls) == 2
 
 
 def test_plain_back_on_resolves_the_waiting_digest_prompt():
-    llm = FakeLlm({"actions": [{"type": "unknown"}]})
+    llm = FakeLlm({"actions": [{
+        "type": "nudge_decision", "decision": "resume", "confidence": 1.0,
+    }]})
     svc, store = service(llm)
     waiting = store.get_item("a2")
     waiting.waiting_since = "2026-06-25"
@@ -440,7 +617,7 @@ def test_plain_back_on_resolves_the_waiting_digest_prompt():
     assert out == 'back on: "call the pool guy"'
     assert store.get_item("a2").waiting_since is None
     assert store.get_meta(DIGEST_DECISION_KEY) == ""
-    assert llm.calls == []
+    assert len(llm.calls) == 2
 
 
 def test_plain_digest_decisions_fail_closed_on_invalid_or_competing_context():
@@ -514,7 +691,7 @@ def test_pending_clarification_resume():
     assert not store.open_items()  # nothing captured yet
 
     out2 = svc.handle(msg("oh yeah thursday", message_id=2))
-    assert "Pending question" in llm.calls[1][0]  # follow-up prompt carried it
+    assert any("Pending question" in prompt for prompt, _, _ in llm.calls)
     lunch = store.open_items()
     assert len(lunch) == 1 and lunch[0].task == "lunch with sam"
     assert lunch[0].due_date == "2026-07-02"  # Thursday after Mon 2026-06-29
@@ -583,7 +760,7 @@ def test_immediate_nevermind_retracts_capture_instead_of_becoming_chitchat():
             "raw": "Tomorrow I got to hit the grift",
             "when": {"kind": "tomorrow"},
         }]},
-        {"actions": [{"type": "chitchat", "reply": "sounds good"}]},
+        {"actions": [{"type": "undo"}]},
     ])
     store = SqliteStore(":memory:")
     clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
@@ -658,7 +835,9 @@ def test_tags_capture_and_query():
 def test_setting_wake_time_persists_and_scheduler_reads_it():
     from adapters.scheduler import DigestScheduler, WAKE_TIME_KEY
 
-    llm = FakeLlm({"actions": [{"type": "setting", "key": "wake_time", "raw": "6:30"}]})
+    llm = FakeLlm({"actions": [{
+        "type": "setting", "key": "wake_time", "raw": "6:30", "time": "06:30",
+    }]})
     store = SqliteStore(":memory:")
     clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
     svc = MessageService(store, clock, llm, "America/New_York")
@@ -677,7 +856,7 @@ def test_setting_is_undoable_in_same_batch_as_task_changes():
         {
             "actions": [
                 {"type": "capture", "task": "buy milk", "raw": "buy milk"},
-                {"type": "setting", "key": "wake_time", "raw": "6:30"},
+                {"type": "setting", "key": "wake_time", "raw": "6:30", "time": "06:30"},
             ]
         }
     )
@@ -690,14 +869,14 @@ def test_setting_is_undoable_in_same_batch_as_task_changes():
     assert store.get_meta("wake_time") == "06:30"
     assert "2 change" in svc.handle(msg("/undo", message_id=2))
     assert store.open_items() == []
-    assert store.get_meta("wake_time") == ""
+    assert store.get_meta("wake_time") is None
 
 
 def test_invalid_setting_question_is_resumable():
     llm = FakeLlm(
         [
             {"actions": [{"type": "setting", "key": "wake_time", "raw": "whenever"}]},
-            {"actions": [{"type": "setting", "key": "wake_time", "raw": "8am"}]},
+            {"actions": [{"type": "setting", "key": "wake_time", "raw": "8am", "time": "08:00"}]},
         ]
     )
     store = SqliteStore(":memory:")
@@ -707,7 +886,7 @@ def test_invalid_setting_question_is_resumable():
     assert "what time" in svc.handle(msg("change the digest time"))
     assert store.get_meta("pending")
     out = svc.handle(msg("8am", message_id=2))
-    assert "Pending question" in llm.calls[1][0]
+    assert any("Pending question" in prompt for prompt, _, _ in llm.calls)
     assert "08:00" in out and store.get_meta("wake_time") == "08:00"
 
 
@@ -715,9 +894,9 @@ def test_work_hours_and_break_are_chat_configurable_and_undoable():
     llm = FakeLlm(
         {
             "actions": [
-                {"type": "setting", "key": "work_hours", "raw": "9 to 5"},
-                {"type": "setting", "key": "work_days", "raw": "monday through saturday"},
-                {"type": "setting", "key": "break_window", "raw": "noon to 1"},
+                    {"type": "setting", "key": "work_hours", "raw": "9 to 5", "start_time": "09:00", "end_time": "17:00"},
+                    {"type": "setting", "key": "work_days", "raw": "Monday through Saturday", "days": ["mon", "tue", "wed", "thu", "fri", "sat"]},
+                    {"type": "setting", "key": "break_window", "raw": "noon to 1", "start_time": "12:00", "end_time": "13:00"},
             ]
         }
     )
@@ -734,14 +913,15 @@ def test_work_hours_and_break_are_chat_configurable_and_undoable():
     assert "planning days: mon,tue,wed,thu,fri,sat" in settings
     assert "protected breaks: 12:00-13:00" in settings
     assert "3 change" in svc.handle(msg("/undo", message_id=3))
-    assert store.get_meta("work_hours") == "" and store.get_meta("breaks") == ""
-    assert store.get_meta("work_days") == ""
+    assert store.get_meta("work_hours") is None
+    assert store.get_meta("breaks") is None
+    assert store.get_meta("work_days") is None
 
 
 def test_default_effort_and_buffer_are_visible_and_undoable_together():
     llm = FakeLlm({"actions": [
-        {"type": "setting", "key": "default_duration", "raw": "45 minutes"},
-        {"type": "setting", "key": "transition_buffer", "raw": "10 minutes"},
+        {"type": "setting", "key": "default_duration", "raw": "45 minutes", "minutes": 45},
+        {"type": "setting", "key": "transition_buffer", "raw": "10 minute", "minutes": 10},
     ]})
     store = SqliteStore(":memory:")
     clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
@@ -752,8 +932,8 @@ def test_default_effort_and_buffer_are_visible_and_undoable_together():
     assert "default estimate: 45m" in settings
     assert "transition buffer: 10m" in settings
     assert "2 change" in svc.handle(msg("/undo", message_id=3))
-    assert store.get_meta("default_duration") == ""
-    assert store.get_meta("transition_buffer") == ""
+    assert store.get_meta("default_duration") is None
+    assert store.get_meta("transition_buffer") is None
 
 
 def test_fresh_start_runs_resumable_guided_setup_to_completion():
@@ -766,11 +946,16 @@ def test_fresh_start_runs_resumable_guided_setup_to_completion():
     from core.version import __version__
 
     llm = FakeLlm([
-        {"actions": [{"type": "setting", "key": "work_hours", "raw": "9 to 5"}]},
-        {"actions": [{"type": "setting", "key": "work_days", "raw": "weekdays"}]},
-        {"actions": [{"type": "setting", "key": "break_window", "raw": "no break"}]},
-        {"actions": [{"type": "setting", "key": "default_duration", "raw": "45 minutes"}]},
-        {"actions": [{"type": "setting", "key": "transition_buffer", "raw": "10 minutes"}]},
+        {"actions": [{"type": "setting", "key": "work_hours", "raw": "9 to 5", "start_time": "09:00", "end_time": "17:00"}]},
+        {"outcome": "other", "confidence": 1.0},
+        {"actions": [{"type": "setting", "key": "work_days", "raw": "weekdays", "days": ["mon", "tue", "wed", "thu", "fri"]}]},
+        {"outcome": "other", "confidence": 1.0},
+        {"actions": [{"type": "setting", "key": "break_window", "raw": "no break", "clear": True}]},
+        {"outcome": "other", "confidence": 1.0},
+        {"actions": [{"type": "setting", "key": "default_duration", "raw": "45 minutes", "minutes": 45}]},
+        {"outcome": "other", "confidence": 1.0},
+        {"actions": [{"type": "setting", "key": "transition_buffer", "raw": "10 minutes", "minutes": 10}]},
+        {"outcome": "other", "confidence": 1.0},
     ])
     store = SqliteStore(":memory:")
     clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
@@ -810,11 +995,21 @@ def test_setup_resumes_after_restart_and_can_skip_or_cancel():
     store.set_meta("telegram_owner_user_id", "42")
     store.set_meta(ONBOARDING_STAGE_KEY, "break_window")
     clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
-    restarted = MessageService(store, clock, FakeLlm({"actions": []}), "America/New_York")
+    restarted = MessageService(
+        store,
+        clock,
+        FakeLlm({"actions": [{
+            "type": "onboarding_decision", "decision": "skip", "confidence": 1.0,
+        }]}),
+        "America/New_York",
+    )
     resumed = restarted.handle(InboundMessage("/setup", 10, 1, 1, user_id=42))
     assert "setup 3/5" in resumed
     skipped = restarted.handle(InboundMessage("skip", 10, 2, 2, user_id=42))
     assert "setup 4/5" in skipped
+    restarted._llm = FakeLlm({"actions": [{
+        "type": "onboarding_decision", "decision": "cancel", "confidence": 1.0,
+    }]})
     canceled = restarted.handle(InboundMessage("cancel setup", 10, 3, 3, user_id=42))
     assert "setup paused" in canceled
     assert store.get_meta(ONBOARDING_STAGE_KEY) == "default_duration"
@@ -834,12 +1029,14 @@ def test_workday_onboarding_skip_records_displayed_default():
     svc = MessageService(
         store,
         FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ)),
-        FakeLlm({"actions": []}),
+        FakeLlm({"actions": [{
+            "type": "onboarding_decision", "decision": "skip", "confidence": 1.0,
+        }]}),
         "America/New_York",
     )
 
     prompt = svc.handle(InboundMessage("/setup", 10, 1, 1, user_id=42))
-    assert 'skip" keeps mon,tue,wed,thu,fri' in prompt
+    assert "keep mon,tue,wed,thu,fri" in prompt
     svc.handle(InboundMessage("skip", 10, 2, 2, user_id=42))
     assert store.get_meta("work_days") == "mon,tue,wed,thu,fri"
 
@@ -898,7 +1095,7 @@ def test_plan_focus_positions_override_canonical_list_positions():
     from app import FOCUS_KEY
 
     svc, store = service(
-        FakeLlm({"actions": [{"type": "complete", "target": "2"}]})
+        FakeLlm({"actions": [{"type": "start", "target": "2"}]})
     )
     store.set_meta(
         FOCUS_KEY,
@@ -932,7 +1129,7 @@ def test_followup_resolves_via_focus():
     svc.handle(msg("call the vet"))
     out = svc.handle(msg("make it 4pm", message_id=2))
 
-    assert "Just discussed" in llm.calls[1][0]  # focus reached the prompt
+    assert any("Just discussed" in prompt for prompt, _, _ in llm.calls)
     assert "call the vet" in llm.calls[1][0]
     item = store.get_item("a1")
     assert item.due_time == "16:00"
@@ -1328,7 +1525,7 @@ def test_plan_my_day_uses_injected_calendar_availability():
     out = svc.handle(msg("plan my day"))
     assert "10:00–10:30 write brief" in out
     assert "calendar checked: 1 busy block" in out
-    assert "Feasible timeline" in llm.calls[1][0]
+    assert any("Feasible timeline" in prompt for prompt, _, _ in llm.calls)
 
 
 def test_split_plan_numbers_tasks_not_segments():
@@ -1382,7 +1579,7 @@ def test_future_plan_can_be_adopted_run_completed_and_undone():
             "constraint": "plan tomorrow",
         }]},
         {"headline": "a clean tomorrow", "picks": []},
-        {"actions": [{"type": "unknown"}]},
+        {"actions": [{"type": "plan_action", "op": "adopt", "confidence": 1.0}]},
         {"actions": [{"type": "complete", "target": "a1", "confidence": 1.0}]},
     ])
     store = SqliteStore(":memory:")
@@ -1427,12 +1624,12 @@ def test_active_plan_requires_explicit_replacement_and_cancel_is_undoable():
     llm = FakeLlm([
         {"actions": [{"type": "query", "kind": "plan"}]},
         {"headline": "first pass", "picks": []},
-        {"actions": []},
+        {"actions": [{"type": "plan_action", "op": "adopt", "confidence": 1.0}]},
         {"actions": [{"type": "query", "kind": "plan", "constraint": "start at 10"}]},
         {"headline": "revised pass", "picks": []},
-        {"actions": []},
-        {"actions": []},
-        {"actions": []},
+        {"actions": [{"type": "plan_action", "op": "adopt", "confidence": 1.0}]},
+        {"actions": [{"type": "plan_action", "op": "replace", "confidence": 1.0}]},
+        {"actions": [{"type": "plan_action", "op": "cancel", "confidence": 1.0}]},
     ])
     svc, store = service(llm)
     svc.handle(msg("plan my day", 1))
@@ -1509,15 +1706,17 @@ def test_capture_relate_inherits_date_end_to_end():
 
 
 def test_far_future_capture_confirms_then_applies():
-    llm = FakeLlm(
+    llm = FakeLlm([
         {"actions": [{"type": "capture", "task": "take out the trash",
                       "raw": "take out the trash in 200 years",
-                      "when": {"kind": "offset", "n": 200, "unit": "year"}}]}
-    )
+                      "when": {"kind": "offset", "n": 200, "unit": "year"}}]},
+        {"actions": [{"type": "confirmation_decision", "decision": "approve"}]},
+        {"outcome": "approve", "confidence": 1.0},
+    ])
     svc, store = service(llm)
 
     out = svc.handle(msg("in 200 years I need to take out the trash"))
-    assert "years out" in out and "yes" in out.lower()
+    assert "years out" in out and "confirm" in out.lower()
     assert not any(i.task == "take out the trash" for i in store.open_items())
 
     out2 = svc.handle(msg("yes", message_id=2))
@@ -1527,7 +1726,12 @@ def test_far_future_capture_confirms_then_applies():
 
 
 def test_bulk_drop_across_days_confirms_then_applies():
-    llm = FakeLlm({"actions": [{"type": "bulk", "op": "drop", "scope": "all"}]})
+    llm = FakeLlm([
+        {"actions": [{"type": "bulk", "op": "drop", "scope": "all"}]},
+        {"scope": "all", "confidence": 1.0},
+        {"actions": [{"type": "confirmation_decision", "decision": "approve"}]},
+        {"outcome": "approve", "confidence": 1.0},
+    ])
     svc, store = service(llm)  # seed spans undated items + a3 on 2026-06-28
 
     out = svc.handle(msg("delete everything"))
@@ -1544,7 +1748,9 @@ def test_bulk_confirm_cancelled_by_non_yes():
     llm = FakeLlm(
         [
             {"actions": [{"type": "bulk", "op": "drop", "scope": "all"}]},
+            {"scope": "all", "confidence": 1.0},
             {"actions": [{"type": "capture", "task": "buy milk", "raw": "buy milk"}]},
+            {"outcome": "other", "confidence": 1.0},
         ]
     )
     svc, store = service(llm)
@@ -1557,12 +1763,12 @@ def test_bulk_confirm_cancelled_by_non_yes():
 
 
 def test_eod_that_list_reschedule_cannot_move_unpresented_tasks():
-    llm = FakeLlm({
+    llm = FakeLlm([{
         "actions": [
             {
                 "type": "bulk",
                 "op": "reschedule",
-                "scope": "all",
+                "scope": "presented",
                 "when": {"kind": "weekday", "which": "next", "day": "mon"},
                 "except": ["a3"],
             },
@@ -1572,7 +1778,7 @@ def test_eod_that_list_reschedule_cannot_move_unpresented_tasks():
                 "when": {"kind": "weekday", "which": "next", "day": "sun"},
             },
         ]
-    })
+    }, {"scope": "presented", "confidence": 1.0}])
     svc, store = service(llm)
     for task_id, label, due in (
         ("a4", "hit the grift", "2026-07-10"),

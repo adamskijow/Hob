@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: MIT
-"""Date-intent resolution (pure calendar math), leading-date detection, and time
-parsing. Seeded with a fixed today (Mon 2026-06-29)."""
+"""Date-intent resolution and time parsing, seeded at Mon 2026-06-29."""
 from datetime import date
 
-from core.dates import deadline_in_text, leading_date, parse_time, resolve_intent
+from core.dates import parse_time, resolve_intent
 from core.models import When
 
 TODAY = date(2026, 6, 29)  # Monday
@@ -58,28 +57,6 @@ def test_ambiguous_and_none():
     assert resolve_intent(When(kind="weekday", day="bogus"), TODAY).date is None
 
 
-def test_named_day_correction():
-    from core.dates import named_day_correction as ndc
-
-    # tomorrow dropped by the model: corrected
-    assert ndc("what about tomorrow", None, TODAY) == "2026-06-30"
-    assert ndc("what about tomorrow", "2026-06-29", TODAY) == "2026-06-30"
-    # already right: no correction
-    assert ndc("what about tomorrow", "2026-06-30", TODAY) is None
-    assert ndc("what's on today", "2026-06-29", TODAY) is None
-    # weekday fallback still works; multiple day words are left alone
-    assert ndc("taxes monday", "2026-06-30", TODAY) == "2026-07-06"
-    assert ndc("tomorrow or monday", None, TODAY) is None
-    assert ndc("what's up", None, TODAY) is None
-
-
-def test_leading_date_vs_trailing():
-    assert leading_date("Tomorrow I need to do A, B, and C", TODAY) == "2026-06-30"
-    assert leading_date("on monday do A and B", TODAY) == "2026-07-06"
-    assert leading_date("call A and email B tomorrow", TODAY) is None  # trailing
-    assert leading_date("dentist friday and call mom", TODAY) is None  # not at start
-
-
 def test_parse_time():
     assert parse_time("6:30") == "06:30"
     assert parse_time("8") == "08:00"
@@ -88,11 +65,3 @@ def test_parse_time():
     assert parse_time("noon") is None  # not a clock format we accept
     assert parse_time("25:00") is None
     assert parse_time(None) is None
-
-
-def test_literal_deadline_clause_isolated_from_do_date():
-    assert deadline_in_text(
-        "draft the report Friday; it is due Monday and takes three hours", TODAY
-    ) == "2026-07-06"
-    assert deadline_in_text("finish taxes by end of the month", TODAY) == "2026-06-30"
-    assert deadline_in_text("work on taxes Friday", TODAY) is None

@@ -127,81 +127,43 @@ def _parse_spoken_time(raw: str) -> str | None:
 
 
 def parse_plan_preferences(
-    constraint: str,
     *,
     work_start: str = "09:00",
     work_end: str = "17:30",
     work_days: tuple[int, ...] = (0, 1, 2, 3, 4, 5, 6),
     breaks: tuple[tuple[str, str], ...] = (("12:00", "13:00"),),
+    budget_minutes: int | None = None,
+    budget_scope: str | None = None,
+    earliest_time: str | None = None,
+    latest_time: str | None = None,
+    energy: str | None = None,
     default_duration_minutes: int = DEFAULT_DURATION_MINUTES,
     transition_buffer_minutes: int = 0,
 ) -> PlanPreferences:
-    """Extract hard planning bounds literally; unknown prose remains harmless."""
-    low = (constraint or "").lower()
-    budget = None
-    match = re.search(r"\b(\d+)\s*(?:minutes?|mins?)\b", low)
-    if match:
-        budget = int(match.group(1))
-    else:
-        match = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:hours?|hrs?)\b", low)
-        if match:
-            budget = round(float(match.group(1)) * 60)
+    """Validate typed model-owned planning constraints.
 
-    earliest = latest = None
-    after = re.search(
-        r"\b(?:after|starting at|start at|from)\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?|noon|midday)",
-        low,
+    The interpreter owns the meaning of free-form prose. This pure core accepts
+    only bounded values and never rediscovers intent with keyword lists.
+    """
+    budget = (
+        budget_minutes
+        if isinstance(budget_minutes, int) and 1 <= budget_minutes <= 10080
+        else None
     )
-    before = re.search(
-        r"\b(?:before|until|ending at|end at)\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?|noon|midday)",
-        low,
-    )
-    if after:
-        earliest = _parse_spoken_time(after.group(1))
-    if before:
-        latest = _parse_spoken_time(before.group(1))
-    if any(phrase in low for phrase in (
-        "morning gone", "morning is gone", "morning's gone", "no morning",
-    )):
-        earliest = max(filter(None, (earliest, "12:00")))
-    if any(phrase in low for phrase in (
-        "afternoon gone", "afternoon is gone", "afternoon's gone", "no afternoon",
-    )):
-        latest = min(filter(None, (latest, "12:00")))
-    if re.search(
-        r"\b(?:mornings?|before noon) only\b|"
-        r"\bonly (?:mornings?|before noon)\b|"
-        r"\bmornings? (?:is|are) all i have\b|"
-        r"\ball i have (?:is|are) mornings?\b",
-        low,
-    ):
-        latest = min(filter(None, (latest, "12:00")))
-    if re.search(
-        r"\bafternoons? only\b|\bonly afternoons?\b|"
-        r"\bafternoons? (?:is|are) all i have\b|"
-        r"\ball i have (?:is|are) afternoons?\b",
-        low,
-    ):
-        earliest = max(filter(None, (earliest, "13:00")))
-
-    energy = "low" if re.search(r"\b(low|little|tired|drained)\s+energy\b|\bexhausted\b", low) else None
-    budget_scope = (
-        "horizon"
-        if budget is not None
-        and re.search(r"\b(?:this|the|over the|for the) week\b", low)
-        and not re.search(r"\b(?:per|each) day\b|\bdaily\b", low)
-        else "day"
-    )
+    scope = budget_scope if budget_scope in {"day", "horizon"} else "day"
+    earliest = _parse_spoken_time(earliest_time) if earliest_time else None
+    latest = _parse_spoken_time(latest_time) if latest_time else None
+    energy_value = energy if energy in {"low", "normal", "high"} else None
     return PlanPreferences(
         work_start=work_start,
         work_end=work_end,
         work_days=work_days,
         breaks=breaks,
         budget_minutes=budget,
-        budget_scope=budget_scope,
+        budget_scope=scope,
         earliest_time=earliest,
         latest_time=latest,
-        energy=energy,
+        energy=energy_value,
         default_duration_minutes=default_duration_minutes,
         transition_buffer_minutes=transition_buffer_minutes,
     )

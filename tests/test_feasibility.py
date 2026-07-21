@@ -61,7 +61,7 @@ def test_calendar_busy_break_and_fixed_commitment_are_respected():
 
 def test_time_budget_is_a_hard_bound_and_unknown_duration_is_visible():
     tasks = [item("a1", "first"), item("a2", "second")]
-    prefs = parse_plan_preferences("I have 40 minutes and low energy")
+    prefs = parse_plan_preferences(budget_minutes=40, energy="low")
 
     plan = build_day_plan(tasks, CalendarSnapshot("unavailable"), NOW, prefs)
 
@@ -195,26 +195,23 @@ def test_fixed_commitment_inside_buffer_is_flagged_but_not_moved():
     assert any("less than the configured transition buffer" in warning for warning in plan.warnings)
 
 
-def test_replanning_constraints_parse_literal_day_changes():
-    prefs = parse_plan_preferences("afternoon gone; I can work after 10")
+def test_replanning_constraints_validate_typed_model_values():
+    prefs = parse_plan_preferences(earliest_time="10:00", latest_time="12:00")
     assert prefs.earliest_time == "10:00"
     assert prefs.latest_time == "12:00"
-    assert parse_plan_preferences("free after 2 before 5").earliest_time == "14:00"
-    assert parse_plan_preferences("free after 2 before 5").latest_time == "17:00"
-    assert parse_plan_preferences("mornings only this week").latest_time == "12:00"
-    assert parse_plan_preferences(
-        "mornings are all I have this week"
-    ).latest_time == "12:00"
-    assert parse_plan_preferences("only afternoons").earliest_time == "13:00"
-    assert parse_plan_preferences(
-        "all I have is afternoons"
-    ).earliest_time == "13:00"
-    assert parse_plan_preferences(
-        "I have 5 hours this week"
-    ).budget_scope == "horizon"
-    assert parse_plan_preferences(
-        "I have 2 hours each day this week"
-    ).budget_scope == "day"
+    assert parse_plan_preferences(earliest_time="14:00").earliest_time == "14:00"
+    assert parse_plan_preferences(latest_time="17:00").latest_time == "17:00"
+    assert parse_plan_preferences(budget_minutes=300, budget_scope="horizon").budget_scope == "horizon"
+    assert parse_plan_preferences(budget_minutes=120, budget_scope="day").budget_scope == "day"
+    invalid = parse_plan_preferences(
+        budget_minutes=-3,
+        budget_scope="forever",
+        earliest_time="not a time",
+        energy="drained",
+    )
+    assert invalid.budget_minutes is None
+    assert invalid.budget_scope == "day"
+    assert invalid.earliest_time is None and invalid.energy is None
 
 
 def test_splittable_work_uses_real_gaps_without_overlaps():

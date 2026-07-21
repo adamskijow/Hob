@@ -20,7 +20,7 @@ from __future__ import annotations
 import difflib
 import re
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
 from core import dates, recurrence
 from core.models import (
@@ -29,11 +29,15 @@ from core.models import (
     Capture,
     Chitchat,
     Complete,
+    ConfirmationDecision,
     Drop,
+    NudgeDecision,
     Note,
+    OnboardingDecision,
     PlanAction,
     Prioritize,
     Query,
+    Recap,
     Recur,
     Reschedule,
     Resume,
@@ -53,106 +57,6 @@ CONFIDENCE_THRESHOLD = 0.5
 # A resolved date further out than this is probably a typo or a joke ("in 200
 # years"); confirm before applying rather than scheduling it silently.
 FAR_FUTURE_DAYS = 365 * 5
-RETRACTION_TTL_MINUTES = 15
-
-
-def _is_recent_literal_retraction(ctx) -> bool:
-    """A short standalone retraction undoes only a fresh mutation batch."""
-    tokens = tuple(re.findall(r"[a-z]+", (ctx.message or "").lower()))
-    if tokens not in {
-        ("nevermind",),
-        ("never", "mind"),
-        ("nevermind", "i", "m", "good"),
-        ("never", "mind", "i", "m", "good"),
-        ("nevermind", "im", "good"),
-        ("never", "mind", "im", "good"),
-        ("nevermind", "all", "good"),
-        ("never", "mind", "all", "good"),
-        ("nevermind", "no", "thanks"),
-        ("never", "mind", "no", "thanks"),
-    }:
-        return False
-    if not ctx.last_change_at:
-        return False
-    try:
-        age = datetime.fromisoformat(ctx.now) - datetime.fromisoformat(
-            ctx.last_change_at
-        )
-    except (TypeError, ValueError):
-        return False
-    return timedelta(0) <= age <= timedelta(minutes=RETRACTION_TTL_MINUTES)
-
-
-_ZERO_COMPLETION_REPORT = re.compile(
-    r"(?:"
-    r"nothing(?: at all)?(?: really)? (?:(?:got|was|is|has been) )?"
-    r"(?:done|finished|completed)"
-    r"|(?:i|we) (?:did|finished|completed) nothing"
-    r"|(?:i|we) got nothing done"
-    r"|(?:(?:i|we) )?(?:didn't|did not|haven't|have not) "
-    r"(?:get anything done|finish anything|complete anything|do anything|"
-    r"done anything|get any tasks? done|finish any tasks?|complete any tasks?|"
-    r"get any of (?:it|them|these|those) done|"
-    r"finish any of (?:it|them|these|those)|"
-    r"complete any of (?:it|them|these|those))"
-    r"|(?:(?:i|we) )?(?:couldn't|could not|wasn't able to|weren't able to|"
-    r"was not able to|were not able to) "
-    r"(?:get anything done|finish anything|complete anything|do anything)"
-    r"|(?:i|we) (?:made|had) no progress"
-    r"|(?:i|we) got none of (?:it|them|these|those) done"
-    r"|none of (?:it|them|these|those) "
-    r"(?:(?:got|was|were) )?(?:done|finished|completed)"
-    r"|no (?:tasks?|items?|work) "
-    r"(?:(?:got|was|were) )?(?:done|finished|completed)"
-    r"|(?:no|zero) progress"
-    r")"
-    r"(?: today| tonight| this evening)?",
-    re.IGNORECASE,
-)
-
-
-def zero_completion_ack(ctx) -> str | None:
-    """Acknowledge an explicit report that no work was completed.
-
-    This is a first-class, mutation-free outcome, not an unknown task command.
-    Full-string matching prevents a negative clause from hiding a completion in
-    a mixed report such as "nothing on taxes, but I finished the deck". Very
-    terse answers are accepted only when a recent proactive list supplies the
-    conversational context.
-    """
-    if ctx.forwarded_from or any(
-        pending.get("kind") == "setting" for pending in ctx.pending
-    ):
-        return None
-    low = (ctx.message or "").lower().replace("\u2019", "'")
-    low = re.sub(r"\s+", " ", low).strip(" \t\r\n.!?,;:")
-    low = re.sub(
-        r"^(?:sorry|sadly|honestly|unfortunately)[,:]?\s+|"
-        r"^(?:no|nope)[,:]\s+",
-        "",
-        low,
-    )
-    short_contextual = {
-        "none",
-        "nothing",
-        "nothing today",
-        "no progress",
-        "no progress today",
-        "not a thing",
-        "zero",
-    }
-    if not _ZERO_COMPLETION_REPORT.fullmatch(low) and not (
-        ctx.presented_items and not ctx.pending and low in short_contextual
-    ):
-        return None
-    count = len(ctx.presented_items)
-    if count == 1:
-        return "okay. nothing marked done. that item stays open on deck."
-    if count == 2:
-        return "okay. nothing marked done. both items stay open on deck."
-    if count > 2:
-        return f"okay. nothing marked done. all {count} items stay open on deck."
-    return "okay. nothing marked done."
 
 
 @dataclass
@@ -195,6 +99,12 @@ class QueryIntent:
     term: str | None = None  # search keywords, for kind=search
     tag: str | None = None  # project/list name, for kind=tag
     constraint: str | None = None  # user context for kind=plan
+    budget_minutes: int | None = None
+    budget_scope: str | None = None  # day | horizon
+    energy: str | None = None  # low | normal | high
+    earliest_time: str | None = None  # HH:MM
+    latest_time: str | None = None  # HH:MM
+    period: str | None = None  # today | week, for completed-history queries
 
 
 @dataclass
@@ -240,6 +150,119 @@ class Plan:
     plan_action: str | None = None  # adopt | replace | cancel
     chitchat: str | None = None  # a warm reply to a social pleasantry
     acknowledgement: str | None = None  # deterministic mutation-free outcome
+    nudge_decision: str | None = None  # accepted digest decision
+    confirmation_decision: str | None = None  # approve | reject
+    onboarding_decision: str | None = None  # skip | cancel
+    bulk_intent: bool = False  # typed bulk scope, used only by safety guards
+
+
+def _reconcile_recap(action: Recap, ctx) -> Plan:
+    """Validate a model-proposed semantic recap against machine-owned context."""
+    plan = Plan()
+    valid_context = (
+        ctx.presented_kind == "eod"
+        and bool(ctx.presented_items)
+        and not ctx.forwarded_from
+        and not ctx.pending
+    )
+    if (
+        action.outcome != "none"
+        or action.confidence < CONFIDENCE_THRESHOLD
+        or not valid_context
+    ):
+        plan.questions.append(
+            "i could not tie that report to a current evening recap. nothing changed."
+        )
+        return plan
+    count = len(ctx.presented_items)
+    if count == 1:
+        plan.acknowledgement = (
+            "okay. nothing marked done. that item stays open on deck."
+        )
+    elif count == 2:
+        plan.acknowledgement = (
+            "okay. nothing marked done. both items stay open on deck."
+        )
+    else:
+        plan.acknowledgement = (
+            f"okay. nothing marked done. all {count} items stay open on deck."
+        )
+    return plan
+
+
+def _reconcile_nudge(action: NudgeDecision, ctx, today: date) -> Plan:
+    """Apply model-owned meaning only to the exact machine-owned nudge target."""
+    plan = Plan()
+    nudge = ctx.nudge if isinstance(ctx.nudge, dict) else None
+    active = {item["id"]: item for item in ctx.active_items}
+    item = active.get(nudge.get("item_id")) if nudge else None
+    kind = nudge.get("kind") if nudge else None
+    allowed = {
+        "stale_task": {"keep", "tomorrow", "drop"},
+        "waiting": {"resume"},
+    }.get(kind, set())
+    if (
+        action.confidence < CONFIDENCE_THRESHOLD
+        or action.decision not in allowed
+        or item is None
+        or bool(item.get("waiting")) != (kind == "waiting")
+        or ctx.forwarded_from
+        or ctx.pending
+        or ctx.confirmation_pending
+        or ctx.onboarding_stage
+    ):
+        plan.questions.append(
+            "i could not tie that decision to the current digest question. "
+            "nothing changed."
+        )
+        return plan
+    target = item["id"]
+    if action.decision == "tomorrow":
+        mutation = Mutation(
+            kind="reschedule",
+            target=target,
+            due_date=(today + timedelta(days=1)).isoformat(),
+        )
+    else:
+        mutation = Mutation(
+            kind={"keep": "keep", "drop": "drop", "resume": "resume"}[
+                action.decision
+            ],
+            target=target,
+        )
+    plan.mutations.append(mutation)
+    plan.nudge_decision = action.decision
+    return plan
+
+
+def _reconcile_confirmation(action: ConfirmationDecision, ctx) -> Plan:
+    plan = Plan()
+    if (
+        not ctx.confirmation_pending
+        or ctx.forwarded_from
+        or action.confidence < CONFIDENCE_THRESHOLD
+        or action.decision not in {"approve", "reject"}
+    ):
+        plan.questions.append(
+            "i could not verify a current confirmation. nothing changed."
+        )
+        return plan
+    plan.confirmation_decision = action.decision
+    return plan
+
+
+def _reconcile_onboarding(action: OnboardingDecision, ctx) -> Plan:
+    plan = Plan()
+    if (
+        not ctx.onboarding_stage
+        or ctx.forwarded_from
+        or action.confidence < CONFIDENCE_THRESHOLD
+        or action.decision not in {"skip", "cancel"}
+    ):
+        plan.questions.append("setup is not waiting for that choice. nothing changed.")
+        return plan
+    plan.onboarding_decision = action.decision
+    return plan
 
 
 def _too_far(due_iso: str, today: date) -> int | None:
@@ -323,7 +346,7 @@ def _check_target(
             _hold(
                 plan,
                 proposed,
-                f'did you mean "{active[key]}"? reply yes to {verb}, or no to cancel.',
+                f'did you mean "{active[key]}"? tell me whether to {verb} or cancel.',
             )
         else:
             plan.questions.append(
@@ -422,7 +445,7 @@ def _confirm_did_you_mean(item: dict, kind: str) -> ConfirmIntent:
     verb = "mark it done" if kind == "complete" else "drop it"
     return ConfirmIntent(
         mutations=[Mutation(kind=kind, target=item["id"])],
-        question=f'did you mean "{item["label"]}"? reply yes to {verb}.',
+        question=f'did you mean "{item["label"]}"? tell me whether to {verb} or cancel.',
     )
 
 
@@ -458,8 +481,7 @@ def _apply_reference_guards(plan: Plan, ctx) -> None:
     # the message excludes or negates an item, since then a strongly-matched word
     # ("everything but the audit") is the item left OUT, not the target.
     if len(plan.mutations) == 1 and plan.mutations[0].kind in ("complete", "drop") \
-            and plan.confirm is None and not negated \
-            and _EVERYTHING_BUT.search(ctx.message) is None:
+            and plan.confirm is None and not negated and not plan.bulk_intent:
         mut = plan.mutations[0]
         words = _words(ctx.message)
         target_label = labels.get(mut.target, "")
@@ -539,11 +561,6 @@ def _clean_temporal_label(action: Capture) -> str | None:
 _WINDOWS = {"morning", "afternoon", "evening"}
 _CLOCK_WINDOW = re.compile(r"^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$")
 _CLEARABLE = {"deadline", "duration", "earliest", "window", "dependencies", "reminders"}
-_DEADLINE_CUE = re.compile(
-    r"\b(by|before|deadline|due|due by|no later than)\b", re.IGNORECASE
-)
-
-
 def _window(value: str | None) -> str | None:
     if not value:
         return None
@@ -583,35 +600,12 @@ def _start_value(when, raw_time: str | None, today: date) -> tuple[str | None, b
 def _reconcile_capture(
     action: Capture,
     today: date,
-    message: str,
-    solo: bool,
-    shared_date: str | None,
     active_due: dict,
     by_pos: dict,
     plan: Plan,
 ) -> None:
     resolution = dates.resolve_intent(action.when, today)
-    if resolution.date is None and not resolution.ambiguous and shared_date is not None:
-        # A leading date shared across a multi-task message (computed above).
-        resolution = dates.DateResolution(date=shared_date)
-
     deadline = dates.resolve_intent(action.deadline, today)
-    literal_deadline = dates.deadline_in_text(message, today)
-    if literal_deadline:
-        deadline = dates.DateResolution(date=literal_deadline)
-        if resolution.date == literal_deadline:
-            resolution = dates.DateResolution()
-    if (
-        solo
-        and not literal_deadline
-        and deadline.date is None
-        and not deadline.ambiguous
-        and resolution.date is not None
-        and _DEADLINE_CUE.search(message)
-    ):
-        deadline = resolution
-        resolution = dates.DateResolution()
-
     if resolution.ambiguous:
         question = f'when is "{action.task}" due? the date was not clear.'
         plan.questions.append(question)
@@ -663,26 +657,11 @@ def _reconcile_capture(
         return
     if repeat_end.ambiguous:
         repeat_end = dates.DateResolution()
-    repeat_anchor = action.repeat_anchor
-    if re.search(
-        r"\b(after (i |it is |it was )?(finish|finished|complete|completed)|after completion)\b",
-        message,
-        re.IGNORECASE,
-    ):
-        repeat_anchor = "completion"
-    literal_count = re.search(
-        r"\b(?:stop|end) after (\d+) (?:times?|occurrences?)\b",
-        message,
-        re.IGNORECASE,
-    )
-    repeat_count = action.repeat_count or (
-        int(literal_count.group(1)) if literal_count else None
-    )
     structured = recurrence.parse(
         repeat,
-        anchor=repeat_anchor,
+        anchor=action.repeat_anchor,
         end_date=repeat_end.date,
-        count=repeat_count,
+        count=action.repeat_count,
     )
     if structured is not None:
         # A recurring task's date is its next occurrence, decided by the rule.
@@ -690,20 +669,6 @@ def _reconcile_capture(
         if first is not None:
             due_date = first.isoformat()
             structured.anchor_date = first.isoformat()
-    elif solo:
-        # Deterministic backstop: a day word in the message wins over a
-        # misclassified intent ("taxes monday" read as tomorrow). Lone captures
-        # only: with several, a trailing day must not smear across them (the
-        # leading-date share above handles the "Tomorrow: A, B, C" shape).
-        planned_words = (
-            message.split(";", 1)[0]
-            if literal_deadline and ";" in message
-            else message
-        )
-        corrected = dates.named_day_correction(planned_words, due_date, today)
-        if corrected is not None:
-            due_date = corrected
-
     # The model classifies dates (when); a clock time it parses directly (time).
     due_time = dates.parse_time(action.time)
 
@@ -742,7 +707,7 @@ def _reconcile_capture(
     )
     years = _too_far(due_date, today) if due_date else None
     if years is not None:
-        _hold(plan, mutation, f"that is {due_date}, about {years} years out. reply yes to keep it.")
+        _hold(plan, mutation, f"that is {due_date}, about {years} years out. confirm or cancel it.")
         return
     plan.mutations.append(mutation)
 
@@ -769,53 +734,85 @@ def _reconcile_amend(action: Amend, active: dict, by_pos: dict, plan: Plan) -> N
     plan.mutations.append(Mutation(kind="amend", target=target, task=action.task))
 
 
-def _reconcile_setting(action: Setting, plan: Plan) -> None:
+def _grounded_literal(raw: str, message: str) -> bool:
+    """True when the model echoed actual user words instead of inventing a value."""
+    normalize = lambda value: " ".join(re.findall(r"[a-z0-9:]+", value.lower()))
+    literal = normalize(raw)
+    return bool(literal) and literal in normalize(message)
+
+
+def _setting_question(action: Setting, plan: Plan, question: str) -> None:
+    plan.questions.append(question)
+    plan.pending.append(Pending(kind="setting", question=question, key=action.key))
+
+
+def _setting_value_question(key: str) -> str:
+    return {
+        "wake_time": "what time should i send the morning digest?",
+        "eod_time": "what time should i send the evening recap?",
+        "work_hours": "what start and end time should i use for the working hours?",
+        "break_window": "what start and end time should i use for the protected break?",
+        "work_days": "which weekdays may i plan flexible work on?",
+        "default_duration": "how many minutes should i use for the default task estimate?",
+        "transition_buffer": "how many minutes should i use for the transition buffer?",
+    }.get(key, "what value should i use?")
+
+
+def _reconcile_setting(action: Setting, message: str, plan: Plan) -> None:
+    if action.confidence < CONFIDENCE_THRESHOLD or not _grounded_literal(
+        action.raw, message
+    ):
+        _setting_question(
+            action,
+            plan,
+            "i could not verify that setting value in your message. nothing changed. "
+            + _setting_value_question(action.key),
+        )
+        return
     if action.key in ("wake_time", "eod_time"):
-        value = dates.parse_time(action.raw)
-        if value is None:
+        literal = dates.parse_time(action.raw)
+        value = dates.parse_time(action.time)
+        if value is None or literal != value:
             what = "morning digest" if action.key == "wake_time" else "evening recap"
-            question = f"what time should i send the {what}?"
-            plan.questions.append(question)
-            plan.pending.append(Pending(kind="setting", question=question, key=action.key))
+            _setting_question(action, plan, f"what time should i send the {what}?")
             return
         plan.settings.append(SettingChange(key=action.key, value=value))
     elif action.key in ("work_hours", "break_window"):
-        if action.key == "break_window" and action.raw.strip().lower() in {
-            "none", "off", "no break", "remove", "remove break",
-        }:
+        if action.key == "break_window" and action.clear:
             plan.settings.append(SettingChange(key=action.key, value="none"))
             return
-        value = _parse_time_range(action.raw)
-        if value is None:
+        literal = _parse_time_range(action.raw)
+        start = dates.parse_time(action.start_time)
+        end = dates.parse_time(action.end_time)
+        value = f"{start}-{end}" if start and end and end > start else None
+        if value is None or literal != value:
             what = "working hours" if action.key == "work_hours" else "protected break"
-            question = f"what start and end time should i use for the {what}?"
-            plan.questions.append(question)
-            plan.pending.append(Pending(kind="setting", question=question, key=action.key))
-            return
-        plan.settings.append(SettingChange(key=action.key, value=value))
-    elif action.key == "work_days":
-        value = _parse_work_days(action.raw)
-        if value is None:
-            question = "which weekdays may i plan flexible work on?"
-            plan.questions.append(question)
-            plan.pending.append(
-                Pending(kind="setting", question=question, key=action.key)
+            _setting_question(
+                action, plan, f"what start and end time should i use for the {what}?"
             )
             return
         plan.settings.append(SettingChange(key=action.key, value=value))
+    elif action.key == "work_days":
+        days = list(dict.fromkeys(day.lower() for day in action.days))
+        if not days or any(day not in _DAY_CODES for day in days):
+            _setting_question(
+                action, plan, "which weekdays may i plan flexible work on?"
+            )
+            return
+        ordered = [day for day in _DAY_CODES if day in days]
+        plan.settings.append(SettingChange(key=action.key, value=",".join(ordered)))
     elif action.key in ("default_duration", "transition_buffer"):
-        value = _parse_minutes(action.raw)
+        value = 0 if action.key == "transition_buffer" and action.clear else action.minutes
+        literal = _parse_minutes(action.raw)
         low, high = (5, 480) if action.key == "default_duration" else (0, 120)
-        if value is None or not low <= value <= high:
+        if value is None or literal != value or not low <= value <= high:
             what = (
                 "default task estimate"
                 if action.key == "default_duration"
                 else "transition buffer"
             )
-            question = f"how many minutes should i use for the {what}?"
-            plan.questions.append(question)
-            plan.pending.append(
-                Pending(kind="setting", question=question, key=action.key)
+            _setting_question(
+                action, plan, f"how many minutes should i use for the {what}?"
             )
             return
         plan.settings.append(SettingChange(key=action.key, value=str(value)))
@@ -872,57 +869,7 @@ def _parse_minutes(raw: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-_DAY_NAMES = {
-    "monday": 0, "mon": 0,
-    "tuesday": 1, "tues": 1, "tue": 1,
-    "wednesday": 2, "wed": 2,
-    "thursday": 3, "thurs": 3, "thur": 3, "thu": 3,
-    "friday": 4, "fri": 4,
-    "saturday": 5, "sat": 5,
-    "sunday": 6, "sun": 6,
-}
 _DAY_CODES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
-
-
-def _parse_work_days(raw: str) -> str | None:
-    low = raw.strip().lower()
-    exclusion = re.search(r"\b(?:except|but not|not)\s+(.+)$", low)
-    included_text = low[:exclusion.start()] if exclusion else low
-
-    def mentioned(text: str) -> set[int]:
-        days: set[int] = set()
-        if re.search(r"\b(?:every day|all days|daily|seven days)\b", text):
-            days.update(range(7))
-        if "weekdays" in text:
-            days.update(range(5))
-        if "weekends" in text:
-            days.update((5, 6))
-        names = "|".join(_DAY_NAMES)
-        for match in re.finditer(
-            rf"\b({names})\s+(?:through|to|-)\s+({names})\b", text
-        ):
-            first = _DAY_NAMES[match.group(1)]
-            last = _DAY_NAMES[match.group(2)]
-            days.update(
-                range(first, last + 1)
-                if first <= last
-                else (*range(first, 7), *range(last + 1))
-            )
-        days.update(
-            index
-            for name, index in _DAY_NAMES.items()
-            if re.search(rf"\b{re.escape(name)}\b", text)
-        )
-        return days
-
-    chosen = mentioned(included_text)
-    if exclusion:
-        if not chosen:
-            chosen = set(range(7))
-        chosen -= mentioned(exclusion.group(1))
-    if not chosen:
-        return None
-    return ",".join(_DAY_CODES[index] for index in sorted(chosen))
 
 
 def _reconcile_prioritize(
@@ -948,7 +895,6 @@ def _reconcile_schedule(
     today: date,
     active: dict,
     by_pos: dict,
-    message: str,
     plan: Plan,
 ) -> None:
     target = _check_target(
@@ -963,13 +909,6 @@ def _reconcile_schedule(
     if target is None:
         return
     deadline = dates.resolve_intent(action.deadline, today)
-    literal_deadline = dates.deadline_in_text(message, today)
-    if literal_deadline:
-        deadline = dates.DateResolution(date=literal_deadline)
-    else:
-        corrected = dates.named_day_correction(message, deadline.date, today)
-        if corrected is not None:
-            deadline = dates.DateResolution(date=corrected)
     if deadline.ambiguous:
         plan.questions.append(f'what is the hard deadline for "{active[target]}"?')
         return
@@ -1034,7 +973,7 @@ def _reconcile_schedule(
         _hold(
             plan,
             mutation,
-            f'that deadline is {deadline.date}, about {years} years out. reply yes to keep it.',
+            f'that deadline is {deadline.date}, about {years} years out. confirm or cancel it.',
         )
         return
     plan.mutations.append(mutation)
@@ -1072,9 +1011,6 @@ def _reconcile_recur(
     )
 
 
-_TODAY_WORDS = ("today", "tonight", "this morning", "this afternoon", "this evening", "now")
-
-
 def _reconcile_reschedule(
     action: Reschedule, today: date, active: dict, by_pos: dict, ctx, plan: Plan
 ) -> None:
@@ -1090,21 +1026,6 @@ def _reconcile_reschedule(
     resolution = dates.resolve_intent(action.when, today)
     new_time = dates.parse_time(action.time)
     low = ctx.message.lower()
-
-    # The model pads a time-only change ("make it 4pm") with kind "today". If the
-    # user never said a today-word, the day is NOT changing: keep the item's date.
-    if (
-        new_time is not None
-        and action.when is not None
-        and action.when.kind == "today"
-        and not any(w in low for w in _TODAY_WORDS)
-    ):
-        resolution = dates.DateResolution()
-
-    # A day word named in the message wins over a misclassified intent.
-    corrected = dates.named_day_correction(ctx.message, resolution.date, today)
-    if corrected is not None:
-        resolution = dates.DateResolution(date=corrected)
 
     # A time-only reschedule with no conversational anchor and no overlap with
     # the item's own words is a guess ("make it 4pm" out of nowhere): ask.
@@ -1136,13 +1057,13 @@ def _reconcile_reschedule(
     if resolution.date is not None:
         years = _too_far(resolution.date, today)
         if years is not None:
-            _hold(plan, mutation, f'move "{label}" to {resolution.date}, about {years} years out. reply yes to keep it.')
+            _hold(plan, mutation, f'move "{label}" to {resolution.date}, about {years} years out. confirm or cancel it.')
             return
     if action.confidence < CONFIDENCE_THRESHOLD:
         _hold(
             plan,
             mutation,
-            f'did you mean "{label}"? reply yes to move it, or no to cancel.',
+            f'did you mean "{label}"? confirm the move or cancel it.',
         )
         return
     plan.mutations.append(mutation)
@@ -1163,10 +1084,15 @@ def _in_scope(item: dict, scope: str, today: str, target_date: str | None) -> bo
 
 
 def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
+    plan.bulk_intent = True
     if action.op not in ("complete", "drop", "reschedule"):
         plan.questions.append("i did not catch a task there. can you rephrase?")
         return
-    scope = action.scope if action.scope in ("today", "all", "date") else "today"
+    scope = (
+        action.scope
+        if action.scope in ("today", "all", "date", "presented")
+        else "today"
+    )
     when = dates.resolve_intent(action.when, today)
     target_date = None
     if scope == "date":
@@ -1174,29 +1100,13 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
             plan.questions.append("which day did you mean?")
             return
         target_date = when.date
-    list_reference = re.search(
-        r"\b(?:that|this) list\b|\b(?:those|these) (?:tasks|items|ones)\b",
-        ctx.message,
-        re.IGNORECASE,
-    )
-    completion_digest_reference = (
-        _EVERYTHING_BUT.search(ctx.message) is not None
-        and _COMPLETION_BULK.search(ctx.message) is not None
-        and bool(ctx.last_digest)
-    )
-    if list_reference:
-        if not ctx.presented_items:
+    if scope == "presented":
+        displayed = ctx.presented_items or ctx.last_digest
+        if not displayed:
             plan.questions.append("which list did you mean? i changed nothing.")
             return
-        presented_ids = {item["id"] for item in ctx.presented_items}
+        presented_ids = {item["id"] for item in displayed}
         matching = [i for i in ctx.active_items if i["id"] in presented_ids]
-    elif completion_digest_reference:
-        active_by_id = {item["id"]: item for item in ctx.active_items}
-        matching = [
-            active_by_id[item["id"]]
-            for item in ctx.last_digest
-            if item["id"] in active_by_id
-        ]
     else:
         matching = [
             i for i in ctx.active_items
@@ -1206,7 +1116,7 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
         plan.questions.append("nothing matched, so i changed nothing.")
         return
     active_all = {i["id"]: i.get("label", "") for i in ctx.active_items}
-    position_items = _position_items(ctx, presented=bool(list_reference))
+    position_items = _position_items(ctx, presented=scope == "presented")
     positions = {
         str(n): item["id"] for n, item in enumerate(position_items, start=1)
     }
@@ -1220,6 +1130,30 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
     if not ids:
         plan.questions.append("that excluded everything, so i changed nothing.")
         return
+    if action.confidence < CONFIDENCE_THRESHOLD:
+        # A sweeping mutation is the last place to guess. Hold the exact typed
+        # set for an explicit, separately interpreted confirmation.
+        verb = {
+            "complete": "finish",
+            "drop": "drop",
+            "reschedule": "move",
+        }[action.op]
+        proposed = [
+            Mutation(
+                kind=action.op,
+                target=item_id,
+                due_date=when.date if action.op == "reschedule" else None,
+            )
+            for item_id in ids
+        ]
+        plan.confirm = ConfirmIntent(
+            mutations=proposed,
+            question=(
+                f"that would {verb} {len(ids)} open item(s). "
+                "confirm or cancel that change?"
+            ),
+        )
+        return
     if action.op == "reschedule":
         # Move them all to one destination date (non-destructive, so no confirm).
         if when.ambiguous or when.date is None:
@@ -1230,17 +1164,6 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
                 Mutation(kind="reschedule", target=item_id, due_date=when.date)
             )
         return
-    if action.confidence < CONFIDENCE_THRESHOLD:
-        # A sweeping mutation is the last place to guess; confirm, never apply.
-        verb = "finish" if action.op == "complete" else "drop"
-        plan.confirm = ConfirmIntent(
-            mutations=[Mutation(kind=action.op, target=item_id) for item_id in ids],
-            question=(
-                f"that would {verb} {len(ids)} open item(s). "
-                "reply yes to confirm, or no to cancel."
-            ),
-        )
-        return
     # Deleting across more than one day is a big swing: hold it for a yes/no.
     if action.op == "drop":
         days = {(i.get("due_date") or "undated") for i in matching}
@@ -1249,7 +1172,7 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
                 mutations=[Mutation(kind="drop", target=i) for i in ids],
                 question=(
                     f"that deletes {len(ids)} items across {len(days)} days. "
-                    "reply yes to confirm."
+                    "confirm or cancel that change."
                 ),
             )
             return
@@ -1257,20 +1180,49 @@ def _reconcile_bulk(action: Bulk, today: date, ctx, plan: Plan) -> None:
         plan.mutations.append(Mutation(kind=action.op, target=item_id))
 
 
+def _typed_query(
+    action: Query,
+    *,
+    kind: str,
+    date_value: str | None = None,
+    constraint: str | None = None,
+) -> QueryIntent:
+    budget = (
+        action.budget_minutes
+        if action.budget_minutes is not None
+        and 1 <= action.budget_minutes <= 7 * 24 * 60
+        else None
+    )
+    earliest = dates.parse_time(action.earliest_time)
+    latest = dates.parse_time(action.latest_time)
+    if earliest and latest and earliest >= latest:
+        earliest = latest = None
+    return QueryIntent(
+        kind=kind,
+        date=date_value,
+        constraint=constraint,
+        budget_minutes=budget,
+        budget_scope=(
+            action.budget_scope
+            if action.budget_scope in {"day", "horizon"}
+            else None
+        ),
+        energy=action.energy if action.energy in {"low", "normal", "high"} else None,
+        earliest_time=earliest,
+        latest_time=latest,
+        period=action.period if action.period in {"today", "week"} else None,
+    )
+
+
 def _reconcile_query(action: Query, today: date, ctx, plan: Plan) -> None:
     kind, term = action.kind, action.term
     if kind == "outlook":
         resolution = dates.resolve_intent(action.when, today)
-        corrected = dates.named_day_correction(
-            ctx.message, resolution.date, today
-        )
-        horizon = corrected or resolution.date or dates.deadline_in_text(
-            ctx.message, today
-        )
         plan.queries.append(
-            QueryIntent(
+            _typed_query(
+                action,
                 kind="outlook",
-                date=horizon,
+                date_value=resolution.date,
                 constraint=action.constraint or ctx.message,
             )
         )
@@ -1287,26 +1239,22 @@ def _reconcile_query(action: Query, today: date, ctx, plan: Plan) -> None:
                 Pending(kind="query", question=question, query_kind="plan")
             )
             return
-        corrected = dates.named_day_correction(
-            ctx.message, resolution.date, today
-        )
-        if corrected is not None:
-            resolution = dates.DateResolution(date=corrected)
         target = resolution.date or today.isoformat()
         if target < today.isoformat():
             plan.questions.append("i can only build an executable plan for today or later.")
             return
         plan.queries.append(
-            QueryIntent(
+            _typed_query(
+                action,
                 kind="plan",
-                date=target,
+                date_value=target,
                 constraint=action.constraint or ctx.message,
             )
         )
         return
     if kind == "done":
-        # "what did I finish": this week -> last 7 days, otherwise today.
-        start = today - timedelta(days=6) if "week" in ctx.message.lower() else today
+        # The model classifies the requested history window; the core does math.
+        start = today - timedelta(days=6) if action.period == "week" else today
         plan.queries.append(QueryIntent(kind="done", date=start.isoformat()))
         return
     if term:
@@ -1331,11 +1279,6 @@ def _reconcile_query(action: Query, today: date, ctx, plan: Plan) -> None:
         plan.questions.append(question)
         plan.pending.append(Pending(kind="query", question=question, query_kind=kind))
         return
-    # Backstop: a day word in the question wins over a dropped or misfiled
-    # intent ("what about tomorrow" read as a today query).
-    corrected = dates.named_day_correction(ctx.message, resolution.date, today)
-    if corrected is not None:
-        resolution = dates.DateResolution(date=corrected)
     if resolution.date is not None:
         if resolution.date == today.isoformat():
             plan.queries.append(QueryIntent(kind="today"))
@@ -1351,132 +1294,11 @@ def _reconcile_query(action: Query, today: date, ctx, plan: Plan) -> None:
     plan.queries.append(QueryIntent(kind=model_kind))
 
 
-_EVERYTHING_BUT = re.compile(
-    r"\b(?:everything|all(?:\s+of\s+(?:it|them)|\s+my\s+\w+)?)\b"
-    r".{0,40}?\b(?:but|except|besides|aside from)\b(?P<tail>.*)",
-    re.IGNORECASE | re.DOTALL,
-)
-
-_COMPLETION_BULK = re.compile(
-    r"\b(?:finish(?:ed)?|complete(?:d)?|did|done|knocked\s+out|"
-    r"wrapped\s+up|got\s+through)\b",
-    re.IGNORECASE,
-)
-
-_POSITION_TOKEN = (
-    r"(?:\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|first|"
-    r"second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)"
-)
-_POSITION_PREFIX = r"(?:the\s+)?(?:(?:items?|tasks?|numbers?|#)\s*)?"
-_POSITION_EXCLUSION_TAIL = re.compile(
-    rf"\s*{_POSITION_PREFIX}{_POSITION_TOKEN}"
-    rf"(?:\s*(?:,|and|&)\s*{_POSITION_PREFIX}"
-    rf"{_POSITION_TOKEN})*\s*(?:for\s+now|please)?\s*[.!]?\s*",
-    re.IGNORECASE,
-)
-
-
-# Words too generic to identify an item when matching an exclusion tail.
-_TAIL_STOP = {"the", "and", "one", "ones", "thing", "things", "stuff", "task", "tasks", "that", "this"}
-
-
-def _tail_words(text: str) -> set[str]:
-    return {
-        w for w in re.findall(r"[a-z]+", text.lower())
-        if len(w) > 2 and w not in _TAIL_STOP
-    }
-
-
-def _tail_matches(label: str, tail_words: set[str]) -> bool:
-    return any(
-        w in tail_words
-        for w in label.lower().split()
-        if len(w) > 2 and w not in _TAIL_STOP
-    )
-
-
 def _position_items(ctx, *, presented: bool = False) -> list[dict]:
     """Return the exact displayed order a numeric reference belongs to."""
-    if presented and ctx.presented_items:
-        return ctx.presented_items
+    if presented and (ctx.presented_items or ctx.last_digest):
+        return ctx.presented_items or ctx.last_digest
     return ctx.last_digest or ctx.active_items
-
-
-def _position_exclusions(tail: str, ctx) -> tuple[list[str], bool]:
-    if not _POSITION_EXCLUSION_TAIL.fullmatch(tail):
-        looks_positional = re.match(
-            rf"\s*{_POSITION_PREFIX}{_POSITION_TOKEN}\b",
-            tail,
-            re.IGNORECASE,
-        )
-        return [], bool(looks_positional)
-    items = _position_items(ctx)
-    by_pos = {str(n): item["id"] for n, item in enumerate(items, start=1)}
-    labels = {item["id"]: item.get("label", "") for item in items}
-    excluded = []
-    for token in re.findall(_POSITION_TOKEN, tail, re.IGNORECASE):
-        item_id = _resolve_ref(token, labels, by_pos)
-        if item_id is None:
-            return [], True
-        if item_id not in excluded:
-            excluded.append(item_id)
-    return excluded, True
-
-
-def _fix_everything_but(actions: list, ctx) -> list:
-    """Deterministic backstop for "did everything BUT X": the model sometimes
-    emits a lone complete of X (the one item the user spared) or a bulk with an
-    empty except list. When the message clearly excludes items, make the plan
-    match: a bulk over the rest, with the named items excluded."""
-    match = _EVERYTHING_BUT.search(ctx.message)
-    if not match:
-        return actions
-    tail = match.group("tail")
-    excluded, positional = _position_exclusions(tail, ctx)
-    tail_words = _tail_words(tail)
-    labels = {i["id"]: i.get("label", "") for i in ctx.active_items}
-    by_pos = {str(n): i["id"] for n, i in enumerate(ctx.active_items, start=1)}
-    if positional and not excluded:
-        return [Unknown(note="numbered exclusion outside the displayed list")]
-    if not positional:
-        if not tail_words:
-            return actions
-        excluded = [
-            item_id
-            for item_id, label in labels.items()
-            if _tail_matches(label, tail_words)
-        ]
-    if not excluded:
-        return actions
-    if _COMPLETION_BULK.search(ctx.message):
-        return [
-            Bulk(
-                op="complete",
-                scope="today",
-                exclude=list(excluded),
-                confidence=1.0,
-            )
-        ]
-    bulks = [a for a in actions if isinstance(a, Bulk)]
-    if bulks:
-        # Guarantee every literal exclusion even when the model proposed a
-        # non-empty but incomplete list.
-        for b in bulks:
-            b.exclude = list(dict.fromkeys([*b.exclude, *excluded]))
-        return actions
-    singles = [a for a in actions if isinstance(a, (Complete, Drop))]
-    if singles and all(
-        _tail_matches(
-            labels.get(_resolve_ref(a.target, labels, by_pos) or "", ""),
-            tail_words,
-        )
-        for a in singles
-    ):
-        # Every explicit action targets an item the user EXCLUDED: inverted.
-        op = "drop" if all(isinstance(a, Drop) for a in singles) else "complete"
-        others = [a for a in actions if not isinstance(a, (Complete, Drop))]
-        return others + [Bulk(op=op, scope="today", exclude=list(excluded))]
-    return actions
 
 
 _ORDINAL_POSITIONS = {
@@ -1500,274 +1322,32 @@ def _literal_ordinal(message: str) -> str | None:
     return _ORDINAL_POSITIONS.get(match.group(1).lower()) if match else None
 
 
-def _strongly_names_item(text: str, item: dict | None) -> bool:
-    if not item:
-        return False
-    label_words = list(dict.fromkeys(_words(item.get("label", ""))))
-    text_words = _words(text)
-    if not label_words or not text_words:
-        return False
-    matched = [
-        label_word
-        for label_word in label_words
-        if _word_hits(label_word, text_words)
-    ]
-    if len(matched) >= min(2, len(label_words)):
-        return True
-    generic = {
-        "call", "draft", "email", "item", "meeting", "new", "plan",
-        "report", "review", "task", "waiting", "work",
-    }
-    return any(len(word) >= 4 and word not in generic for word in matched)
-
-
-def _merge_new_capture_constraints(actions: list, ctx) -> list:
-    """Attach a pronoun-led constraint clause to the new capture it describes.
-
-    Small models occasionally emit "new task; it is due Monday" as a Capture
-    plus a Schedule aimed at an unrelated open item. The literal pronoun and the
-    absence of that target's words make the ownership deterministic.
-    """
-    captures = [action for action in actions if isinstance(action, Capture)]
-    schedules = [action for action in actions if isinstance(action, Schedule)]
-    if (
-        len(captures) != 1
-        or not schedules
-        or not re.search(r"[;,.]\s*(?:it|this|that)\b", ctx.message, re.I)
-    ):
-        return actions
-    capture = captures[0]
-    active = {item["id"].lower(): item.get("label", "") for item in ctx.active_items}
-    by_pos = {str(n): item["id"] for n, item in enumerate(ctx.active_items, start=1)}
-    merged: set[int] = set()
-    constraint_clause = re.split(r"[;,.]", ctx.message, maxsplit=1)[-1]
-    for schedule in schedules:
-        target = _resolve_ref(schedule.target, active, by_pos)
-        target_item = (
-            {"label": active.get(target, "")} if target is not None else None
-        )
-        if _strongly_names_item(constraint_clause, target_item):
-            continue
-        if capture.deadline is None and schedule.deadline is not None:
-            capture.deadline = schedule.deadline
-        if capture.duration_minutes is None and schedule.duration_minutes is not None:
-            capture.duration_minutes = schedule.duration_minutes
-            capture.duration_confidence = schedule.duration_confidence
-        if schedule.schedule_kind is not None:
-            capture.schedule_kind = schedule.schedule_kind
-        if schedule.splittable is not None:
-            capture.splittable = schedule.splittable
-        if capture.earliest is None and schedule.earliest is not None:
-            capture.earliest = schedule.earliest
-            capture.earliest_time = schedule.earliest_time
-        if capture.preferred_window is None and schedule.preferred_window:
-            capture.preferred_window = schedule.preferred_window
-        if schedule.depends_on:
-            capture.depends_on = list(schedule.depends_on)
-        if schedule.reminder_offsets:
-            capture.reminder_offsets = list(schedule.reminder_offsets)
-        merged.add(id(schedule))
-    return [action for action in actions if id(action) not in merged]
-
-
-def _recover_new_recurrence(actions: list, ctx) -> list:
-    """Recover a new recurring capture misclassified as editing a series."""
-    if len(actions) != 1 or not isinstance(actions[0], Recur):
-        return actions
-    action = actions[0]
-    active = {item["id"].lower(): item.get("label", "") for item in ctx.active_items}
-    by_pos = {str(n): item["id"] for n, item in enumerate(ctx.active_items, start=1)}
-    if _resolve_ref(action.target, active, by_pos) is not None:
-        return actions
-    match = re.search(
-        r"\bevery\s+(\d+)\s+(day|week|month|year)s?\b",
-        ctx.message,
-        re.IGNORECASE,
-    )
-    if not match:
-        return actions
-    task = ctx.message[:match.start()].strip(" ,;:")
-    if not task:
-        return actions
-    best, _ = _best_item(_words(task), ctx.active_items)
-    if _strongly_names_item(task, best):
-        return actions
-    anchor = (
-        "completion"
-        if re.search(r"\bafter (?:i |it )?(?:finish|complete)", ctx.message, re.I)
-        else "fixed"
-    )
-    return [
-        Capture(
-            task=task,
-            raw=ctx.message,
-            repeat=f"every:{int(match.group(1))}:{match.group(2).lower()}",
-            repeat_anchor=anchor,
-            repeat_count=action.count,
-        )
-    ]
-
-
-def _drop_redundant_new_recur(actions: list, message: str) -> list:
-    """Keep a stop-after count on its new capture, not an unrelated series."""
-    captures = [
-        action
-        for action in actions
-        if isinstance(action, Capture) and recurrence.normalize(action.repeat)
-    ]
-    series_edits = [action for action in actions if isinstance(action, Recur)]
-    if (
-        len(captures) == 1
-        and len(series_edits) == 1
-        and series_edits[0].op == "stop"
-        and re.search(
-            r"\bevery\s+\d+\s+(?:days?|weeks?|months?|years?)\b",
-            message,
-            re.IGNORECASE,
-        )
-        and re.search(
-            r"\b(?:stop|end) after \d+ (?:times?|occurrences?)\b",
-            message,
-            re.IGNORECASE,
-        )
-    ):
-        return [action for action in actions if action is not series_edits[0]]
-    return actions
-
-
-_PAST_COMPLETION_OPEN = re.compile(
-    r"^\s*(?:i\s+|we\s+)?(?:already\s+|just\s+)?"
-    r"(?:did|finished|completed|wrapped up|knocked out)\b",
-    re.IGNORECASE,
-)
-_COMPLETION_SCOPE_BREAK = re.compile(
-    r"\b(?:and|then|but)\s+(?:i\s+|we\s+)?(?:"
-    r"will|shall|am|are|was|were|want|need|plan|intend|start|started|"
-    r"begin|began|work|worked|working|continue|continued|progressed|try|tried|"
-    r"attempt|attempted|do|doing|finish|finishing|complete|completing"
-    r")\b|\b(?:next|now)\b",
-    re.IGNORECASE,
-)
-
-
-def _share_past_completion_scope(actions: list, message: str) -> list:
-    """Recover a coordinated completion that the model split into done + start.
-
-    English verbs such as "hit" have identical present and past forms. Small
-    models can therefore read "I did A and hit B" as a completion followed by a
-    request to start B. When the sentence opens in explicit past-completion
-    tense, contains both model-proposed shapes, and never changes to future,
-    ongoing, partial-progress, or imperative intent, the same tense safely
-    scopes across "and".
-    """
-    if (
-        not _PAST_COMPLETION_OPEN.search(message)
-        or " and " not in message.lower()
-        or _COMPLETION_SCOPE_BREAK.search(message)
-        or not any(isinstance(action, Complete) for action in actions)
-        or not any(isinstance(action, Start) for action in actions)
-    ):
-        return actions
-    return [
-        Complete(target=action.target, confidence=action.confidence)
-        if isinstance(action, Start)
-        else action
-        for action in actions
-    ]
-
-
 def reconcile(actions: list, ctx) -> Plan:
     today = date.fromisoformat(ctx.today)
-    acknowledgement = zero_completion_ack(ctx)
-    if acknowledgement is not None:
-        return Plan(acknowledgement=acknowledgement)
-    if _is_recent_literal_retraction(ctx):
-        actions = [Undo()]
-    actions = _fix_everything_but(actions, ctx)
-    actions = _drop_redundant_new_recur(actions, ctx.message)
-    actions = _recover_new_recurrence(actions, ctx)
-    actions = _merge_new_capture_constraints(actions, ctx)
-    actions = _share_past_completion_scope(actions, ctx.message)
-    low = ctx.message.strip().lower()
-    queries = [action for action in actions if isinstance(action, Query)]
-    outlook_words = re.search(
-        r"\b(?:overloaded|overbooked|capacity|what (?:will|won't|will not) fit|"
-        r"can i finish|can everything fit|enough time|fit (?:it|this|everything) "
-        r"(?:this week|by))\b",
-        low,
-    )
-    deviation = re.search(
-        r"\b(?:replan|got interrupted|was interrupted|meeting ran (?:long|over)|"
-        r"lost \d+ (?:minutes?|hours?)|running \d+ (?:minutes?|hours?) late)\b",
-        low,
-    )
-    explicit_item_change = re.search(
-        r"\b(?:complete|completed|done|drop|cancel the task|move|push|reschedule|"
-        r"snooze)\b",
-        low,
-    )
-    if outlook_words:
-        actions = [Query(kind="outlook", constraint=ctx.message)]
-    elif deviation and not explicit_item_change:
-        actions = [
-            next(
-                (query for query in queries if query.kind == "plan"),
-                Query(kind="plan", constraint=ctx.message),
-            )
-        ]
-    elif re.fullmatch(
-        r"(?:what(?:'s| is) on my plan|show (?:me )?my plan|current plan)[?!.]?",
-        low,
-    ):
-        actions = [Query(kind="plan_status")]
-    elif queries and re.match(r"^(?:plan|map out)\b", low):
-        actions = [
-            Query(
-                kind="plan",
-                when=next((query.when for query in queries if query.when), None),
-                constraint=ctx.message,
-            )
-        ]
-    elif re.fullmatch(
-        r"(?:use|adopt|accept|lock in|follow) (?:this|that|the) plan[.!]?",
-        low,
-    ):
-        actions = [PlanAction(op="adopt", confidence=1.0)]
-    elif re.fullmatch(
-        r"(?:replace|update|swap) (?:my|the|today'?s) plan (?:with )?(?:this|that)[.!]?",
-        low,
-    ):
-        actions = [PlanAction(op="replace", confidence=1.0)]
-    elif re.fullmatch(
-        r"(?:cancel|clear|drop|stop following) (?:my|the|today'?s) plan[.!]?",
-        low,
-    ):
-        actions = [PlanAction(op="cancel", confidence=1.0)]
-    if re.search(
-        r"\b(waiting on|blocked on|cannot start until|can't start until)\b",
-        ctx.message,
-        re.IGNORECASE,
-    ):
-        converted = []
-        for action in actions:
-            if isinstance(action, Note):
-                converted.append(
-                    Wait(target=action.target, confidence=action.confidence)
-                )
-            elif isinstance(action, Capture):
-                best, _ = _best_item(_words(ctx.message), ctx.active_items)
-                converted.append(
-                    Wait(target=best["id"], confidence=1.0)
-                    if _strongly_names_item(ctx.message, best)
-                    else action
-                )
-            else:
-                converted.append(action)
-        actions = converted
+    if len(actions) == 1 and isinstance(actions[0], NudgeDecision):
+        return _reconcile_nudge(actions[0], ctx, today)
+    if len(actions) == 1 and isinstance(actions[0], ConfirmationDecision):
+        return _reconcile_confirmation(actions[0], ctx)
+    if len(actions) == 1 and isinstance(actions[0], OnboardingDecision):
+        return _reconcile_onboarding(actions[0], ctx)
+    # A contextual decision never rides alongside another action. The concrete
+    # action wins, while the decision is discarded rather than widening scope.
+    actions = [
+        action
+        for action in actions
+        if not isinstance(
+            action, (NudgeDecision, ConfirmationDecision, OnboardingDecision)
+        )
+    ]
+    recap_actions = [action for action in actions if isinstance(action, Recap)]
+    if len(actions) == 1 and len(recap_actions) == 1:
+        return _reconcile_recap(recap_actions[0], ctx)
+    # A contradictory model proposal cannot let a zero-result report suppress
+    # a concrete task action. Ignore the recap proposal and reconcile the rest.
+    if recap_actions:
+        actions = [action for action in actions if not isinstance(action, Recap)]
     active = {i["id"]: i.get("label", "") for i in ctx.active_items}
     plan = Plan()
-    captures = [a for a in actions if isinstance(a, Capture)]
-    n_captures = len(captures)
     active_due = {i["id"].lower(): i.get("due_date") for i in ctx.active_items}
     # Preserve the displayed morning order even after earlier rows close. This
     # prevents a later position from silently shifting to a different item.
@@ -1787,36 +1367,13 @@ def reconcile(actions: list, ctx) -> Plan:
             }
     ordinal = _literal_ordinal(ctx.message)
     if ordinal and ordinal in by_pos:
-        if (
-            ctx.focus
-            and ctx.focus[0].get("context") == "plan"
-            and re.fullmatch(
-                r"\s*(?:(?:i(?:'ll| will)|let'?s)\s+)?"
-                r"(?:do|start|work on)\s+(?:the\s+)?"
-                r"(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)"
-                r"(?:\s+one|\s+task|\s+item)?[.!]?\s*",
-                ctx.message,
-                re.IGNORECASE,
-            )
-        ):
-            actions = [Start(target=by_pos[ordinal], confidence=1.0)]
-        elif len(actions) == 1 and isinstance(actions[0], _REFERENCE_ACTIONS):
+        if len(actions) == 1 and isinstance(actions[0], _REFERENCE_ACTIONS):
             actions[0].target = by_pos[ordinal]
             actions[0].confidence = 1.0
-    # A date at the START of a multi-task message ("Tomorrow I need to A, B, C")
-    # applies to all the tasks; the model attaches it to the first one and leaves
-    # the rest with no date. Detect the leading date in the text, then take the
-    # actual date from the first task's intent (exact math). A trailing date
-    # ("call A and email B tomorrow") is not at the start, so it is not shared.
-    shared_date = None
-    if n_captures > 1 and dates.leading_date(ctx.message, today) is not None:
-        first = dates.resolve_intent(captures[0].when, today)
-        shared_date = first.date or dates.leading_date(ctx.message, today)
     for action in actions:
         if isinstance(action, Capture):
             _reconcile_capture(
-                action, today, ctx.message, n_captures == 1, shared_date,
-                active_due, by_pos, plan,
+                action, today, active_due, by_pos, plan,
             )
         elif isinstance(action, Amend):
             _reconcile_amend(action, active, by_pos, plan)
@@ -1832,7 +1389,9 @@ def reconcile(actions: list, ctx) -> Plan:
             if target is not None:
                 plan.starts.append(target)
         elif isinstance(action, PlanAction):
-            if action.confidence < CONFIDENCE_THRESHOLD:
+            if action.op not in {"adopt", "replace", "cancel"}:
+                plan.questions.append("i could not verify that plan action. nothing changed.")
+            elif action.confidence < CONFIDENCE_THRESHOLD:
                 plan.questions.append(
                     f"do you want me to {action.op} the day plan?"
                 )
@@ -1841,11 +1400,11 @@ def reconcile(actions: list, ctx) -> Plan:
         elif isinstance(action, Prioritize):
             _reconcile_prioritize(action, active, by_pos, plan)
         elif isinstance(action, Schedule):
-            _reconcile_schedule(action, today, active, by_pos, ctx.message, plan)
+            _reconcile_schedule(action, today, active, by_pos, plan)
         elif isinstance(action, Recur):
             _reconcile_recur(action, today, active, by_pos, plan)
         elif isinstance(action, Setting):
-            _reconcile_setting(action, plan)
+            _reconcile_setting(action, ctx.message, plan)
         elif isinstance(action, Complete):
             target = _check_target(
                 action.target,
@@ -1941,8 +1500,8 @@ def reconcile(actions: list, ctx) -> Plan:
                     _hold(
                         plan,
                         mutation,
-                        f'did you mean "{active[target]}"? reply yes to put it '
-                        "back on deck, or no to cancel.",
+                        f'did you mean "{active[target]}"? confirm putting it '
+                        "back on deck, or cancel.",
                     )
                 else:
                     plan.mutations.append(mutation)
@@ -1966,12 +1525,9 @@ def _reconcile_unknown(ctx, plan: Plan) -> None:
     words = _words(ctx.message)
     best, score = _best_item(words, ctx.active_items) if words else (None, 0.0)
     if best is not None and score >= _MATCH and plan.confirm is None:
-        if re.search(r"\b(did|done|finish|finished|complete|completed)\b", ctx.message.lower()):
-            plan.confirm = _confirm_did_you_mean(best, "complete")
-        else:
-            plan.questions.append(
-                f'i found "{best["label"]}", but not the action. say complete, '
-                "move, rename, or drop with the task name."
-            )
+        plan.questions.append(
+            f'i found "{best["label"]}", but not the action. tell me what you '
+            "want to do with it."
+        )
         return
     plan.questions.append("i did not catch a task there. can you rephrase?")

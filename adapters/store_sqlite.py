@@ -860,6 +860,11 @@ class SqliteStore:
             self._set_meta_locked(key, value)
             self._commit()
 
+    def delete_meta(self, key: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM meta WHERE key = ?", (key,))
+            self._commit()
+
     # durable delivery ------------------------------------------------------
     def enqueue_inbound(
         self, key: str, update_id: int, kind: str, payload: dict, created_at: str

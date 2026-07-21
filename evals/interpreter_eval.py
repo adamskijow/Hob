@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Callable
 
 from adapters.llm_ollama import OllamaLlm
@@ -39,8 +39,12 @@ class Case:
     digest: list | None = None  # exact morning order for numbered references
     focus: list | None = None  # conversational focus, for follow-up cases
     presented: list | None = None  # most recent proactive list shown to user
+    presented_kind: str | None = None  # machine-owned provenance, e.g. eod
     replied: dict | None = None  # replied-to anchor, for reply cases
     last_change_at: str | None = None  # recent undoable batch for retractions
+    nudge: dict | None = None  # active machine-owned digest decision
+    confirmation_pending: bool = False
+    onboarding_stage: str | None = None
 
 
 def kinds(p: Plan) -> list[str]:
@@ -50,6 +54,12 @@ def kinds(p: Plan) -> list[str]:
 def cap_due(p: Plan):
     caps = [m for m in p.mutations if m.kind == "capture"]
     return caps[0].due_date if caps else "<no capture>"
+
+
+def zero_recap(p: Plan) -> bool:
+    return not p.mutations and p.acknowledgement == (
+        "okay. nothing marked done. both items stay open on deck."
+    )
 
 
 CASES = [
@@ -108,15 +118,86 @@ CASES = [
     Case("did everything today",
          lambda p: kinds(p) and all(k == "complete" for k in kinds(p)),
          "bulk complete"),
-    Case(
-        "Nothing got done",
-        lambda p: not p.mutations
-        and p.acknowledgement == (
-            "okay. nothing marked done. both items stay open on deck."
-        ),
-        "zero-completion evening report is acknowledged without mutations",
-        presented=ACTIVE[:2],
-    ),
+    Case("Nothing got done", zero_recap,
+         "literal zero-completion evening report",
+         presented=ACTIVE[:2], presented_kind="eod"),
+    Case("It needs to stay on",
+         lambda p: p.nudge_decision == "keep" and kinds(p) == ["keep"]
+         and not p.settings,
+         "natural stale-task keep answer cannot become a setting",
+         nudge={"item_id": "a1", "label": "prep the prez deck",
+                "kind": "stale_task", "sent_at": f"{TODAY}T07:00:00"}),
+    Case("leave that one there",
+         lambda p: p.nudge_decision == "keep" and kinds(p) == ["keep"],
+         "unseen keep paraphrase uses active digest context",
+         nudge={"item_id": "a1", "label": "prep the prez deck",
+                "kind": "stale_task", "sent_at": f"{TODAY}T07:00:00"}),
+    Case("punt it a day",
+         lambda p: p.nudge_decision == "tomorrow"
+         and kinds(p) == ["reschedule"]
+         and p.mutations[0].due_date == "2026-06-30",
+         "idiomatic digest defer is semantic and bounded",
+         nudge={"item_id": "a1", "label": "prep the prez deck",
+                "kind": "stale_task", "sent_at": f"{TODAY}T07:00:00"}),
+    Case("that blocker cleared",
+         lambda p: p.nudge_decision == "resume" and kinds(p) == ["resume"],
+         "waiting nudge accepts a natural cleared-blocker answer",
+         active=[
+             {"id": "w1", "label": "send the contract", "due_date": None,
+              "waiting": True},
+         ],
+         nudge={"item_id": "w1", "label": "send the contract",
+                "kind": "waiting", "sent_at": f"{TODAY}T07:00:00"}),
+    Case("yes",
+         lambda p: p.confirmation_decision == "approve" and not p.mutations,
+         "pure natural confirmation is typed, not prefix matched",
+         confirmation_pending=True),
+    Case("yesterday I found another report to review",
+         lambda p: p.confirmation_decision is None,
+         "yes-prefix collision cannot approve a held action",
+         confirmation_pending=True),
+    Case("yes, but exclude 2",
+         lambda p: p.confirmation_decision != "approve",
+         "conditional revision is not pure approval",
+         confirmation_pending=True),
+    Case("this is fine",
+         lambda p: p.onboarding_decision == "skip",
+         "onboarding accepts a natural keep-current answer",
+         onboarding_stage="work_hours"),
+    Case("let's finish setup later",
+         lambda p: p.onboarding_decision == "cancel",
+         "onboarding pause has no magic phrase",
+         onboarding_stage="work_hours"),
+    Case("nada", zero_recap,
+         "terse multilingual zero-completion evening report",
+         presented=ACTIVE[:2], presented_kind="eod"),
+    Case("today was a wash", zero_recap,
+         "idiomatic zero-completion evening report",
+         presented=ACTIVE[:2], presented_kind="eod"),
+    Case("the scoreboard stayed empty", zero_recap,
+         "unseen metaphorical zero-completion evening report",
+         presented=ACTIVE[:2], presented_kind="eod"),
+    Case("Bro jack shit got done today", zero_recap,
+         "slang zero-completion production report",
+         presented=ACTIVE[:2], presented_kind="eod"),
+    Case("thanks hob",
+         lambda p: bool(p.chitchat) and not p.mutations and not p.acknowledgement,
+         "social reply is not swallowed by active evening recap",
+         presented=ACTIVE[:2], presented_kind="eod"),
+    Case("new task: buy milk",
+         lambda p: kinds(p) == ["capture"] and not p.acknowledgement,
+         "concrete new task outranks active evening recap",
+         presented=ACTIVE[:2], presented_kind="eod"),
+    Case("I made a little progress on the prez deck",
+         lambda p: kinds(p) == ["note"]
+         and p.mutations[0].target == "a1"
+         and not p.acknowledgement,
+         "partial progress remains a task note during evening recap",
+         presented=ACTIVE[:2], presented_kind="eod"),
+    Case("nada",
+         lambda p: not p.mutations and not p.acknowledgement,
+         "terse zero wording is not a recap without EOD provenance",
+         presented=ACTIVE[:2], presented_kind="morning"),
     Case("delete everything",
          lambda p: p.confirm is not None,
          "multi-day delete confirms"),
@@ -153,8 +234,27 @@ CASES = [
          "overdue query"),
     Case("I have 40 minutes and low energy, what should I do next?",
          lambda p: p.queries and p.queries[0].kind == "plan"
-         and "40" in (p.queries[0].constraint or ""),
+         and p.queries[0].budget_minutes == 40
+         and p.queries[0].energy == "low",
          "constraint-aware planning query"),
+    Case("I'm wiped; what should I do next?",
+         lambda p: p.queries and p.queries[0].kind == "plan"
+         and p.queries[0].energy == "low",
+         "idiomatic low-energy planning constraint"),
+    Case("the first half of the day is shot, replan",
+         lambda p: p.queries and p.queries[0].kind == "plan"
+         and p.queries[0].earliest_time == "12:00",
+         "semantic morning-loss planning bound"),
+    Case("no gas left, give me a realistic plan",
+         lambda p: p.queries and p.queries[0].kind == "plan"
+         and p.queries[0].energy == "low",
+         "unseen energy idiom becomes a typed constraint"),
+    Case("add capacity review to my list",
+         lambda p: kinds(p) == ["capture"] and not p.queries,
+         "task words resembling outlook do not hijack capture"),
+    Case("add a task to document why the meeting ran over",
+         lambda p: kinds(p) == ["capture"] and not p.queries,
+         "planning words inside a task do not trigger replan"),
     Case("anything about the audit",
          lambda p: p.queries and p.queries[0].kind == "search"
          and "audit" in (p.queries[0].term or "").lower(),
@@ -165,6 +265,12 @@ CASES = [
     Case("scratch that",
          lambda p: p.undo is True,
          "conversational undo"),
+    Case("forget that",
+         lambda p: p.undo is True,
+         "unseen retraction paraphrase is model understood"),
+    Case("belay that",
+         lambda p: p.undo is True,
+         "idiomatic retraction is model understood"),
     Case("Nevermind I'm good",
          lambda p: p.undo is True,
          "recent standalone retraction undoes the last change",
@@ -242,6 +348,11 @@ CASES = [
              ("break_window", "12:00-13:00")
          ],
          "NL setting (protected break)"),
+    Case("remove my lunch break",
+         lambda p: [(s.key, s.value) for s in p.settings] == [
+             ("break_window", "none")
+         ],
+         "semantic break removal uses typed clear"),
     Case("assume tasks take 45 minutes unless I say otherwise",
          lambda p: [(s.key, s.value) for s in p.settings] == [
              ("default_duration", "45")
@@ -393,15 +504,31 @@ CASES = [
 def main() -> int:
     model = os.environ.get("HOB_MODEL", "qwen2.5:14b-instruct")
     llm = OllamaLlm(model, os.environ.get("HOB_OLLAMA_HOST", "http://localhost:11434"))
-    print(f"interpreter eval | model={model} | today={TODAY}\n")
+    filters = [
+        value.strip().lower()
+        for value in os.environ.get("HOB_EVAL_ONLY", "").split(",")
+        if value.strip()
+    ]
+    cases = [
+        case for case in CASES
+        if not filters or any(value in case.desc.lower() for value in filters)
+    ]
+    print(
+        f"interpreter eval | model={model} | today={TODAY} | cases={len(cases)}\n",
+        flush=True,
+    )
     passed = 0
-    for c in CASES:
+    for c in cases:
         ctx = InterpreterContext(
             message=c.msg, today=TODAY, now=f"{TODAY}T09:00:00", timezone=TZ,
             active_items=c.active or ACTIVE, last_digest=c.digest or [],
             presented_items=c.presented or [],
+            presented_kind=c.presented_kind,
             focus=c.focus or [], replied=c.replied,
             last_change_at=c.last_change_at,
+            nudge=c.nudge,
+            confirmation_pending=c.confirmation_pending,
+            onboarding_stage=c.onboarding_stage,
         )
         try:
             plan = reconcile(interpret(llm, ctx), ctx)
@@ -410,16 +537,18 @@ def main() -> int:
             ok, plan = False, exc
         passed += ok
         mark = "PASS" if ok else "FAIL"
-        print(f"  [{mark}] {c.desc}")
+        print(f"  [{mark}] {c.desc}", flush=True)
         if not ok:
             detail = plan if isinstance(plan, Exception) else (
-                f"mutations={kinds(plan)} q={plan.questions} "
+                f"mutations={[asdict(m) for m in plan.mutations]} "
+                f"settings={[asdict(s) for s in plan.settings]} q={plan.questions} "
                 f"queries={[(q.kind, q.date) for q in plan.queries]} "
+                f"decisions={(plan.nudge_decision, plan.confirmation_decision, plan.onboarding_decision)} "
                 f"confirm={'yes' if plan.confirm else 'no'}"
             )
-            print(f"         msg={c.msg!r}\n         got: {detail}")
-    print(f"\n{passed}/{len(CASES)} passed")
-    return 0 if passed == len(CASES) else 1
+            print(f"         msg={c.msg!r}\n         got: {detail}", flush=True)
+    print(f"\n{passed}/{len(cases)} passed", flush=True)
+    return 0 if passed == len(cases) else 1
 
 
 if __name__ == "__main__":

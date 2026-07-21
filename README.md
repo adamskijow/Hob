@@ -37,8 +37,17 @@ one natural-language interpreter. When a message is ambiguous, Hob asks instead
 of guessing, and every change is undoable. The model and your data stay on your
 machine; only the Telegram transport leaves it.
 
-The evening loop accepts quiet days too: `nothing got done` leaves every
-displayed item open and gets a clear acknowledgement instead of an error.
+The evening loop accepts quiet days too. Answer naturally, from `nada` to
+`today was a wash`: the local model interprets the answer in recap context,
+while the core guarantees that a zero-result report leaves every displayed
+item open. There is no command phrase to memorize.
+
+That same rule applies across the conversation: stale-task decisions,
+confirmations, onboarding answers, retractions, bulk scope, and planning
+constraints are interpreted by the local model as typed intent. Deterministic
+code verifies the active prompt, exact task ids, allowed effects, dates, and
+arithmetic; it does not turn free text into a different action through a hidden
+keyword table.
 
 Unlike a command parser, Hob can also answer "what should I do next?" or "I
 have 40 minutes and low energy" with a short plan grounded in the actual task

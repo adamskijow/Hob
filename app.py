@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
 """Composition root: wire adapters into the core and run the daemon.
 
-Every inbound message takes one path: deterministic preflight -> interpret when
-needed -> reconcile -> apply. Captures, EOD reports, corrections, and queries
-all flow through it. MessageService and DigestService are edge orchestrators,
+Every inbound message takes one path: interpret -> reconcile -> apply. Captures,
+EOD reports, corrections, and queries all flow through it. MessageService and
+DigestService are edge orchestrators,
 unit-testable with an in-memory store, a fake clock, and a fake LLM; the daemon
 wiring lives in _run_daemon.
 """
@@ -14,7 +14,6 @@ import getpass
 import json
 import logging
 import os
-import re
 import signal
 import sqlite3
 import sys
@@ -61,7 +60,6 @@ from core.planner import (
     QueryIntent,
     SettingChange,
     reconcile,
-    zero_completion_ack,
 )
 from core.ports import Calendar, Clock, Llm, Store
 from core.undo import plan_undo
@@ -108,10 +106,12 @@ HELP = (
     'every monday". correct the same way: "did the prez one", "push it to friday", '
     '"drop 2", or follow up with "make it 4pm" / "that\'s urgent". reply to a '
     'reminder with "done" or "snooze 20"; edit a message and i take the edit. '
-    'when a digest asks about stale work, send "keep", "tomorrow", "drop", '
-    'or "back on" as a plain message; no reply gesture is required. '
+    'when a digest asks about stale work, answer naturally: keep it around, '
+    'move it, drop it, or say the blocker cleared. no reply gesture or magic '
+    'phrase is required. '
     'bulk reports work too: "finished it all except 1 and 6". '
-    'answer an evening recap with "nothing got done" to leave every item open. '
+    'answer an evening recap naturally with what finished, what progressed, or '
+    'that nothing happened; there is no required phrase. '
     'ask: "what\'s on today", "what\'s overdue", "what did i finish this week", '
     'or "am i overloaded this week?". '
     '/today shows today; /list shows every open item; /settings shows timing; '
@@ -174,25 +174,6 @@ LAST_PLAN_KEY = "last_day_plan"
 # it. Anything else (hearts on chit-chat) is appreciation, not an instruction.
 REACT_COMPLETE = {"\U0001F44D", "\U0001F44C", "\U0001F4AF", "\U0001F3C6"}
 REACT_DROP = {"\U0001F44E"}
-
-_AFFIRMATIONS = {
-    "yes", "y", "yeah", "yep", "yup", "sure", "ok", "okay", "confirm",
-    "do it", "go ahead", "yes please", "please do", "absolutely", "definitely",
-}
-_NEGATIONS = {
-    "no", "n", "nope", "nah", "cancel", "never mind", "nevermind", "stop",
-    "do not", "don't", "dont",
-}
-_KEEP_DECISIONS = {"keep", "keep it", "still on", "yes keep it"}
-_TOMORROW_DECISIONS = {"tomorrow", "move it to tomorrow"}
-_DROP_DECISIONS = {"drop", "drop it"}
-_RESUME_DECISIONS = {"back on", "back on deck", "resume", "it cleared"}
-_DIGEST_DECISIONS = (
-    _KEEP_DECISIONS
-    | _TOMORROW_DECISIONS
-    | _DROP_DECISIONS
-    | _RESUME_DECISIONS
-)
 
 PLAN_SCHEMA = {
     "type": "object",
@@ -260,14 +241,6 @@ def _redact_logging(secret: str) -> None:
         handler.setFormatter(_RedactingFormatter(secret))
 
 
-def _is_affirmation(text: str) -> bool:
-    return text in _AFFIRMATIONS or text.startswith("yes")
-
-
-def _is_negation(text: str) -> bool:
-    return text in _NEGATIONS or text.startswith("no ")
-
-
 def _decode_confirm(raw: str) -> tuple[str | None, list]:
     """Read current tokenized confirmations and legacy list-only state."""
     data = json.loads(raw)
@@ -310,9 +283,9 @@ def _dump(item: Item) -> str:
 
 
 class MessageService:
-    """Runs each inbound message through deterministic preflight and, when
-    needed, the interpreter; reconciles the result; applies mutations; and
-    produces a reply. Transport and core stay on opposite sides of this seam.
+    """Interprets each inbound message, reconciles the proposed actions, applies
+    mutations, and produces a reply. Transport and core stay on opposite sides
+    of this seam.
     """
 
     def __init__(
@@ -423,26 +396,26 @@ class MessageService:
         prompts = {
             "work_hours": (
                 'setup 1/5: what hours may i plan inside? reply like "plan work '
-                'from 9 to 5", or say "skip" to keep {current}.'
+                'from 9 to 5"; keeping {current} is also fine.'
             ),
             "work_days": (
                 'setup 2/5: which days may i plan work? reply like "weekdays", '
-                '"monday through saturday", or "every day"; "skip" keeps '
-                "{current}."
+                '"monday through saturday", or "every day"; you can also '
+                'keep {current}.'
             ),
             "break_window": (
                 'setup 3/5: what daily time should stay protected? reply like '
-                '"protect lunch from noon to 1", "no break", or "skip" to keep '
-                "{current}."
+                '"protect lunch from noon to 1" or "no break"; you can also '
+                'keep {current}.'
             ),
             "default_duration": (
                 'setup 4/5: when a task has no estimate, what should i assume? '
-                'reply like "assume 30 minutes", or say "skip" to keep {current}m.'
+                'reply like "assume 30 minutes"; keeping {current}m is also fine.'
             ),
             "transition_buffer": (
                 'setup 5/5: how much breathing room should i leave between '
                 'commitments? reply like "leave 10 minutes between things", '
-                '"no buffer", or "skip" to keep {current}m.'
+                '"no buffer", or keep the current {current}m.'
             ),
         }
         question = prompts[stage].format(current=self._setup_value(stage))
@@ -469,7 +442,7 @@ class MessageService:
             self._store.set_meta(ONBOARDING_STAGE_KEY, stage)
         prompt = self._setup_prompt(stage)
         intro = self._welcome() + "\n\n" if include_welcome else ""
-        return intro + prompt + '\nYou can also say "cancel setup" at any step.'
+        return intro + prompt + "\nAnswer in your own words, or pause setup anytime."
 
     def _finish_onboarding(self) -> str:
         self._store.set_meta(ONBOARDING_STAGE_KEY, "")
@@ -583,13 +556,8 @@ class MessageService:
             return self._welcome()
         if low in ("/setup", "/onboarding"):
             return self._begin_onboarding()
-        if low in {"cancel setup", "stop setup", "/cancelsetup"}:
+        if low == "/cancelsetup":
             return self._cancel_onboarding()
-        if (
-            self._store.get_meta(ONBOARDING_STAGE_KEY) in ONBOARDING_STEPS
-            and low in {"skip", "keep", "keep it", "next"}
-        ):
-            return self._skip_onboarding()
         if low == "/help":
             return HELP
         if low == "/today":
@@ -604,18 +572,6 @@ class MessageService:
             return self._answer_outlook("what will fit this week?")
         if low == "/undo":
             return self._undo()
-        # A destructive bulk held back for confirmation: apply it on yes, drop it
-        # on anything else (and let that message be handled normally).
-        pending_confirm = self._store.get_meta(CONFIRM_KEY)
-        if pending_confirm:
-            self._store.set_meta(CONFIRM_KEY, "")
-            if _is_affirmation(low):
-                _, mutations = _decode_confirm(pending_confirm)
-                return self._apply_confirmed(
-                    mutations, self._message_key(msg)
-                )
-            if _is_negation(low):
-                return "canceled. nothing changed."
         # Idempotency backstop: if a crash redelivered this message after its
         # mutations were already applied, do not apply or reply again. Normal
         # restarts are covered by the persisted poll offset; this guards the
@@ -623,21 +579,6 @@ class MessageService:
         message_key = self._message_key(msg)
         if self._store.has_actions_for_message(message_key):
             return ""
-        replied = self._replied_item(msg.reply_to)
-        if (
-            replied
-            and low in _DIGEST_DECISIONS
-            and (low not in _RESUME_DECISIONS or replied["waiting"])
-        ):
-            return self._apply_digest_decision(
-                replied, low, message_key, consume_prompt=False
-            )
-        if msg.reply_to is None:
-            digest_item = self._digest_decision_item(low)
-            if digest_item is not None:
-                return self._apply_digest_decision(
-                    digest_item, low, message_key
-                )
         return self._interpret_and_apply(
             text, message_key, reply_to=msg.reply_to,
             forwarded_from=msg.forwarded_from,
@@ -660,16 +601,18 @@ class MessageService:
             "waiting": bool(item.waiting_since),
         }
 
-    def _digest_decision_item(self, low: str) -> dict | None:
-        """Resolve a bare choice advertised by today's stale-task digest.
+    def _digest_decision_context(self) -> dict | None:
+        """Return the exact machine-owned target of today's digest question.
 
         New digests persist the exact content-free decision context. The pinned
         message reference is a compatibility path for a digest sent earlier on
         the day this behavior was upgraded. A consumed/invalid persisted value
         intentionally suppresses that fallback, so one prompt acts at most once.
+
+        Meaning is deliberately absent here. The model decides whether the
+        user's free text means keep, defer, drop, or resume; core reconciliation
+        confines that proposal to this validated target and kind.
         """
-        if low not in _DIGEST_DECISIONS:
-            return None
         if self._store.get_meta(PENDING_KEY):
             return None
         raw = self._store.get_meta(DIGEST_DECISION_KEY)
@@ -704,11 +647,8 @@ class MessageService:
                 if legacy_item is not None and legacy_item.waiting_since
                 else "stale_task"
             )
-        expected_kind = (
-            "waiting" if low in _RESUME_DECISIONS else "stale_task"
-        )
         if (
-            kind != expected_kind
+            kind not in {"stale_task", "waiting"}
             or not isinstance(item_id, str)
             or not item_id
             or not isinstance(sent_at, str)
@@ -721,50 +661,26 @@ class MessageService:
             return None
         if (kind == "waiting") != bool(item.waiting_since):
             return None
-        # "Tomorrow" and "drop" can also be terse follow-ups to a task just
-        # discussed. A newer explicit focus wins over the proactive morning
-        # prompt. "Keep" exists specifically for this prompt and stays eligible.
-        if low in _TOMORROW_DECISIONS | _DROP_DECISIONS:
-            focus = self._store.get_meta(FOCUS_KEY)
-            if focus:
-                try:
-                    focus_data = json.loads(focus)
-                    if not isinstance(focus_data, dict):
-                        return None
-                    focus_at = focus_data.get("ts")
-                    if focus_at and datetime.fromisoformat(
-                        focus_at
-                    ) > datetime.fromisoformat(sent_at):
-                        return None
-                except (TypeError, ValueError, json.JSONDecodeError):
+        # Any newer explicit task focus supersedes the proactive morning prompt.
+        focus = self._store.get_meta(FOCUS_KEY)
+        if focus:
+            try:
+                focus_data = json.loads(focus)
+                if not isinstance(focus_data, dict):
                     return None
-        return {"id": item.id, "label": item.task}
-
-    def _apply_digest_decision(
-        self,
-        item: dict,
-        low: str,
-        message_key: str,
-        *,
-        consume_prompt: bool = True,
-    ) -> str:
-        if low in _KEEP_DECISIONS:
-            mutation = Mutation(kind="keep", target=item["id"])
-        elif low in _TOMORROW_DECISIONS:
-            mutation = Mutation(
-                kind="reschedule",
-                target=item["id"],
-                due_date=(self._clock.today() + timedelta(days=1)).isoformat(),
-            )
-        elif low in _DROP_DECISIONS:
-            mutation = Mutation(kind="drop", target=item["id"])
-        else:
-            mutation = Mutation(kind="resume", target=item["id"])
-        applied = self._apply([mutation], message_key)
-        if consume_prompt:
-            self._store.set_meta(DIGEST_DECISION_KEY, "")
-        self._save_focus(applied)
-        return self._reply(applied, [], [])
+                focus_at = focus_data.get("ts")
+                if focus_at and datetime.fromisoformat(
+                    focus_at
+                ) > datetime.fromisoformat(sent_at):
+                    return None
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return None
+        return {
+            "item_id": item.id,
+            "label": item.task,
+            "kind": kind,
+            "sent_at": sent_at,
+        }
 
     def _context(
         self,
@@ -789,7 +705,9 @@ class MessageService:
             [{"id": d.id, "label": d.label} for d in last.items] if last else []
         )
         last_batch = self._store.last_batch()
+        presented_items, presented_kind = self._load_presented_context()
         raw_pending = self._store.get_meta(PENDING_KEY)
+        onboarding_stage = self._store.get_meta(ONBOARDING_STAGE_KEY)
         return InterpreterContext(
             message=text,
             today=self._clock.today().isoformat(),
@@ -797,31 +715,40 @@ class MessageService:
             timezone=self._timezone,
             active_items=active,
             last_digest=last_items,
-            presented_items=self._load_presented_list(),
+            presented_items=presented_items,
+            presented_kind=presented_kind,
             pending=json.loads(raw_pending) if raw_pending else [],
             focus=self._load_focus(),
             replied=self._replied_item(reply_to),
             forwarded_from=forwarded_from,
             last_change_at=last_batch[0].ts if last_batch else None,
+            nudge=self._digest_decision_context(),
+            confirmation_pending=bool(self._store.get_meta(CONFIRM_KEY)),
+            onboarding_stage=(
+                onboarding_stage if onboarding_stage in ONBOARDING_STEPS else None
+            ),
         )
 
-    def _load_presented_list(self) -> list[dict]:
+    def _load_presented_context(self) -> tuple[list[dict], str | None]:
         raw = self._store.get_meta(PRESENTED_LIST_KEY)
         if not raw:
-            return []
+            return [], None
         try:
             data = json.loads(raw)
             shown_at = datetime.fromisoformat(data["ts"])
             age = self._clock.now() - shown_at
             if not timedelta(0) <= age <= timedelta(hours=24):
-                return []
+                return [], None
             open_ids = {item.id for item in self._store.open_items()}
-            return [
-                item for item in data.get("items", [])
+            items = [
+                item
+                for item in data.get("items", [])
                 if item.get("id") in open_ids and item.get("label")
             ][:20]
+            kind = data.get("kind")
+            return items, kind if isinstance(kind, str) else None
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-            return []
+            return [], None
 
     def _load_focus(self) -> list[dict]:
         """The items the last message touched, if recent enough to still be the
@@ -1007,12 +934,7 @@ class MessageService:
         restore_on_outage: list[ActionLogEntry] | None = None,
     ) -> str:
         ctx = self._context(text, reply_to, forwarded_from)
-        # An explicit zero-completion report is a complete answer to the recap,
-        # not an unknown task command. Recognize it before the model so this
-        # safe no-op still works during a local-model outage.
-        actions = (
-            [] if zero_completion_ack(ctx) is not None else interpret(self._llm, ctx)
-        )
+        actions = interpret(self._llm, ctx)
         # A model outage degrades to a single Unknown with this note. Don't treat
         # it as a confusing message: say so, change nothing, and leave any pending
         # clarification intact so a retry still resolves it.
@@ -1028,6 +950,23 @@ class MessageService:
                 raise RetryableMessageError("local model unavailable")
             return "i can't reach the model right now. give it a few seconds and resend."
         plan = reconcile(actions, ctx)
+        if plan.confirmation_decision:
+            raw = self._store.get_meta(CONFIRM_KEY)
+            if not raw:
+                return "that confirmation has expired. nothing changed."
+            _, mutations = _decode_confirm(raw)
+            self._store.set_meta(CONFIRM_KEY, "")
+            if plan.confirmation_decision == "reject":
+                return "canceled. nothing changed."
+            return self._apply_confirmed(mutations, message_id)
+        # A new, unrelated instruction supersedes a held confirmation. The
+        # model must explicitly classify approval or rejection to act on it.
+        if ctx.confirmation_pending:
+            self._store.set_meta(CONFIRM_KEY, "")
+        if plan.onboarding_decision == "skip":
+            return self._skip_onboarding()
+        if plan.onboarding_decision == "cancel":
+            return self._cancel_onboarding()
         if plan.undo:  # "scratch that" / "undo that"
             return self._undo()
         batch_id = (
@@ -1036,6 +975,8 @@ class MessageService:
             else None
         )
         applied = self._apply(plan.mutations, message_id, batch_id=batch_id)
+        if plan.nudge_decision:
+            self._store.set_meta(DIGEST_DECISION_KEY, "")
         self._save_focus(applied)
         answers = [plan.acknowledgement] if plan.acknowledgement else []
         answers += [self._answer_start(item_id) for item_id in plan.starts]
@@ -1478,7 +1419,10 @@ class MessageService:
         for entry in reversed(settings):
             key = entry.item_id.removeprefix("setting:")
             before = json.loads(entry.before_json) if entry.before_json else None
-            self._store.set_meta(key, before or "")
+            if before is None:
+                self._store.delete_meta(key)
+            else:
+                self._store.set_meta(key, before)
         for entry in reversed(plans):
             if entry.before_json:
                 self._store.restore_plan_state(json.loads(entry.before_json))
@@ -1495,8 +1439,11 @@ class MessageService:
         for entry in batch:
             if entry.action_type == "setting":
                 key = entry.item_id.removeprefix("setting:")
-                value = json.loads(entry.after_json) if entry.after_json else ""
-                self._store.set_meta(key, value or "")
+                value = json.loads(entry.after_json) if entry.after_json else None
+                if value is None:
+                    self._store.delete_meta(key)
+                else:
+                    self._store.set_meta(key, value)
                 continue
             if entry.action_type == "plan":
                 if entry.after_json:
@@ -1537,9 +1484,7 @@ class MessageService:
         if q.kind == "plan_status":
             return self._answer_plan_status()
         if q.kind == "outlook":
-            return self._answer_outlook(
-                q.constraint or "what will fit this week?", q.date
-            )
+            return self._answer_outlook(q, q.date)
         if q.kind == "done":  # already-finished items (closed, so no positions)
             items = self._store.done_since(q.date or today)
             if not items:
@@ -1549,19 +1494,7 @@ class MessageService:
         ordered = ordered_open(open_items, today)
         pos = {i.id: n for n, i in enumerate(ordered, start=1)}
         if q.kind == "plan":
-            short = (q.constraint or "").strip().lower()
-            if (
-                self._store.active_plan(today) is not None
-                and re.fullmatch(
-                    r"(?:what(?:'s| is) next|what should i do next|"
-                    r"what am i doing(?: now)?|current plan)[?!.]?",
-                    short,
-                )
-            ):
-                return self._answer_plan_status()
-            return self._answer_plan(
-                q.constraint or "plan my day", open_items, q.date or today
-            )
+            return self._answer_plan(q, open_items, q.date or today)
         if q.kind == "all":
             items, title = ordered, "all open:"
         elif q.kind == "overdue":
@@ -1680,9 +1613,12 @@ class MessageService:
         return "\n".join(lines)
 
     def _answer_outlook(
-        self, constraint: str, requested_end: str | None = None
+        self, query: QueryIntent | str, requested_end: str | None = None
     ) -> str:
         """Render a read-only seven-day capacity simulation."""
+        q = query if isinstance(query, QueryIntent) else QueryIntent(
+            kind="outlook", constraint=query
+        )
         now = self._clock.now()
         horizon_days = 7
         if requested_end:
@@ -1706,7 +1642,7 @@ class MessageService:
             if run is not None:
                 adopted.extend(self._store.plan_sessions(run.id))
         open_items = self._store.open_items()
-        preferences = self._planning_preferences(constraint)
+        preferences = self._planning_preferences(q)
         forecast = build_week_forecast(
             open_items,
             snapshots,
@@ -1906,7 +1842,7 @@ class MessageService:
             log.warning("calendar snapshot unavailable: %s", exc)
             return CalendarSnapshot("unavailable", detail=str(exc))
 
-    def _planning_preferences(self, constraint: str):
+    def _planning_preferences(self, query: QueryIntent):
         work_range = self._store.get_meta(WORK_HOURS_KEY) or (
             f"{self._work_start}-{self._work_end}"
         )
@@ -1930,11 +1866,15 @@ class MessageService:
             for start, end in [window.split("-", 1)]
         )
         return parse_plan_preferences(
-            constraint,
             work_start=work_start,
             work_end=work_end,
             work_days=work_days,
             breaks=breaks,
+            budget_minutes=query.budget_minutes,
+            budget_scope=query.budget_scope,
+            earliest_time=query.earliest_time,
+            latest_time=query.latest_time,
+            energy=query.energy,
             default_duration_minutes=self._minutes_setting(
                 DEFAULT_DURATION_KEY,
                 self._default_duration_minutes,
@@ -1950,13 +1890,14 @@ class MessageService:
         )
 
     def _answer_plan(
-        self, constraint: str, open_items: list[Item], target_iso: str
+        self, query: QueryIntent, open_items: list[Item], target_iso: str
     ) -> str:
         """Build a read-only timeline; the model can explain but cannot schedule."""
+        constraint = query.constraint or "plan my day"
         now = self._clock.now()
         target = date.fromisoformat(target_iso)
         snapshot = self._calendar_snapshot(target)
-        preferences = self._planning_preferences(constraint)
+        preferences = self._planning_preferences(query)
         previous = None
         active = self._store.active_plan(target_iso)
         if active is not None:
@@ -2355,9 +2296,12 @@ class DigestService:
         )
         if release_notice:
             text += (
-                f"\n\nnew in hob {__version__}: evening recaps now accept "
-                '"nothing got done", "none", or "no progress" and confirm '
-                "that every listed item stays open. "
+                f"\n\nnew in hob {__version__}: answer recaps, stale-task "
+                "questions, confirmations, and setup in your own words. the "
+                "local model now owns those meanings plus planning constraints "
+                "and corrections; deterministic checks still confine every "
+                "effect to the verified task, prompt, or displayed list. "
+                "there are no hidden command-phrase shortcuts. "
                 "this note appears once."
             )
         digest = Digest(
@@ -2434,8 +2378,8 @@ class EODService:
                 f"{n}: {i.task}" for n, i in enumerate(on_deck, start=1)
             )
             text = (
-                "evening. what got done today? tell me and i'll check them off. "
-                'if the answer is none, say "nothing got done".\n'
+                "evening. what got done today? tell me naturally and i'll check "
+                "it off. if nothing did, say that however you like.\n"
                 + lines
             )
             displayed = on_deck
@@ -2492,8 +2436,9 @@ class EODService:
                 displayed.extend(extra)
             if open_sessions or extra or missing_sessions:
                 lines.append(
-                    "what actually got done? tell me, or say \"nothing got done\". "
-                    "elapsed sessions are not marked complete on their own."
+                    "what actually got done? tell me naturally, including if "
+                    "nothing did. elapsed sessions are not marked complete on "
+                    "their own."
                 )
             else:
                 lines.append("everything in the adopted plan is explicitly done.")
