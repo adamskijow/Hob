@@ -280,7 +280,14 @@ class Setting:
     """Change a preference in plain language ("send the digest at 7")."""
 
     key: str  # wake_time
-    raw: str  # the value words; the core parses and validates them
+    raw: str  # literal value words echoed from the user's message
+    time: str | None = None
+    start_time: str | None = None
+    end_time: str | None = None
+    days: list[str] = field(default_factory=list)
+    minutes: int | None = None
+    clear: bool = False  # explicitly remove/reset the bounded setting
+    confidence: float = 1.0
 
 
 @dataclass
@@ -345,6 +352,12 @@ class Query:
     term: str | None = None  # free-text search keywords, for kind=search
     tag: str | None = None  # project / list name, for kind=tag
     constraint: str | None = None  # time/energy/context for a planning request
+    budget_minutes: int | None = None
+    budget_scope: str | None = None  # day | horizon
+    energy: str | None = None  # low | normal | high
+    earliest_time: str | None = None  # HH:MM
+    latest_time: str | None = None  # HH:MM
+    period: str | None = None  # today | week, for completed-history queries
 
 
 @dataclass
@@ -373,6 +386,30 @@ class Recap:
     """A semantic outcome reported against a recent evening recap."""
 
     outcome: str  # none; future outcomes require their own core contract
+    confidence: float = 1.0
+
+
+@dataclass
+class NudgeDecision:
+    """A semantic answer to the active machine-owned digest nudge."""
+
+    decision: str  # keep | tomorrow | drop | resume
+    confidence: float = 1.0
+
+
+@dataclass
+class ConfirmationDecision:
+    """A pure approval or rejection of the currently held risky action."""
+
+    decision: str  # approve | reject
+    confidence: float = 1.0
+
+
+@dataclass
+class OnboardingDecision:
+    """A semantic setup-control answer while onboarding is active."""
+
+    decision: str  # skip | cancel
     confidence: float = 1.0
 
 
@@ -425,3 +462,10 @@ class InterpreterContext:
     # Most recent still-undoable mutation batch. Literal retractions only use
     # it while fresh, so a social "nevermind" cannot undo an old change.
     last_change_at: str | None = None
+    # One current stale-task/waiting prompt. The model interprets the user's
+    # words; the core owns this target and the allowed decisions.
+    nudge: dict | None = None
+    # A risky mutation batch is held for an explicit semantic approval/rejection.
+    confirmation_pending: bool = False
+    # Current setup step, if any. Natural skip/cancel language is model-owned.
+    onboarding_stage: str | None = None

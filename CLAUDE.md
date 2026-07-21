@@ -24,7 +24,7 @@ long-lived daemon on macOS and is live: it has been running and used daily.
 - **No `Co-Authored-By: Claude` trailer** on commits. The user wants sole
   authorship; the whole history was rewritten once to remove it.
 - **Ask before adding a dependency** beyond the named set: python-telegram-bot,
-  dateparser, ollama, pytest (plus tzdata under a `win32` marker).
+  ollama, pytest (plus tzdata under a `win32` marker).
 
 ## The doctrine: model proposes, core disposes
 
@@ -35,37 +35,34 @@ component. The split that makes it reliable:
   into structured actions at `temperature=0`. Dates are emitted as a typed
   intent (`core.models.When`: `tomorrow`, `weekday`, `offset`, `month`,
   `ambiguous`, ...), NOT a computed date. `core/dates.resolve_intent` does the
-  calendar math, exactly and testably. (This replaced an older dateparser-parses-
-  the-phrase design; dateparser now only backs `leading_date` detection.)
+  calendar math, exactly and testably. Raw-text date parsing was removed so the
+  core cannot silently replace the model's semantic date classification.
 - **Fuzzy language never silently mutates state.** Ambiguity asks; an unresolved
   reference or low confidence asks; sweeping deletes and far-future dates are
   held for a yes/no. The action log plus `/undo` backs everything applied.
 
-**When the model fumbles a plain-text detail, fix it deterministically in the
-core, not by tuning the prompt.** Prompt tuning for correctness is whack-a-mole
-here (it repeatedly flipped unrelated eval cases). The established backstops,
-each keyed on the literal message and each with tests + an eval case:
+**Every free-form message is model-owned.** Do not add an English phrase list,
+prefix matcher, keyword router, or raw-text repair that synthesizes semantic
+intent. A rules-only shortcut is both brittle and contrary to Hob's product
+value. The interpreter uses typed structured output plus small focused semantic
+audits for contextual decisions, capture/plan/undo disagreements, settings,
+schedule metadata, recaps, and bulk scope/exclusions.
 
-- `dates.named_day_correction` / `weekday_correction`: a day word in the message
-  ("monday", "tomorrow") wins over a misclassified intent.
-- `planner._resolve_ref`: tolerates the forms the model emits for a target (id,
-  position, ordinal word, "id:"/"#" prefix, the whole "id: label" line, a
-  trailing position like "url_not_provided_2").
-- `planner._clean_label`: strips unambiguous trailing date/time words from a
-  captured label ("update gdp tomorrow night" -> "update gdp").
-- `planner._is_typo_correction`: a short message ending in `*` is a texting
-  typo-fix, acked not nagged.
-- `planner._fix_everything_but`: "did everything but X" spares X.
-- `planner._share_past_completion_scope`: "I did A and hit B" keeps the opening
-  completion tense across coordinated tasks, unless future, partial-progress,
-  or imperative wording explicitly breaks that scope.
-- `planner._apply_reference_guards`: verifies the target against the literal
-  words. A negated clause ("did the slides but *not* the taxes") suppresses any
-  complete/drop/wait/note on that item, and drops a capture that just re-states
-  it; a terse Unknown whose words fuzzy-match an item ("finished the fabel
-  thing") is confirmed ("did you mean ...?"), never silently dropped.
-- conversational focus + reply-to anchoring (`_load_focus`, `_replied_item`):
-  bare follow-ups ("make it 4pm") resolve against recent items.
+The core may reconcile only machine-owned facts and invariants:
+
+- resolve typed date intent with deterministic calendar math;
+- map model-proposed ids, positions, and ordinals to exact active items;
+- verify reply, focus, digest, recap, nudge, confirmation, and onboarding
+  provenance before using that conversational context;
+- validate literal grounding for setting values, numeric bounds, confidence,
+  destructive scope, target existence, and exclusion membership;
+- hold ambiguity and high-impact changes for explicit confirmation;
+- apply mutations atomically and record them for undo.
+
+Slash commands, callbacks, reactions, message ids, and ordinals are closed
+machine protocols and may remain deterministic. Conversational focus and
+reply-to anchoring (`_load_focus`, `_replied_item`) supply context to the model;
+they do not authorize an unverified target.
 
 **The exception: tone is the model's job.** Chitchat replies are generated, so
 warmth belongs in the prompt, and variety comes from a second, hotter pass:
@@ -83,11 +80,11 @@ Reuse this "cold decide, hot deliver" pattern for other voice, never for facts.
    screenshots and were reproduced this way.
 2. **Implement**, keeping the core pure and the fix deterministic where it is
    about correctness.
-3. **`uv run pytest`** (currently 319 passing). Add a unit test for any new core
+3. **`uv run pytest`** (currently 417 passing). Add a unit test for any new core
    behavior.
 4. **Run the eval** against the real model and add a case for the new behavior:
    `HOB_MODEL=qwen2.5:14b-instruct uv run python -m evals.interpreter_eval`
-   (currently 69/69). The eval is the real-model regression net; keep it green.
+   (currently 102/102). The eval is the real-model regression net; keep it green.
 5. **Deploy** by restarting the daemon (see Ops). Confirm the fix live.
 
 ## Ops (this is a live daemon)

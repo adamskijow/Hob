@@ -28,8 +28,9 @@ A fresh private `/start` pairs the owner and begins five short setup steps:
 planning hours, planning days, protected daily time, the estimate for tasks
 without a duration, and transition minutes between commitments. Setup state and
 its pending question are transactional local metadata, so the flow resumes after
-a restart. Every step can be skipped, the whole flow can be paused, and `/setup`
-resumes it later.
+a restart. Every step can be kept as-is in natural language, the whole flow can
+be paused in natural language, and `/setup` resumes it later. There is no setup
+control phrase to memorize.
 `/settings` shows setup progress, Calendar readiness, every resulting value, and
 whether the first plan has actually been adopted.
 
@@ -58,6 +59,8 @@ slides", "clear my whole list", "drop all of friday"). Past-tense completion
 also scopes across named tasks: "I did home insurance and called the bank"
 closes both. An explicit tense change remains literal: "I did home insurance
 and will call the bank" closes only the first task and keeps the second open.
+These scopes and tense relationships are model-owned typed intent; the core
+validates ids and scope without reinterpreting the sentence through keywords.
 
 ## Reminders
 
@@ -90,9 +93,9 @@ There is no fixed command phrase. A zero-result report changes nothing and
 confirms that the displayed items stay open. A task that keeps
 rolling over is marked in the digest ("day 4") with a gentle question about
 whether it is still real, so the list does not silently rot. Undated tasks age
-too. When the digest asks, send `keep`, `tomorrow`, or `drop` as an ordinary
-message, or use Telegram's reply gesture if you prefer. A stale waiting prompt
-similarly accepts plain `back on`. The same-day prompt is single-use, and a
+too. When the digest asks, answer naturally whether the task stays, moves, or
+gets dropped. A stale waiting prompt likewise understands that the blocker
+cleared. The same-day prompt is single-use, and a
 newer task conversation takes precedence over destructive terse choices. A keep
 decision resets the nudge clock without moving the task.
 

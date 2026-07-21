@@ -42,6 +42,13 @@ The evening loop accepts quiet days too. Answer naturally, from `nada` to
 while the core guarantees that a zero-result report leaves every displayed
 item open. There is no command phrase to memorize.
 
+That same rule applies across the conversation: stale-task decisions,
+confirmations, onboarding answers, retractions, bulk scope, and planning
+constraints are interpreted by the local model as typed intent. Deterministic
+code verifies the active prompt, exact task ids, allowed effects, dates, and
+arithmetic; it does not turn free text into a different action through a hidden
+keyword table.
+
 Unlike a command parser, Hob can also answer "what should I do next?" or "I
 have 40 minutes and low energy" with a short plan grounded in the actual task
 list. Semantic recall finds related work across labels, notes, projects, and

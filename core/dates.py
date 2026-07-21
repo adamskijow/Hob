@@ -1,30 +1,19 @@
 # SPDX-License-Identifier: MIT
-"""Date resolution from a typed intent, plus leading-date detection and time
-parsing. Pure, no I/O.
+"""Date resolution from a typed intent plus clock-time parsing. Pure, no I/O.
 
 The model classifies a date phrase into a typed intent (core.models.When); this
 module does the calendar arithmetic exactly, seeded with today. The division of
 labor is deliberate: the model is good at understanding which day a phrase means
 and bad at computing the date; the core is the reverse. So the model never emits
 a computed date, and we never guess a phrase's meaning.
-
-leading_date detects a date at the START of a multi-task message ("Tomorrow I
-need to A, B, C") so the planner can share it; parse_time reads a clock time.
 """
 from __future__ import annotations
 
 import calendar
 import re
-import warnings
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, timedelta
 
-# dateparser emits a pytz-related warning on some platforms; quiet it.
-warnings.filterwarnings("ignore", module="dateparser")
-
-from dateparser.search import search_dates  # noqa: E402
-
-_MIDNIGHT = time(0, 0)
 _DOW = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
 
@@ -126,81 +115,6 @@ def _resolve_kind(when, today: date) -> date | None:
     return None  # unknown kind: treat as no date
 
 
-_WEEKDAY_WORDS = {
-    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
-    "friday": 4, "saturday": 5, "sunday": 6,
-}
-
-
-def named_day_correction(message: str, resolved_iso: str | None, today: date) -> str | None:
-    """Backstop for simple day words the model sometimes drops or misfiles:
-    'tomorrow' / 'yesterday' / 'today' / a weekday named in the message wins
-    over a mismatched (or missing) resolved date. Skips messages naming more
-    than one day (those are genuinely multi-part). None = nothing to correct."""
-    low = message.lower()
-    candidates = []
-    if "day after tomorrow" in low:
-        candidates.append(today + timedelta(days=2))
-    elif re.search(r"\btomorrow\b", low):
-        candidates.append(today + timedelta(days=1))
-    if re.search(r"\byesterday\b", low):
-        candidates.append(today - timedelta(days=1))
-    if re.search(r"\b(today|tonight)\b", low):
-        candidates.append(today)
-    if len(candidates) > 1:
-        return None
-    if candidates:
-        words = re.findall(r"[a-z]+", low)
-        if any(w in _WEEKDAY_WORDS for w in words):
-            return None  # "tomorrow or monday": ambiguous, do not pick
-        iso = candidates[0].isoformat()
-        return None if resolved_iso == iso else iso
-    return weekday_correction(message, resolved_iso, today)
-
-
-def weekday_correction(message: str, resolved_iso: str | None, today: date) -> str | None:
-    """A deterministic backstop for a misclassified weekday: if the message
-    names exactly one weekday and the resolved date does not fall on it (or
-    there is no date at all), return the next occurrence of the named day.
-    Weekday words are unambiguous; the model saying "monday" is "tomorrow" on a
-    Thursday is a hallucination the core can catch. None = nothing to correct."""
-    words = re.findall(r"[a-z]+", message.lower())
-    named = {_WEEKDAY_WORDS[w] for w in words if w in _WEEKDAY_WORDS}
-    if len(named) != 1:
-        return None  # none, or several (ambiguity handled elsewhere)
-    wd = named.pop()
-    if resolved_iso is not None and date.fromisoformat(resolved_iso).weekday() == wd:
-        return None
-    return (today + timedelta(days=((wd - today.weekday()) % 7) or 7)).isoformat()
-
-
-_DEADLINE_PHRASE = re.compile(
-    r"\b(?:due(?:\s+by)?|deadline(?:\s+is|\s+of)?|by|before|no later than)\s+"
-    r"(?P<tail>[^,;.]+)",
-    re.IGNORECASE,
-)
-
-
-def deadline_in_text(text: str, today: date) -> str | None:
-    """Resolve a literal deadline clause even when the message names a do date too.
-
-    This is a narrow deterministic backstop for shapes like "work Friday; due
-    Monday". The model identifies semantics, while dateparser only extracts the
-    date from the words following an explicit deadline cue.
-    """
-    match = _DEADLINE_PHRASE.search(text)
-    if not match:
-        return None
-    tail = match.group("tail").lower()
-    if "end of the month" in tail or "end of month" in tail:
-        return _last_of_month(today).isoformat()
-    matches = search_dates(
-        match.group("tail"), languages=["en"], settings=_settings(today)
-    ) or []
-    candidates = [value.date() for _, value in matches if value.date() >= today]
-    return candidates[0].isoformat() if candidates else None
-
-
 # --- time parsing ------------------------------------------------------------
 
 _TIME_RE = re.compile(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.IGNORECASE)
@@ -223,43 +137,3 @@ def parse_time(text: str | None) -> str | None:
     if not (0 <= hour <= 23 and 0 <= minute <= 59):
         return None
     return f"{hour:02d}:{minute:02d}"
-
-
-# --- leading-date detection for multi-task messages --------------------------
-
-# Words that may precede a leading date without making it task-specific.
-_DATE_PREFIXES = {
-    "on", "by", "for", "this", "next", "the", "come", "starting", "around",
-    "about", "early", "late", "mid", "middle", "of", "end", "beginning",
-}
-
-
-def _settings(today: date) -> dict:
-    return {
-        "PREFER_DATES_FROM": "future",
-        "RELATIVE_BASE": datetime.combine(today, _MIDNIGHT),
-        "RETURN_AS_TIMEZONE_AWARE": False,
-        "STRICT_PARSING": False,
-    }
-
-
-def leading_date(text: str, today: date) -> str | None:
-    """ISO date of a single date phrase at the START of text, else None. Lets a
-    leading date be shared across a multi-task message ("Tomorrow I need to A, B,
-    C") without misattributing a trailing one ("call A and email B tomorrow").
-    Detection only: the shared date itself is taken from the first task's intent.
-    """
-    matches = search_dates(text, languages=["en"], settings=_settings(today)) or []
-    floor = today - timedelta(days=366)  # ignore far-past misparses ("1130")
-    matches = [(s, dt) for s, dt in matches if dt.date() >= floor]
-    if not matches or len({dt.date() for _, dt in matches}) != 1:
-        return None
-    low = text.lower()
-    earliest = min(matches, key=lambda m: low.find(m[0].lower()))
-    idx = low.find(earliest[0].lower())
-    if idx < 0:
-        return None
-    prefix = low[:idx].replace(",", " ").split()
-    if all(w in _DATE_PREFIXES for w in prefix):
-        return earliest[1].date().isoformat()
-    return None

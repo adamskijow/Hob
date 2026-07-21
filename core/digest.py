@@ -166,7 +166,7 @@ def render_digest(
             return "morning. nothing on deck today."
         lines = ["morning. nothing on deck today."]
         lines += [f'still waiting: "{i.task}" ({n}d).' for i, n in stale_waits]
-        lines.append("send 'back on' if the oldest wait has cleared.")
+        lines.append("tell me naturally if the oldest wait has cleared.")
         return "\n".join(lines)
     lines = ["morning. here is today:"]
     for n, item in enumerate(ordered, start=1):
@@ -185,9 +185,9 @@ def render_digest(
     if worst >= STALE_DAYS:
         lines.append(
             f'"{stale.task}" has been on deck {worst + 1} days. '
-            "send keep, tomorrow, or drop to decide it."
+            "tell me naturally whether it stays, moves, or gets dropped."
         )
     lines += [f'still waiting: "{i.task}" ({n}d).' for i, n in stale_waits]
     if worst < STALE_DAYS and stale_waits:
-        lines.append("send 'back on' if the oldest wait has cleared.")
+        lines.append("tell me naturally if the oldest wait has cleared.")
     return "\n".join(lines)

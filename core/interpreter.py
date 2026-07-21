@@ -13,6 +13,7 @@ it also resolves all calendar dates itself.
 from __future__ import annotations
 
 from datetime import date
+import json
 
 from core.models import (
     Amend,
@@ -20,9 +21,12 @@ from core.models import (
     Capture,
     Chitchat,
     Complete,
+    ConfirmationDecision,
     Drop,
     InterpreterContext,
+    NudgeDecision,
     Note,
+    OnboardingDecision,
     PlanAction,
     Prioritize,
     Query,
@@ -145,7 +149,9 @@ ACTION_SCHEMA = {
                             "wake_time", "eod_time", "work_hours", "break_window",
                             "work_days", "default_duration", "transition_buffer"
                         ]},
-                         "raw": _STR},
+                         "raw": _STR, "time": _STR, "start_time": _STR,
+                         "end_time": _STR, "days": _STRS, "minutes": _NUM,
+                         "clear": _BOOL, "confidence": _NUM},
                         ["type", "key", "raw"],
                     ),
                     _variant(
@@ -193,7 +199,10 @@ ACTION_SCHEMA = {
                             "done", "tag", "waiting", "plan", "plan_status",
                             "outlook"]},
                          "when": _WHEN, "term": _STR, "tag": _STR,
-                         "constraint": _STR},
+                         "constraint": _STR, "budget_minutes": _NUM,
+                         "budget_scope": _STR, "energy": _STR,
+                         "earliest_time": _STR, "latest_time": _STR,
+                         "period": _STR},
                         ["type", "kind"],
                     ),
                     _variant(
@@ -218,6 +227,27 @@ ACTION_SCHEMA = {
                             "confidence": _NUM,
                         },
                         ["type", "outcome"],
+                    ),
+                    _variant(
+                        "nudge_decision",
+                        {"decision": {"type": "string", "enum": [
+                            "keep", "tomorrow", "drop", "resume"
+                        ]}, "confidence": _NUM},
+                        ["type", "decision"],
+                    ),
+                    _variant(
+                        "confirmation_decision",
+                        {"decision": {"type": "string", "enum": [
+                            "approve", "reject"
+                        ]}, "confidence": _NUM},
+                        ["type", "decision"],
+                    ),
+                    _variant(
+                        "onboarding_decision",
+                        {"decision": {"type": "string", "enum": [
+                            "skip", "cancel"
+                        ]}, "confidence": _NUM},
+                        ["type", "decision"],
                     ),
                     _variant("undo", {}, ["type"]),
                     _variant("chitchat", {"reply": _STR}, ["type"]),
@@ -244,6 +274,147 @@ RECAP_OUTCOME_SCHEMA = {
     "required": ["outcome", "confidence"],
 }
 
+CONTEXT_DECISION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "outcome": {
+            "type": "string",
+            "enum": [
+                "keep", "tomorrow", "drop", "resume",
+                "approve", "reject", "skip", "cancel", "other",
+            ],
+        },
+        "confidence": {"type": "number"},
+    },
+    "required": ["outcome", "confidence"],
+}
+
+BULK_SCOPE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "scope": {
+            "type": "string",
+            "enum": ["all", "today", "date", "presented", "unclear"],
+        },
+        "when": _WHEN,
+        "exclude": _STRS,
+        "confidence": {"type": "number"},
+    },
+    "required": ["scope", "when", "exclude", "confidence"],
+}
+
+CAPTURE_AUDIT_SCHEMA = {
+    "oneOf": [
+        _variant(
+            "capture",
+            {
+                "task": _STR, "raw": _STR, "when": _WHEN, "time": _STR,
+                "relate": _STR, "repeat": _STR, "priority": _LEVEL,
+                "tag": _STR, "waiting": _BOOL, "note": _STR,
+                "deadline": _WHEN, "duration_minutes": _NUM,
+                "duration_confidence": _NUM, "schedule_kind": _STR,
+                "splittable": _BOOL, "earliest": _WHEN,
+                "earliest_time": _STR, "preferred_window": _STR,
+                "parent": _STR, "depends_on": _STRS,
+                "reminder_offsets": _NUMS, "repeat_anchor": _STR,
+                "repeat_end": _WHEN, "repeat_count": _NUM,
+                "confidence": {"type": "number"},
+            },
+            [
+                "type", "task", "raw", "when", "time", "repeat",
+                "priority", "deadline", "duration_minutes", "splittable",
+                "repeat_anchor", "repeat_end", "repeat_count", "confidence",
+            ],
+        ),
+        _variant(
+            "plan",
+            {
+                "when": _WHEN, "budget_minutes": _NUM,
+                "budget_scope": _STR, "energy": _STR,
+                "earliest_time": _STR, "latest_time": _STR,
+                "confidence": {"type": "number"},
+            },
+            ["type", "when", "confidence"],
+        ),
+        _variant(
+            "outlook",
+            {
+                "when": _WHEN, "budget_minutes": _NUM,
+                "budget_scope": _STR, "energy": _STR,
+                "earliest_time": _STR, "latest_time": _STR,
+                "confidence": {"type": "number"},
+            },
+            ["type", "when", "confidence"],
+        ),
+        _variant(
+            "plan_action",
+            {
+                "op": {"type": "string", "enum": ["adopt", "replace", "cancel"]},
+                "confidence": {"type": "number"},
+            },
+            ["type", "op", "confidence"],
+        ),
+        _variant(
+            "undo", {"confidence": {"type": "number"}},
+            ["type", "confidence"],
+        ),
+        _variant(
+            "other", {"confidence": {"type": "number"}},
+            ["type", "confidence"],
+        ),
+    ]
+}
+
+SETTING_AUDIT_SCHEMA = _variant(
+    "setting",
+    {
+        "key": {"type": "string", "enum": [
+            "wake_time", "eod_time", "work_hours", "break_window",
+            "work_days", "default_duration", "transition_buffer",
+        ]},
+        "raw": _STR, "time": _STR, "start_time": _STR, "end_time": _STR,
+        "days": _STRS, "minutes": _NUM, "clear": _BOOL,
+        "confidence": {"type": "number"},
+    },
+    [
+        "type", "key", "raw", "time", "start_time", "end_time", "days",
+        "minutes", "clear", "confidence",
+    ],
+)
+
+ROUTE_TIEBREAK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "outcome": {"type": "string", "enum": [
+            "capture", "plan", "outlook", "plan_action", "undo", "other",
+        ]},
+        "confidence": {"type": "number"},
+    },
+    "required": ["outcome", "confidence"],
+}
+
+SCHEDULE_AUDIT_SCHEMA = {
+    "oneOf": [
+        _variant(
+            "schedule",
+            {
+                "target": _STR, "deadline": _WHEN,
+                "duration_minutes": _NUM, "duration_confidence": _NUM,
+                "schedule_kind": _STR, "splittable": _BOOL,
+                "earliest": _WHEN, "earliest_time": _STR,
+                "preferred_window": _STR, "depends_on": _STRS,
+                "reminder_offsets": _NUMS, "clear": _STRS,
+                "confidence": {"type": "number"},
+            },
+            ["type", "target", "confidence"],
+        ),
+        _variant(
+            "other", {"confidence": {"type": "number"}},
+            ["type", "confidence"],
+        ),
+    ]
+}
+
 _PROMPT = """\
 You convert a personal assistant's inbound text message into a JSON list of \
 actions. Be literal. You classify any date into a typed intent (see DATES); a \
@@ -257,7 +428,7 @@ Context:
 {active}
 - This morning's digest, in order (for position references):
 {digest}
-{presented}{pending}{focus}{forwarded}
+{presented}{nudge}{confirmation}{onboarding}{pending}{focus}{forwarded}
 The user's message:
 {message}
 
@@ -325,7 +496,11 @@ the bounds Hob may plan inside; "break_window" = protected daily break; \
 "work_days" = weekdays on which Hob may plan flexible work; \
 "default_duration" = the estimate for tasks with no stated duration; \
 "transition_buffer" = open minutes kept between commitments), raw \
-(the literal time words). Use for "send the digest at 8", "plan work from 9 \
+(an exact literal substring copied from the user's message), confidence, and \
+the typed value fields: time for wake/eod; start_time and end_time for ranges; \
+days as mon..sun codes for work_days; minutes for durations; clear true only \
+when the user explicitly removes a break or buffer. Never invent or normalize \
+raw. Use for "send the digest at 8", "plan work from 9 \
 to 5", "protect lunch from noon to 1", "assume tasks take 45 minutes", \
 "leave 10 minutes between things", "plan work Monday through Friday", \
 or "remove my lunch break".
@@ -359,7 +534,7 @@ name). kind is one of: "today", "date" (a specific day; also set when), "all", \
 "overdue" (past due), "week" (next 7 days), "search" (free text about a topic; \
 set term, e.g. "anything about the pool guy" -> term "pool guy"), "done" (things \
 ALREADY finished / completed / got done / knocked out; "what did I finish today" \
--> done; set when if a day is named), "tag" (what is in a project/list; "what's \
+-> done; set period "today" or "week", and set when if a day is named), "tag" (what is in a project/list; "what's \
 left for the wedding" -> kind tag, tag "wedding"), "waiting" (what is parked on \
 other people; "what am i waiting on"), "plan" (the user wants help choosing or \
 replanning what to do: "plan my day", "what should I do next", "I have 40 \
@@ -367,9 +542,12 @@ minutes and low energy"), "plan_status" (report the plan already adopted: \
 "what is on my plan", "what am I doing now", "what is next on the plan"), \
 "outlook" (read-only seven-day capacity and deadline fit: "am I overloaded \
 this week", "what will not fit", "can I finish everything by Friday"). \
-For plan, set when when a day is named and set constraint to the user's relevant \
-time, energy, location, exclusions, or other planning words; otherwise null. \
-For outlook, put any what-if capacity words in constraint.
+For plan and outlook, copy the relevant prose into constraint and classify its \
+meaning into typed fields: budget_minutes; budget_scope "day" or "horizon"; \
+energy "low", "normal", or "high"; earliest_time and latest_time as HH:MM. \
+Understand ordinary paraphrases: "I'm wiped" or "no gas left" means low energy; \
+"the first half of the day is shot" means earliest_time 12:00. Do not require \
+stock phrases. Leave a typed field null when the user did not imply it.
 - bulk: act on MANY items at once with ONE action; never list them individually. \
 Fields: type "bulk", op ("complete", "drop", or "reschedule"), scope, when (op \
 reschedule only: a date intent for the destination), except (ids to LEAVE OUT \
@@ -381,6 +559,8 @@ tomorrow"). Pick scope:
   - "all": every open item. Use for "everything", "my whole list", "delete it all".
   - "today": only items on deck today. Use for "everything today", "today's stuff".
   - "date": one specific named day. Use for "all of friday", "monday's tasks".
+  - "presented": only the exact most recently presented proactive list. Use for \
+"everything on that list" or numbered exclusions referring to that displayed list.
 - snooze: put off an item's reminder ping without moving the task. Fields: type \
 "snooze", target (item id), minutes ("snooze 20" -> 20, "snooze an hour" -> 60, \
 bare "snooze"/"not now" -> 10), confidence. Use when the user reacts to a \
@@ -396,8 +576,23 @@ recap for a morning digest, forwarded content, a setup answer, or an unanchored 
 message. If the user names completed work or gives task-specific progress, emit \
 complete or note actions instead. Never combine recap outcome none with another \
 action.
+- nudge_decision: the user is semantically answering the active morning digest \
+nudge shown in Context. Fields: type "nudge_decision", decision, confidence. For \
+a stale task, decision is "keep", "tomorrow", or "drop"; for a waiting item it \
+is "resume". Understand natural paraphrases such as "it needs to stay on", \
+"leave that one there", "punt it a day", or "that blocker cleared". Use only \
+for the exact active nudge and never combine it with another action.
+- confirmation_decision: Context says a risky action is held. Use decision \
+"approve" or "reject" only for a pure semantic answer to that confirmation. \
+"yes, but exclude 2" is NOT pure approval: interpret the revised instruction \
+instead. Never infer approval from a word prefix.
+- onboarding_decision: while Context names an active setup step, use decision \
+"skip" when the user means keep the current value and move on, or "cancel" when \
+they mean pause setup. Understand natural wording such as "this is fine", "leave \
+it as is", or "let's do this later". Do not use outside setup.
 - undo: the user wants to reverse their last change ("scratch that", "undo \
-that"). Fields: type "undo".
+that", "forget that", "belay that"). Fields: type "undo". Interpret meaning; \
+there is no fixed retraction vocabulary.
 - chitchat: a social remark to hob with NO task - a greeting, thanks, an \
 acknowledgment, a compliment, a bit of affection, or light small talk ("thanks \
 bud", "good morning", "nice", "lol", "you're the best", "hob I love you", "good \
@@ -439,10 +634,55 @@ repeat: if the task recurs, set repeat to one of: "daily", "weekdays", \
 repeat; leave repeat null and set when instead.
 
 Choosing the action:
+- HIGH-PRIORITY CONTRASTS. Return the exact typed fields shown by these
+patterns; do not rely on another program to recover missing meaning:
+  - "did the prez one" with a matching open item -> complete using that exact
+    item's id, never its label or the words "prez one" as target.
+  - "plan tomorrow" -> query kind plan, when tomorrow. "what is on my plan?"
+    -> query kind plan_status. "What about tomorrow" -> query kind date, when
+    tomorrow. A question about a plan is never a task capture.
+  - "I have 40 minutes and low energy, what next?" -> query kind plan,
+    budget_minutes 40, budget_scope day, energy low. "I'm wiped" and "no gas
+    left" also set energy low. "first half of the day is shot" sets
+    earliest_time "12:00". Copy the message into constraint too.
+  - "meeting ran over; replan" -> query kind plan even when it replies to a
+    task reminder. It is not reschedule unless the user names a destination.
+  - "make it 4pm" with focus/reply -> reschedule that item with when none and
+    time "16:00". Without focus/reply and without naming an item, unknown; never
+    choose an arbitrary open item. Do not pad a time-only move with when today.
+  - "finish taxes by end of month" -> capture with when none and deadline
+    month/end. "draft report Friday; due Monday; three hours in two sessions"
+    -> ONE capture with when Friday, deadline Monday, duration_minutes 180, and
+    splittable true. "audit is due Friday and takes 90 minutes" -> ONE schedule
+    for the audit id with deadline Friday and duration_minutes 90.
+  - "remind me an hour and 10 minutes before the pool call" -> schedule the
+    pool id with reminder_offsets [60,10]; it is not a new reminder task.
+  - "check filters every 2 weeks after I finish, stop after 5 times" -> ONE
+    capture with repeat "every:2:week", repeat_anchor "completion", and
+    repeat_count 5; do not emit a recur edit for an unrelated existing item.
+  - "plan flexible work Monday through Friday" -> setting work_days, raw exact
+    substring "Monday through Friday", days ["mon","tue","wed","thu","fri"].
+    "protect lunch from noon to 1" -> setting break_window, raw "noon to 1",
+    start_time "12:00", end_time "13:00". "remove my lunch break" -> setting
+    break_window with a literal raw substring and clear true. "assume tasks take
+    45 minutes" -> setting default_duration, raw "45 minutes", minutes 45.
+  - A recent-change context plus "nevermind", "forget that", or "belay that"
+    means undo when it is a standalone retraction. Do not require one spelling.
+  - "finished it all except 1 and 6" -> ONE bulk complete whose except contains
+    the exact ids at displayed positions 1 and 6. "did A but not B" must never
+    mutate B and must not turn the negated clause into schedule/note/capture.
 - A recent evening recap is a question from Hob, not merely a list. Read a \
 short follow-up as an answer to that question unless it clearly starts a new \
 task, command, or question. When its semantic meaning is zero completed items, \
 use recap outcome none rather than chitchat or unknown.
+- Machine-owned nudge, confirmation, and onboarding context are questions, not \
+mere task words. Prefer their typed decision action only when the message \
+semantically answers that exact question. A new task or unrelated instruction \
+remains its ordinary action.
+- Coordinated past-tense completion scopes across coordinated clauses: "I did A \
+and hit B" means both A and B were completed unless the user signals future, \
+ongoing, or partial work. For "everything except X", emit one bulk action with \
+every excluded id in except; never emit completion of an excluded item.
 - If the user adds a detail to an existing item itself, use amend. If it is a \
 distinct new task that belongs with an existing event, use capture with relate.
 - A question about the user's tasks or schedule is a query, never an edit. A \
@@ -514,8 +754,47 @@ def _format_presented(items: list[dict], kind: str | None) -> str:
     label = "evening recap" if kind == "eod" else (kind or "proactive list")
     return (
         f"\nMost recently presented proactive list (kind: {label}). "
-        "Phrases such as 'that list' "
-        "refer only to these items:\n" + lines + "\n"
+        "References to that displayed list are confined to these items:\n"
+        + lines
+        + "\n"
+    )
+
+
+def _format_nudge(nudge: dict | None) -> str:
+    if not isinstance(nudge, dict):
+        return ""
+    item_id = nudge.get("item_id")
+    label = nudge.get("label")
+    kind = nudge.get("kind")
+    if not item_id or not label or kind not in {"stale_task", "waiting"}:
+        return ""
+    choices = "keep, tomorrow, or drop" if kind == "stale_task" else "resume"
+    return (
+        "\nActive morning digest nudge (machine-owned):\n"
+        f'- kind: {kind}; item: {item_id}: {label}; allowed decisions: {choices}.\n'
+        "A natural answer to this exact nudge uses nudge_decision. The user does "
+        "not need to repeat a command phrase.\n"
+    )
+
+
+def _format_confirmation(pending: bool) -> str:
+    if not pending:
+        return ""
+    return (
+        "\nPending risky-action confirmation (machine-owned): Hob is holding a "
+        "previous action. A pure approval or rejection uses "
+        "confirmation_decision. A revision, condition, new task, or unrelated "
+        "message is not approval.\n"
+    )
+
+
+def _format_onboarding(stage: str | None) -> str:
+    if not stage:
+        return ""
+    return (
+        f"\nActive onboarding step (machine-owned): {stage}. A natural request "
+        "to keep the current value and continue uses onboarding_decision skip; "
+        "a request to pause setup uses onboarding_decision cancel.\n"
     )
 
 
@@ -615,6 +894,9 @@ def build_prompt(ctx: InterpreterContext) -> str:
         active=_format_active(ctx.active_items),
         digest=_format_digest(ctx.last_digest),
         presented=_format_presented(ctx.presented_items, ctx.presented_kind),
+        nudge=_format_nudge(ctx.nudge),
+        confirmation=_format_confirmation(ctx.confirmation_pending),
+        onboarding=_format_onboarding(ctx.onboarding_stage),
         pending=_format_pending(ctx.pending),
         focus=_format_focus(ctx),
         forwarded=_format_forwarded(ctx),
@@ -774,7 +1056,17 @@ def _parse_one(action: object):
         key = _str(action.get("key"))
         raw = _str(action.get("raw"))
         return (
-            Setting(key=key, raw=raw)
+            Setting(
+                key=key,
+                raw=raw,
+                time=_str(action.get("time")),
+                start_time=_str(action.get("start_time")),
+                end_time=_str(action.get("end_time")),
+                days=_strings(action.get("days")),
+                minutes=_int(action.get("minutes")),
+                clear=bool(action.get("clear")),
+                confidence=conf,
+            )
             if key and raw
             else Unknown(note="setting without key or value")
         )
@@ -834,6 +1126,12 @@ def _parse_one(action: object):
             term=_str(action.get("term")),
             tag=_str(action.get("tag")),
             constraint=_str(action.get("constraint")),
+            budget_minutes=_int(action.get("budget_minutes")),
+            budget_scope=_str(action.get("budget_scope")),
+            energy=_str(action.get("energy")),
+            earliest_time=_str(action.get("earliest_time")),
+            latest_time=_str(action.get("latest_time")),
+            period=_str(action.get("period")),
         )
     if kind == "bulk":
         op = _str(action.get("op"))
@@ -857,6 +1155,27 @@ def _parse_one(action: object):
             Recap(outcome=outcome, confidence=conf)
             if outcome == "none"
             else Unknown(note="recap without a valid outcome")
+        )
+    if kind == "nudge_decision":
+        decision = _str(action.get("decision"))
+        return (
+            NudgeDecision(decision=decision, confidence=conf)
+            if decision in {"keep", "tomorrow", "drop", "resume"}
+            else Unknown(note="nudge decision without a valid outcome")
+        )
+    if kind == "confirmation_decision":
+        decision = _str(action.get("decision"))
+        return (
+            ConfirmationDecision(decision=decision, confidence=conf)
+            if decision in {"approve", "reject"}
+            else Unknown(note="confirmation decision without a valid outcome")
+        )
+    if kind == "onboarding_decision":
+        decision = _str(action.get("decision"))
+        return (
+            OnboardingDecision(decision=decision, confidence=conf)
+            if decision in {"skip", "cancel"}
+            else Unknown(note="onboarding decision without a valid outcome")
         )
     if kind == "undo":
         return Undo()
@@ -907,6 +1226,438 @@ a confidence from 0 to 1.
 """
 
 
+def _context_decision_prompt(ctx: InterpreterContext) -> str:
+    if ctx.nudge:
+        context = (
+            f"a morning digest asked about {ctx.nudge.get('item_id')}: "
+            f"{ctx.nudge.get('label')}. Its kind is {ctx.nudge.get('kind')}. "
+            "A stale-task answer may mean keep it on deck, defer it to tomorrow, "
+            "or drop it. A waiting-task answer may mean its blocker cleared."
+        )
+    elif ctx.confirmation_pending:
+        context = (
+            "the assistant is holding a risky action and asked whether to apply "
+            "or cancel it. Approval must be pure; a revision, exception, "
+            "condition, new task, or unrelated message is not approval."
+        )
+    else:
+        context = (
+            f"setup is asking for the {ctx.onboarding_stage} preference. The "
+            "user may keep the displayed value and continue, pause setup, give "
+            "a new value, or say something unrelated."
+        )
+    return f"""\
+Classify the user's message against this exact machine-owned conversational
+question:
+{context}
+
+User message:
+{ctx.message}
+
+Reason by meaning, including paraphrase, slang, idiom, humor, or another
+language. Return keep, tomorrow, drop, resume, approve, reject, skip, or cancel
+only when that is the semantic answer to this exact question. Return other for
+any new task, query, setting value, revised/conditional instruction, or
+unrelated message. Include confidence from 0 to 1.
+"""
+
+
+def _adjudicate_context(actions: list, ctx: InterpreterContext, llm: Llm) -> list:
+    if not (ctx.nudge or ctx.confirmation_pending or ctx.onboarding_stage):
+        return actions
+    try:
+        verdict = llm.complete_json(
+            _context_decision_prompt(ctx), CONTEXT_DECISION_SCHEMA
+        )
+    except Exception:
+        return actions
+    if not isinstance(verdict, dict):
+        return actions
+    outcome = verdict.get("outcome")
+    confidence = _float(verdict.get("confidence"), 0.0)
+    if outcome == "other":
+        return actions
+    if ctx.nudge and outcome in {"keep", "tomorrow", "drop", "resume"}:
+        return [NudgeDecision(decision=outcome, confidence=confidence)]
+    if ctx.confirmation_pending and outcome == "approve":
+        # Releasing a held mutation requires two independent model passes to
+        # agree on pure approval. A conditional revision commonly looks like
+        # assent in isolation, so one classifier can never release it alone.
+        if len(actions) == 1 and isinstance(actions[0], ConfirmationDecision):
+            if actions[0].decision == "approve":
+                return [ConfirmationDecision(decision=outcome, confidence=confidence)]
+        return actions
+    if ctx.confirmation_pending and outcome == "reject":
+        return [ConfirmationDecision(decision=outcome, confidence=confidence)]
+    if ctx.onboarding_stage and outcome in {"skip", "cancel"}:
+        return [OnboardingDecision(decision=outcome, confidence=confidence)]
+    return actions
+
+
+def _bulk_scope_prompt(ctx: InterpreterContext) -> str:
+    displayed = ctx.presented_items or ctx.last_digest
+    presented = "\n".join(
+        f"{position}. {item.get('id')}: {item.get('label')}"
+        for position, item in enumerate(displayed, start=1)
+    ) or "(none)"
+    active = "\n".join(
+        f"{position}. {item.get('id')}: {item.get('label')}"
+        for position, item in enumerate(ctx.active_items, start=1)
+    ) or "(none)"
+    return f"""\
+The user's message was interpreted as a bulk task action. Independently
+classify which set of tasks the user semantically selected and which exact
+task ids the user excluded:
+- all: every open task, regardless of date
+- today: work currently on deck today
+- date: tasks on one specifically named date
+- presented: only the exact recently displayed list below
+- unclear: no reliable bulk set
+
+Recently displayed list:
+{presented}
+
+All currently open tasks:
+{active}
+
+User message:
+{ctx.message}
+
+Use ordinary language understanding, not a stock phrase list. Resolve numbered
+exclusions against the displayed positions. Return exclude as an empty list
+when nothing was excluded. Never put an excluded task into the selected set.
+For a bulk reschedule, also classify the destination date words as a typed when
+intent; otherwise use kind none. Include confidence from 0 to 1.
+"""
+
+
+def _adjudicate_bulk_scope(actions: list, ctx: InterpreterContext, llm: Llm) -> list:
+    bulks = [action for action in actions if isinstance(action, Bulk)]
+    if not bulks:
+        return actions
+    try:
+        verdict = llm.complete_json(_bulk_scope_prompt(ctx), BULK_SCOPE_SCHEMA)
+    except Exception:
+        return actions
+    if not isinstance(verdict, dict):
+        return actions
+    scope = verdict.get("scope")
+    proposed_when = _when(verdict.get("when"))
+    proposed_exclusions = verdict.get("exclude")
+    confidence = _float(verdict.get("confidence"), 0.0)
+    if scope == "unclear" or confidence < 0.5:
+        for action in bulks:
+            action.confidence = min(action.confidence, confidence)
+        return actions
+    if scope in {"all", "today", "date", "presented"}:
+        valid_ids = {
+            str(item.get("id"))
+            for item in [*ctx.active_items, *ctx.presented_items, *ctx.last_digest]
+            if item.get("id") is not None
+        }
+        for action in bulks:
+            action.scope = scope
+            if action.op == "reschedule" and proposed_when is not None:
+                action.when = proposed_when
+            if isinstance(proposed_exclusions, list):
+                action.exclude = list(dict.fromkeys(
+                    str(item_id)
+                    for item_id in proposed_exclusions
+                    if str(item_id) in valid_ids
+                ))
+            action.confidence = min(action.confidence, confidence)
+    return actions
+
+
+def _audit_context(ctx: InterpreterContext) -> str:
+    active = "\n".join(
+        f"{position}. {item.get('id')}: {item.get('label')}"
+        for position, item in enumerate(ctx.active_items, start=1)
+    ) or "(none)"
+    focus = "\n".join(
+        f"- {item.get('id')}: {item.get('label')}"
+        for item in ctx.focus
+    ) or "(none)"
+    return f"""\
+Today is {ctx.today} ({date.fromisoformat(ctx.today).strftime('%A')}). Do not
+compute dates; represent date words with typed intents.
+
+Open tasks, in position order:
+{active}
+
+Just-discussed or replied-to tasks:
+{focus}
+
+Recent undoable change timestamp: {ctx.last_change_at or 'none'}
+"""
+
+
+def _capture_audit_prompt(payload: object, ctx: InterpreterContext) -> str:
+    return f"""\
+Independently audit a first-pass interpretation. Classify the user's complete
+communicative goal as exactly one type:
+- capture: remember a concrete new piece of work;
+- plan: choose or replan what work to do, including constraints implied by
+  ordinary descriptions of time, energy, or lost availability;
+- outlook: read-only capacity or fit analysis, without choosing a plan;
+- plan_action: explicitly adopt, replace, or cancel a proposed/adopted plan;
+- undo: retract the recent change shown in context;
+- other: none of those.
+
+{_audit_context(ctx)}
+
+User message:
+{ctx.message}
+
+First-pass JSON:
+{json.dumps(payload, ensure_ascii=False, sort_keys=True)}
+
+Reason by meaning, including idiom, slang, paraphrase, and negation. The first
+pass is evidence, not authority. A task containing planning-related words is
+still capture when the user wants it remembered. A request to choose or replan
+work is plan, not a task or plan adoption. A plain task description remains a
+capture even when it begins with a date or says "I need to"; "Tomorrow I need
+to call Jerry" is capture, and "lunch with Sam Thursday or Friday" is capture
+with an ambiguous date. "No gas left, give me a realistic plan" is plan.
+Questions about overload or what will fit are outlook. "Use this plan" is
+plan_action adopt and "replace my plan with this" is plan_action replace. A
+standalone retraction is undo only when a recent change exists.
+
+For capture, extract a clean task and every scheduling detail. A hard
+"by/before/no later than" date belongs in deadline while the intended work date
+belongs in when. Preserve effort, split permission, fixed appointment status,
+earliest start, window, dependencies, reminders, recurrence interval,
+completion-relative anchor, ending date/count, priority, tag, waiting state,
+and note when the user actually implies them. Named weekdays are weekday
+intents. Recurrence belongs in repeat, never in when: daily -> "daily"; every
+Monday -> "weekly:monday"; every 2 months -> "every:2:month". A cadence after
+completion uses repeat_anchor "completion"; preserve an explicit total in
+repeat_count. Never move a date from the user's words to a different kind.
+For every capture, explicitly return kind none for absent deadline/repeat-end
+dates and null for absent scalar fields rather than omitting them. A sentence
+with a do date and a separate due date must return both.
+
+For plan, return the planning date intent plus typed budget, scope, energy, and
+earliest/latest clock bounds. With no date words, when must be kind none; never
+invent a planning day. Infer ordinary constraints: "no gas left" means energy
+low, and "the first half of the day is shot" means earliest_time 12:00. These
+are planning constraints, not dates. Return only the audit object.
+"""
+
+
+def _schedule_audit_prompt(payload: object, ctx: InterpreterContext) -> str:
+    return f"""\
+Independently audit a proposed scheduling-metadata edit to an existing task.
+Return type schedule only if the user actually changes a deadline, effort,
+fixed/flexible status, split permission, earliest start, preferred window,
+dependency, reminder offset, or clears one of those. Otherwise return other.
+
+{_audit_context(ctx)}
+
+User message:
+{ctx.message}
+
+First-pass JSON:
+{json.dumps(payload, ensure_ascii=False, sort_keys=True)}
+
+Use the exact matching task id from context. A hard due/by/before date is the
+deadline and must be represented as the user's typed date intent; do not
+compute it and do not substitute today or tomorrow for a named weekday.
+Extract explicit effort and all other metadata without moving the task's do
+date. The first pass is evidence, not authority. Return only the audit object.
+"""
+
+
+def _setting_audit_prompt(payload: object, ctx: InterpreterContext) -> str:
+    return f"""\
+Independently audit a first-pass user-preference change. Return the same typed
+setting contract with every value field present. The raw field must be a
+literal substring of the user's message; never invent or normalize it.
+
+{_audit_context(ctx)}
+
+User message:
+{ctx.message}
+
+First-pass JSON:
+{json.dumps(payload, ensure_ascii=False, sort_keys=True)}
+
+Extract clock values as HH:MM, day ranges as mon..sun codes, and durations as
+minutes. A working-hours or protected-break range needs both start_time and
+end_time. A wake/evening setting uses time. Removal uses clear true. Use null,
+false, or an empty list for value fields the user did not set. The first pass
+is evidence, not authority. Return only the setting object.
+"""
+
+
+def _route_tiebreak_prompt(
+    ctx: InterpreterContext, first_route: str, audit_route: str
+) -> str:
+    return f"""\
+Independently classify the communicative goal of one user message. Do not vote
+for a prior classifier and do not assume an audit is better; return the actual
+semantic outcome.
+
+User message:
+{ctx.message}
+
+Two earlier passes disagreed between {first_route} and {audit_route}.
+
+Meanings:
+- capture: remember a concrete new task, including a standalone task phrase or
+  "I need to" statement with a date;
+- plan: ask the assistant to choose or replan work;
+- outlook: ask read-only what fits or whether capacity is overloaded;
+- plan_action: explicitly adopt, replace, or cancel a plan;
+- undo: retract a recent change;
+- other: none of these.
+
+For example, "lunch with Sam Thursday or Friday" is capture even though its
+date is ambiguous; "the first half of the day is shot, replan" is plan, not a
+plan action; and a request for a realistic plan is plan. Reason semantically,
+including idiom and paraphrase. Include confidence.
+"""
+
+
+def _route_name(action: object) -> str | None:
+    if isinstance(action, Capture):
+        return "capture"
+    if isinstance(action, PlanAction):
+        return "plan_action"
+    if isinstance(action, Query) and action.kind in {"plan", "outlook"}:
+        return action.kind
+    if isinstance(action, Undo):
+        return "undo"
+    if isinstance(action, (Unknown, Chitchat)):
+        return "other"
+    return None
+
+
+def _candidate_audit_kind(actions: list, ctx: InterpreterContext) -> str | None:
+    if (
+        len(actions) != 1
+        or (ctx.presented_kind == "eod" and ctx.presented_items)
+        or ctx.nudge
+        or ctx.confirmation_pending
+        or ctx.onboarding_stage
+        or ctx.pending
+    ):
+        return None
+    action = actions[0]
+    if isinstance(action, Schedule):
+        return "schedule"
+    if isinstance(action, Setting):
+        return "setting"
+    if isinstance(action, (Capture, PlanAction, Unknown)):
+        return "capture"
+    if isinstance(action, Chitchat) and ctx.last_change_at:
+        return "capture"
+    if isinstance(action, Query) and action.kind in {"plan", "outlook"}:
+        return "capture"
+    return None
+
+
+def _review_candidate(
+    payload: object, actions: list, ctx: InterpreterContext, llm: Llm
+) -> list:
+    audit_kind = _candidate_audit_kind(actions, ctx)
+    if audit_kind is None:
+        return actions
+    try:
+        if audit_kind == "schedule":
+            verdict = llm.complete_json(
+                _schedule_audit_prompt(payload, ctx), SCHEDULE_AUDIT_SCHEMA
+            )
+        elif audit_kind == "setting":
+            verdict = llm.complete_json(
+                _setting_audit_prompt(payload, ctx), SETTING_AUDIT_SCHEMA
+            )
+        else:
+            verdict = llm.complete_json(
+                _capture_audit_prompt(payload, ctx), CAPTURE_AUDIT_SCHEMA
+            )
+    except Exception:
+        return actions
+    if not isinstance(verdict, dict):
+        return actions
+    outcome = verdict.get("type")
+    first_route = _route_name(actions[0])
+    if (
+        audit_kind == "capture"
+        and outcome in {"capture", "plan", "outlook", "plan_action", "undo"}
+        and first_route is not None
+        and outcome != first_route
+        and not (
+            outcome == "undo"
+            and bool(ctx.last_change_at)
+            and _float(verdict.get("confidence"), 0.0) >= 0.8
+        )
+    ):
+        try:
+            tiebreak = llm.complete_json(
+                _route_tiebreak_prompt(ctx, first_route, outcome),
+                ROUTE_TIEBREAK_SCHEMA,
+            )
+        except Exception:
+            return actions
+        if (
+            not isinstance(tiebreak, dict)
+            or tiebreak.get("outcome") != outcome
+            or _float(tiebreak.get("confidence"), 0.0) < 0.6
+        ):
+            return actions
+    if outcome == "capture" and isinstance(actions[0], Capture):
+        first = (
+            payload.get("actions", [None])[0]
+            if isinstance(payload, dict) and isinstance(payload.get("actions"), list)
+            and payload.get("actions")
+            else None
+        )
+        if isinstance(first, dict):
+            # A focused pass corrects semantic routing and extraction, but it
+            # must not erase useful typed detail the independent first pass
+            # supplied merely by returning null/none. This merge is structural,
+            # never an interpretation of the user's English.
+            for key in (
+                "time", "relate", "repeat", "tag", "note",
+                "duration_minutes", "duration_confidence", "earliest_time",
+                "preferred_window", "parent", "repeat_anchor", "repeat_count",
+            ):
+                if verdict.get(key) is None and first.get(key) is not None:
+                    verdict[key] = first[key]
+            for key in ("depends_on", "reminder_offsets"):
+                if not verdict.get(key) and first.get(key):
+                    verdict[key] = first[key]
+            for key in ("deadline", "repeat_end"):
+                reviewed_when = verdict.get(key)
+                first_when = first.get(key)
+                if (
+                    isinstance(reviewed_when, dict)
+                    and reviewed_when.get("kind") == "none"
+                    and isinstance(first_when, dict)
+                    and first_when.get("kind") != "none"
+                ):
+                    verdict[key] = first_when
+            if not verdict.get("splittable") and first.get("splittable"):
+                verdict["splittable"] = True
+    if outcome in {"capture", "schedule", "setting", "plan_action"}:
+        return [_parse_one(verdict)]
+    if outcome == "undo" and ctx.last_change_at:
+        return [Undo()]
+    if outcome in {"plan", "outlook"}:
+        return [Query(
+            kind=outcome,
+            when=_when(verdict.get("when")),
+            constraint=ctx.message,
+            budget_minutes=_int(verdict.get("budget_minutes")),
+            budget_scope=_str(verdict.get("budget_scope")),
+            energy=_str(verdict.get("energy")),
+            earliest_time=_str(verdict.get("earliest_time")),
+            latest_time=_str(verdict.get("latest_time")),
+        )]
+    return actions
+
+
 def _needs_recap_adjudication(actions: list, ctx: InterpreterContext) -> bool:
     """Whether a recap-adjacent result needs focused semantic validation."""
     return (
@@ -926,6 +1677,9 @@ def interpret(llm: Llm, ctx: InterpreterContext) -> list:
     except Exception:
         return [Unknown(note=MODEL_UNREACHABLE)]
     actions = parse_actions(payload)
+    actions = _adjudicate_context(actions, ctx, llm)
+    actions = _review_candidate(payload, actions, ctx, llm)
+    actions = _adjudicate_bulk_scope(actions, ctx, llm)
     if not _needs_recap_adjudication(actions, ctx):
         return actions
     try:
@@ -933,7 +1687,7 @@ def interpret(llm: Llm, ctx: InterpreterContext) -> list:
             _recap_adjudication_prompt(ctx), RECAP_OUTCOME_SCHEMA
         )
     except Exception:
-        return [Unknown(note=MODEL_UNREACHABLE)]
+        return actions
     outcome = verdict.get("outcome") if isinstance(verdict, dict) else None
     if outcome == "none":
         return [

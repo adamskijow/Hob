@@ -266,7 +266,7 @@ def test_render_stale_nudge():
 def test_undated_items_age_and_keep_resets_the_nudge():
     old = item("a1", "call pool", created="2026-06-25T08:00:00")
     out = render_digest([old], "2026-06-29")
-    assert "(day 5)" in out and "send keep" in out
+    assert "(day 5)" in out and "tell me naturally" in out
     assert digest_nudge_item([old], "2026-06-29") is old
 
     old.updated_at = "2026-06-29T07:00:00"
@@ -400,9 +400,9 @@ def test_upgraded_owner_gets_one_digest_discovery_note_but_fresh_install_does_no
     asyncio.run(service.fire())
 
     assert "new in hob" in sent.calls[0][1]
-    assert '"nada"' in sent.calls[0][1]
-    assert "no fixed phrase is required" in sent.calls[0][1]
-    assert "every listed item stays open" in sent.calls[0][1]
+    assert "no hidden command-phrase shortcuts" in sent.calls[0][1]
+    assert "in your own words" in sent.calls[0][1]
+    assert "deterministic checks still confine every effect" in sent.calls[0][1]
     assert "new in hob" not in sent.calls[1][1]
     assert upgraded.get_meta(RELEASE_NOTICE_KEY) == __version__
 

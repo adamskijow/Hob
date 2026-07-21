@@ -24,14 +24,48 @@ class FakeClock:
 
 
 class FakeLlm:
-    """Returns canned JSON, ignoring the prompt. Records calls for assertions."""
+    """Returns canned JSON and records calls.
 
-    def __init__(self, responses: list[dict] | dict) -> None:
+    First-pass responses advance once per user/model interaction. Candidate
+    audit passes repeat the immediately preceding response unless a test gives
+    explicit ``review_responses``. This keeps multi-turn service fixtures about
+    user turns while still letting interpreter tests exercise corrections.
+    """
+
+    def __init__(
+        self,
+        responses: list[dict] | dict,
+        review_responses: list[dict] | dict | None = None,
+    ) -> None:
         self._responses = responses if isinstance(responses, list) else [responses]
+        if review_responses is None:
+            self._review_responses = []
+        elif isinstance(review_responses, list):
+            self._review_responses = review_responses
+        else:
+            self._review_responses = [review_responses]
+        self._response_index = 0
+        self._review_index = 0
+        self._last_response: dict | None = None
         self.calls: list[tuple] = []
 
     def complete_json(self, prompt: str, schema: dict, temperature: float = 0.0) -> dict:
         self.calls.append((prompt, schema, temperature))
+        if prompt.startswith("Independently audit a first-pass") or prompt.startswith(
+            "Independently audit a proposed scheduling-metadata edit"
+        ) or prompt.startswith("Independently classify the communicative goal"):
+            if self._review_responses:
+                response = self._review_responses[min(
+                    self._review_index, len(self._review_responses) - 1
+                )]
+                self._review_index += 1
+                return response
+            if self._last_response is not None:
+                return self._last_response
         if len(self._responses) == 1:
-            return self._responses[0]
-        return self._responses[len(self.calls) - 1]
+            response = self._responses[0]
+        else:
+            response = self._responses[self._response_index]
+            self._response_index += 1
+        self._last_response = response
+        return response

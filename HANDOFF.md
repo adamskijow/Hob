@@ -11,28 +11,28 @@ snapshot.
 - **Live and in daily use.** Runs as a `launchd` daemon on macOS, with
   [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive. Model:
   `qwen2.5:14b-instruct` (7b works; 14b is more reliable on dense messages).
-- **Released:** v0.9.7. v0.9 adds a deterministic weekly capacity outlook,
+- **Release target:** v0.9.8. v0.9 adds a deterministic weekly capacity outlook,
   explicit working days, plan-aware EOD, first-adoption coaching, accessible
   media fallback, privacy-safe activation metrics, and correct silent handling
   of Telegram-generated service events, and guarded shared-tense completion
   reports, plain-message digest decisions, safe numbered exclusions, and
-  token-wide Telegram singleton ownership, and model-independent zero-result
-  evening reports. Schema remains 10.
-- **Green:** `uv run pytest` (393 passing), 29 native App Store foundation
+  token-wide Telegram singleton ownership, and contextual model-owned language
+  throughout the free-text surface. Schema remains 10.
+- **Green:** `uv run pytest` (417 passing), 29 native App Store foundation
   tests, signed native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
-  evals.interpreter_eval`, 77/77). The release head passes exact Ubuntu and
+  evals.interpreter_eval`, 102/102). The release head must pass exact Ubuntu and
   macOS CI before tagging.
 - **Live v0.9:** release commit `c656459` passed exact Ubuntu/macOS CI in run
   `29165341007`, was tagged and published as v0.9.0, backed up, and deployed by
   graceful launchd restart. Status is healthy on schema 10 with clean queues and
   14B. The first real `/outlook` delivered without changing adopted-plan state.
-- **v0.9.1 patch:** PR #7 fixes the live
+- **Historical v0.9.1 patch:** PR #7 fixed the live
   screenshot case where an immediate “Nevermind I'm good” became chitchat and
   left the unwanted capture scheduled. Only an exact standalone phrase plus a
-  mutation batch at most 15 minutes old can trigger undo; stale or task-bearing
-  variants fail safe. Its exact feature head passed 347 tests and 73/73 model
-  cases before merge.
+  mutation batch at most 15 minutes old could trigger undo. v0.9.8 supersedes
+  that phrase matcher with a typed semantic audit bounded by the recent action
+  log.
 - **Live v0.9.1 evidence:** release commit `9a7d253` passed Ubuntu and macOS CI
   in run `29165983344`, including the EventKit bridge. The release was tagged,
   backed up, and deployed by graceful restart. A phone replay captured a new
@@ -50,16 +50,18 @@ snapshot.
   nothing. Telegram pin and other status updates are now durable silent no-ops;
   actual uncaptioned owner media retains its text alternative. See
   `docs/audits/v0.9.3.md`.
-- **v0.9.4 shared-tense patch:** daily use exposed “I did A and hit B” being
+- **Historical v0.9.4 shared-tense patch:** daily use exposed “I did A and hit B” being
   split into one completion plus a false start because “hit” has the same
   present and past form. A conservative deterministic core correction now
   closes both tasks unless future, imperative, or partial-progress wording
-  changes the second clause. See `docs/audits/v0.9.4.md`.
-- **v0.9.5 digest-decision patch:** daily use exposed that the digest advertised
+  changes the second clause. v0.9.8 replaces that raw-language repair with typed
+  model output. See `docs/audits/v0.9.4.md`.
+- **Historical v0.9.5 digest-decision patch:** daily use exposed that the digest advertised
   “Reply keep” but only an explicit Telegram reply carried the item anchor. A
   content-free, same-day, single-use decision context now makes plain `keep`,
   `tomorrow`, `drop`, and `back on` work, while newer task focus wins for terse
-  destructive choices. See `docs/audits/v0.9.5.md`.
+  destructive choices. v0.9.8 keeps the machine-owned anchor but moves meaning
+  back to the model. See `docs/audits/v0.9.5.md`.
 - **v0.9.6 numbered-exclusion and singleton patch:** an unrecognized local CLI
   flag started a second process on the legacy database, which could share the
   Telegram bot because ownership was only database-scoped. The stale six-row
@@ -67,12 +69,21 @@ snapshot.
   ambiguous database selection now fail fast, a content-free token-wide lease
   permits only one local poller, and numbered `all except` reports preserve the
   exact digest order or change nothing. See `docs/audits/v0.9.6.md`.
-- **v0.9.7 zero-completion recap patch:** daily use exposed `Nothing got done`
+- **Historical v0.9.7 zero-completion recap patch:** daily use exposed `Nothing got done`
   being rejected immediately after Hob asked what was completed. Explicit
   zero-result reports now bypass the model, change nothing, acknowledge that
   the displayed items remain open, and are taught in the recap itself. Mixed
-  negative and positive reports stay on the normal interpretation path. See
+  negative and positive reports stayed on the normal interpretation path.
+  v0.9.8 removes the bypass and uses a focused contextual model pass. See
   `docs/audits/v0.9.7.md`.
+- **v0.9.8 model-owned-language patch:** every free-text turn reaches the local
+  model. Typed focused audits cover recaps, stale work, confirmations,
+  onboarding, capture/plan/undo disagreements, scheduling metadata, settings,
+  and bulk scope/exclusions. The core validates ids, provenance, literal values,
+  confidence, arithmetic, confirmation, atomic application, and undo. Dormant
+  raw date/deadline parsing and `dateparser` are gone. Daily use's accidental
+  `eod_time` batch was backed up and restored to its recorded absent pre-state.
+  See `docs/audits/v0.9.8.md`.
 - **Mac App Store track:** ADR 0001 establishes one behavior with Open Local
   and Store distribution editions. `native/HobAppFoundation` starts the native
   menu-bar/settings surface, typed setup readiness, bounded Apple Foundation
@@ -117,7 +128,8 @@ snapshot.
 
 The full loop (capture, morning digest, reply-to-correct, EOD recap) plus:
 natural-language everything (complete/drop/reschedule/amend/bulk, queries and
-search, history, undo); typed-intent date resolution with day-word backstops;
+search, history, undo); model-owned typed-intent date classification with
+deterministic calendar arithmetic;
 priorities, project tags, recurring tasks, notes, waiting-on; timed reminders
 with a lead time, snooze, and reply-to-act; conversational focus and edited-
 message sync; Telegram-native forwarding, reactions, reminder/confirmation
@@ -175,7 +187,8 @@ The increment audit and unresolved dogfood gate are in `docs/audits/v0.9.md`.
 ## How development goes here
 
 Screenshots of live misbehavior are the usual input. Reproduce against the real
-model with a throwaway scratchpad probe, fix correctness deterministically in the
-core (not the prompt), add a test and an eval case, then restart the daemon
+model with a throwaway scratchpad probe. Keep open-ended meaning in typed model
+output and keep deterministic core work to validation, provenance, arithmetic,
+consent, atomicity, and undo. Add a test and eval case, then restart the daemon
 (`launchctl kill SIGTERM gui/$(id -u)/com.local.hob`) and confirm live. See
-CLAUDE.md for the full loop and the established deterministic backstops.
+CLAUDE.md for the full loop and safety boundary.

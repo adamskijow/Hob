@@ -27,8 +27,9 @@ fixtures must make divergence between editions a release-blocking failure.
 Native migration proceeds by vertical behavior slices, not a second unchecked
 rewrite. Each slice begins with synthetic, privacy-safe golden turns executed
 through the Python reference and Swift core. A versioned runtime request keeps
-the original message beside typed model actions so literal safety backstops can
-remain deterministic. Unsupported actions, protocol versions, oversized input,
+the original message beside typed model actions for audit and value grounding;
+free-form meaning remains model-owned in both editions. Unsupported actions,
+protocol versions, oversized input,
 ambiguous dates, missing targets, and low-confidence mutations fail closed.
 Store task and undo state is a versioned, bounded document in the App Group.
 Each candidate turn is applied to a copy, atomically persisted with a verified

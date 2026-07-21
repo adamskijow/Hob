@@ -13,7 +13,7 @@ core/         pure, zero I/O, fully tested, time injected
   models.py       Item, Action variants, Digest, etc.
   ports.py        Protocols: Store, Llm, Clock
   interpreter.py  builds the prompt; parses + validates JSON into Actions
-  dates.py        date-intent resolution + day-word backstops
+  dates.py        typed date-intent resolution and calendar arithmetic
   planner.py      Actions + context -> concrete mutations (no I/O)
   digest.py       owed-decision, digest selection + rollover, rendering
   feasibility.py  deterministic time-grid planning and plan diffs
@@ -38,9 +38,10 @@ Two correctness rules the core never breaks:
 
 - **The model never does date math.** It classifies a date phrase into a typed
   intent ("next friday" becomes weekday/next/fri); the core (`dates.py`) does
-  the calendar arithmetic, exactly and testably. Day words named in the message
-  ("monday", "tomorrow") deterministically win over a misclassified intent, and
-  on ambiguity ("thursday or friday") Hob asks rather than guesses.
+  the calendar arithmetic, exactly and testably. Meaning stays model-owned:
+  deterministic code does not replace a typed date, deadline, recurrence,
+  completion scope, or planning constraint by scanning the original prose.
+  On typed ambiguity ("thursday or friday") Hob asks rather than guesses.
 - **Fuzzy language never silently mutates state.** An unresolved reference or a
   low-confidence guess produces a clarifying question, not an edit, and Hob
   remembers that question so your next message can answer it. Sweeping deletes
@@ -93,6 +94,17 @@ export/import and status without exposing task text.
 First-run onboarding is a small persisted state machine at the edge. Each step
 sets the normal pending Setting question, so model outages, invalid answers, and
 restarts retain the question without creating a parallel interpretation path.
+Natural keep-current and pause answers are typed model decisions bounded by the
+active setup stage.
+
+Morning stale-task questions and risky confirmations follow the same split. A
+narrow semantic model pass reads the machine-owned question and the owner's
+ordinary wording; the planner accepts only the allowed decision for that exact
+prompt. It never infers a target from the wording. Bulk actions receive a
+focused model scope check, then deterministic code validates exclusions against
+known ids and the selected all/today/date/presented set. Exact slash commands,
+button callback payloads, reactions, ids, and ordinal positions remain closed
+protocols; free-form language has no pre-model command-phrase bypass.
 
 The pure weekly forecast composes up to seven daily feasibility passes without
 a new database model. It carries remaining effort and simulated prerequisite

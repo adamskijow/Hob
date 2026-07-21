@@ -113,9 +113,9 @@ The first shared fixture now covers basic capture, tomorrow and weekday math,
 multi-action correction, complete, drop, reschedule, clarification, confidence
 confirmation, missing targets, and repeated undo. This is a contract seed, not
 parity proof. Recurrence, constraints, planning, queries, settings, durable
-inbox/outbox transactions, pending confirmations, reminders, Calendar,
-migration beyond the new v1-to-v2 state step, and every literal correctness
-backstop remain release gates. The typed-turn inbox/outbox now proves local
+inbox/outbox transactions, contextual decisions, reminders, Calendar,
+migration beyond the new v1-to-v2 state step, and complete model-owned-language
+parity remain release gates. The typed-turn inbox/outbox now proves local
 mutation idempotency and ordered retry, but Telegram update receipt and reply
 rendering remain unimplemented.
 

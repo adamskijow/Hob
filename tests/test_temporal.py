@@ -67,7 +67,7 @@ def test_schedule_edit_is_undoable_and_dependency_cycles_are_rejected():
     service, store, _ = setup([
         {"actions": [{
             "type": "schedule", "target": "a1",
-            "deadline": {"kind": "absolute", "date": "2026-07-03"},
+                "deadline": {"kind": "absolute", "date": "2026-07-02"},
             "duration_minutes": 90, "duration_confidence": 0.8,
             "schedule_kind": "fixed", "splittable": False,
             "preferred_window": "13:00-15:00", "depends_on": ["a2"],
