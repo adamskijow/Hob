@@ -346,7 +346,8 @@ class Amend:
 
 @dataclass
 class Query:
-    kind: str  # today | date | all | overdue | week | search | done | tag | plan | outlook
+    kind: str  # today | date | all | overdue | week | search | done | tag |
+    #             plan | outlook | explain | what_if
     when: When | None = None  # typed date intent, for kind=date
     date: str | None = None  # ISO, resolved by the core for kind=date
     term: str | None = None  # free-text search keywords, for kind=search
@@ -358,6 +359,13 @@ class Query:
     earliest_time: str | None = None  # HH:MM
     latest_time: str | None = None  # HH:MM
     period: str | None = None  # today | week, for completed-history queries
+    target: str | None = None  # exact task id from the saved analysis
+    aspect: str | None = None  # why | changes | assumptions
+    budget_delta_minutes: int | None = None
+    duration_minutes: int | None = None  # temporary what-if estimate
+    splittable: bool | None = None  # temporary what-if split permission
+    work_start: str | None = None  # temporary what-if working bound
+    work_end: str | None = None  # temporary what-if working bound
 
 
 @dataclass
@@ -469,3 +477,7 @@ class InterpreterContext:
     confirmation_pending: bool = False
     # Current setup step, if any. Natural skip/cancel language is model-owned.
     onboarding_stage: str | None = None
+    # Compact machine-owned summary of the latest deterministic plan/outlook.
+    # The model may select an explanation target or temporary what-if inputs,
+    # but the edge recomputes every claim and schedule from stored facts.
+    analysis: dict | None = None

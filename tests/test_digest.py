@@ -400,9 +400,10 @@ def test_upgraded_owner_gets_one_digest_discovery_note_but_fresh_install_does_no
     asyncio.run(service.fire())
 
     assert "new in hob" in sent.calls[0][1]
-    assert "no hidden command-phrase shortcuts" in sent.calls[0][1]
-    assert "in your own words" in sent.calls[0][1]
-    assert "deterministic checks still confine every effect" in sent.calls[0][1]
+    assert 'ask "why?"' in sent.calls[0][1]
+    assert 'test a temporary "what if?"' in sent.calls[0][1]
+    assert "hypotheticals create a labeled proposal" in sent.calls[0][1]
+    assert "without explicit durable language and adoption" in sent.calls[0][1]
     assert "new in hob" not in sent.calls[1][1]
     assert upgraded.get_meta(RELEASE_NOTICE_KEY) == __version__
 

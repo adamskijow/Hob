@@ -51,9 +51,35 @@ class FakeLlm:
 
     def complete_json(self, prompt: str, schema: dict, temperature: float = 0.0) -> dict:
         self.calls.append((prompt, schema, temperature))
+        if prompt.startswith(
+            "Independently decide whether the user is testing"
+        ):
+            if self._review_responses:
+                response = self._review_responses[min(
+                    self._review_index, len(self._review_responses) - 1
+                )]
+                self._review_index += 1
+                return response
+            return {
+                "outcome": "durable",
+                "target": None,
+                "budget_minutes": None,
+                "budget_delta_minutes": None,
+                "budget_scope": None,
+                "energy": None,
+                "earliest_time": None,
+                "latest_time": None,
+                "duration_minutes": None,
+                "work_start": None,
+                "work_end": None,
+                "splittable": None,
+                "confidence": 1.0,
+            }
         if prompt.startswith("Independently audit a first-pass") or prompt.startswith(
             "Independently audit a proposed scheduling-metadata edit"
-        ) or prompt.startswith("Independently classify the communicative goal"):
+        ) or prompt.startswith(
+            "Independently classify the communicative goal"
+        ):
             if self._review_responses:
                 response = self._review_responses[min(
                     self._review_index, len(self._review_responses) - 1

@@ -103,6 +103,82 @@ def test_contextual_decisions_are_confined_to_machine_owned_state():
     assert skipped.onboarding_decision == "skip"
 
 
+def test_explanation_and_what_if_are_confined_to_latest_analysis():
+    analysis = {
+        "kind": "plan",
+        "item_ids": ["a1", "a2"],
+    }
+    explained = reconcile(
+        [
+            Query(
+                kind="explain",
+                target="a2",
+                aspect="changes",
+                constraint="what would need to change?",
+            )
+        ],
+        ctx(ACTIVE, message="what would need to change?"),
+    )
+    assert not explained.queries
+    assert "plan a day" in explained.questions[0]
+
+    c = ctx(ACTIVE, message="what if the pool call took 20 minutes?")
+    c.analysis = analysis
+    hypothetical = reconcile(
+        [
+            Query(
+                kind="what_if",
+                target="a2",
+                duration_minutes=20,
+                work_end="19:00",
+                constraint="what if the pool call took 20 minutes?",
+            )
+        ],
+        c,
+    )
+    assert not hypothetical.mutations
+    assert not hypothetical.settings
+    assert len(hypothetical.queries) == 1
+    query = hypothetical.queries[0]
+    assert query.kind == "what_if"
+    assert query.target == "a2"
+    assert query.duration_minutes == 20
+    assert query.work_end == "19:00"
+
+    normalized = reconcile(
+        [
+            Query(
+                kind="what_if",
+                earliest_time="7pm",
+                constraint="what if i could start at 7pm?",
+            )
+        ],
+        c,
+    )
+    assert normalized.queries[0].earliest_time == "19:00"
+
+    reversed_window = reconcile(
+        [
+            Query(
+                kind="what_if",
+                work_start="20:00",
+                work_end="19:00",
+                constraint="what if i worked from 8 to 7?",
+            )
+        ],
+        c,
+    )
+    assert not reversed_window.queries
+    assert "start before their end" in reversed_window.questions[0]
+
+    invented = reconcile(
+        [Query(kind="explain", target="invented")],
+        c,
+    )
+    assert not invented.queries
+    assert "latest plan or outlook" in invented.questions[0]
+
+
 def test_capture_without_date():
     plan = reconcile([Capture(task="call pool guy", raw="call pool guy")], ctx())
     assert len(plan.mutations) == 1

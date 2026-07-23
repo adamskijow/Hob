@@ -11,12 +11,14 @@ from zoneinfo import ZoneInfo
 from app import (
     DIGEST_DECISION_KEY,
     FOCUS_KEY,
+    LAST_ANALYSIS_KEY,
     PENDING_KEY,
     PINNED_KEY,
     PRESENTED_LIST_KEY,
     MessageService,
 )
 from core.models import Digest, DigestItem, Item, PlanRun, PlanSession
+from core.planner import QueryIntent
 from adapters.store_sqlite import SqliteStore
 from adapters.telegram_bot import InboundMessage
 from tests.fakes import FakeClock, FakeLlm
@@ -1432,6 +1434,177 @@ def test_plan_my_day_is_reasoned_read_only_and_validates_ids():
     assert [i.to_dict() for i in store.open_items()] == before
     focus = json.loads(store.get_meta("focus"))
     assert focus["items"] and focus["items"][0]["context"] == "plan"
+
+
+def test_grounded_explanation_selects_verified_facts_and_never_mutates():
+    llm = FakeLlm([
+        {"actions": [{"type": "query", "kind": "plan", "constraint": "plan my day"}]},
+        {"headline": "one honest hour", "picks": []},
+        {"actions": [{
+            "type": "query",
+            "kind": "explain",
+            "target": "a2",
+            "aspect": "changes",
+            "constraint": "why didn't the pool call fit and what could change?",
+        }]},
+        {
+            "fact_ids": ["f4", "invented"],
+            "suggestion_ids": ["s1", "made-up"],
+        },
+    ])
+    store = SqliteStore(":memory:")
+    for item_id, label, created in (
+        ("a1", "write the brief", "2026-06-29T08:00:00"),
+        ("a2", "call the pool guy", "2026-06-29T08:01:00"),
+    ):
+        store.add_item(Item(
+            id=item_id,
+            raw_text=label,
+            task=label,
+            due_date=None,
+            due_time=None,
+            status="open",
+            source="capture",
+            created_at=created,
+            updated_at=created,
+            duration_minutes=60,
+        ))
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(
+        store,
+        clock,
+        llm,
+        "America/New_York",
+        work_start="09:00",
+        work_end="10:00",
+        breaks=(),
+    )
+    before = [item.to_dict() for item in store.open_items()]
+
+    planned = svc.handle(msg("plan my day", 1))
+    explained = svc.handle(
+        msg("why didn't the pool call fit and what could change?", 2)
+    )
+
+    assert "call the pool guy" in planned and "not placed" in planned
+    assert "what could change in the plan" in explained
+    assert '"call the pool guy" was not placed' in explained
+    assert "safe levers:" in explained
+    assert "invented" not in explained and "made-up" not in explained
+    assert explained.endswith(
+        "state a correction directly to make it durable."
+    )
+    assert [item.to_dict() for item in store.open_items()] == before
+    assert store.last_batch() == []
+    snapshot = json.loads(store.get_meta(LAST_ANALYSIS_KEY))
+    assert snapshot["kind"] == "plan"
+    assert snapshot["target_day"] == "2026-06-29"
+    assert set(item["id"] for item in snapshot["items"]) == {"a1", "a2"}
+
+
+def test_task_duration_what_if_creates_explicit_proposal_without_hidden_edit():
+    llm = FakeLlm([
+        {"actions": [{"type": "query", "kind": "plan", "constraint": "plan my day"}]},
+        {"headline": "one honest hour", "picks": []},
+        {"actions": [{
+            "type": "query",
+            "kind": "what_if",
+            "target": "a2",
+            "duration_minutes": 30,
+            "work_end": "10:30",
+            "constraint": "what if the pool call took 30m and i worked until 10:30?",
+        }]},
+        {"headline": "both fit under the temporary assumptions", "picks": []},
+    ])
+    store = SqliteStore(":memory:")
+    for item_id, label, created in (
+        ("a1", "write the brief", "2026-06-29T08:00:00"),
+        ("a2", "call the pool guy", "2026-06-29T08:01:00"),
+    ):
+        store.add_item(Item(
+            id=item_id,
+            raw_text=label,
+            task=label,
+            due_date=None,
+            due_time=None,
+            status="open",
+            source="capture",
+            created_at=created,
+            updated_at=created,
+            duration_minutes=60,
+        ))
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(
+        store,
+        clock,
+        llm,
+        "America/New_York",
+        work_start="09:00",
+        work_end="10:00",
+        breaks=(),
+    )
+
+    svc.handle(msg("plan my day", 1))
+    out = svc.handle(
+        msg("what if the pool call took 30m and i worked until 10:30?", 2)
+    )
+
+    assert "what-if plan" in out
+    assert "both fit under the temporary assumptions" in out
+    assert "09:00–10:00 write the brief" in out
+    assert "10:00–10:30 call the pool guy" in out
+    assert "temporary assumptions only" in out
+    assert store.get_item("a2").duration_minutes == 60
+    assert store.last_batch() == []
+    proposal = store.latest_proposed_plan("2026-06-29")
+    sessions = store.plan_sessions(proposal.id)
+    assert [session.item_id for session in sessions] == ["a1", "a2"]
+    assert sessions[1].end.endswith("10:30:00-04:00")
+
+
+def test_saved_analysis_context_expires_instead_of_shadowing_later_messages():
+    svc, store = service(FakeLlm({"actions": [{"type": "unknown"}]}))
+    store.set_meta(
+        LAST_ANALYSIS_KEY,
+        json.dumps({
+            "version": 1,
+            "kind": "plan",
+            "generated_at": "2026-06-27T09:00:00-04:00",
+            "target_day": "2026-06-27",
+            "query": {"kind": "plan"},
+            "items": [{"id": "a1", "label": "org prez"}],
+            "facts": [],
+            "suggestions": [],
+        }),
+    )
+
+    assert svc._context("buy milk").analysis is None
+
+
+def test_what_if_budget_delta_cannot_escape_planner_bounds():
+    svc, store = service(FakeLlm({"actions": [{"type": "unknown"}]}))
+    store.set_meta(
+        LAST_ANALYSIS_KEY,
+        json.dumps({
+            "version": 1,
+            "kind": "plan",
+            "generated_at": "2026-06-29T09:00:00-04:00",
+            "target_day": "2026-06-29",
+            "query": {"kind": "plan", "budget_minutes": 10000},
+            "items": [{"id": "a1", "label": "org prez"}],
+            "facts": [],
+            "suggestions": [],
+        }),
+    )
+
+    before = [item.to_dict() for item in store.open_items()]
+    out = svc._answer_what_if(
+        QueryIntent(kind="what_if", budget_delta_minutes=1000)
+    )
+
+    assert "outside the supported range" in out
+    assert out.endswith("nothing changed.")
+    assert [item.to_dict() for item in store.open_items()] == before
 
 
 def test_week_outlook_is_read_only_uses_profile_days_and_checks_each_calendar_day():

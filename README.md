@@ -56,6 +56,14 @@ forwarded context even when the words do not match exactly. These read-only LLM
 passes validate every returned item id before showing it; mutations still go
 through the deterministic core.
 
+The conversation continues after the result. Ask "why didn't the audit fit?",
+"what assumptions did you use?", or "what would need to change?". Hob lets the
+local model select the relevant explanation, but renders only facts emitted by
+the deterministic planner. "What if the audit took 30 minutes and I worked
+until 7?" reruns the engine under temporary typed assumptions and produces a
+clearly labeled proposal. The task estimate, work profile, and adopted plan stay
+unchanged unless you state a durable correction or explicitly adopt.
+
 Hob keeps *when you plan to do something* separate from its hard deadline. It
 also understands estimated effort, fixed versus flexible commitments,
 splittable work, earliest starts, preferred windows, subtasks, and dependencies:
@@ -144,6 +152,10 @@ Talk to it like a person:
 - Ask "am I overloaded this week?" or "can I finish everything by Friday?" for
   a read-only capacity outlook. It checks the planning profile and opaque
   Calendar busy time, exposes assumptions and conflicts, and changes nothing.
+- Follow with "why didn't that fit?", "what assumptions did you use?", "what
+  would need to change?", or a hypothetical such as "what if it only took 30
+  minutes and I could work until 7?". Explanations are grounded in saved
+  deterministic facts; hypotheticals are temporary and mutation-free.
 - Say "use this plan" to adopt every block as a local session, including split
   work. `/plan` or "what is on my plan?" shows the active version. A revised
   proposal requires "replace my plan with this"; "cancel my plan" and `/undo`
