@@ -28,6 +28,23 @@ ACTIVE = [
     {"id": "a2", "label": "call the pool guy", "due_date": None},
     {"id": "a3", "label": "review the SR audit", "due_date": "2026-06-28"},
 ]
+LATEST_PLAN = {
+    "kind": "plan",
+    "generated_at": f"{TODAY}T09:05:00",
+    "target_day": TODAY,
+    "constraint": "plan my day",
+    "item_ids": ["a1", "a2", "a3"],
+    "items": [
+        {"id": "a1", "label": "prep the prez deck", "outcome": "scheduled"},
+        {"id": "a2", "label": "call the pool guy", "outcome": "scheduled"},
+        {
+            "id": "a3",
+            "label": "review the SR audit",
+            "outcome": "not placed",
+            "reason": "does not fit the remaining free time",
+        },
+    ],
+}
 
 
 @dataclass
@@ -45,6 +62,7 @@ class Case:
     nudge: dict | None = None  # active machine-owned digest decision
     confirmation_pending: bool = False
     onboarding_stage: str | None = None
+    analysis: dict | None = None
 
 
 def kinds(p: Plan) -> list[str]:
@@ -411,6 +429,52 @@ CASES = [
          lambda p: len(p.queries) == 1 and p.queries[0].kind == "outlook"
          and not p.mutations,
          "weekly fit question is a read-only outlook"),
+    Case("why didn't the audit fit?",
+         lambda p: len(p.queries) == 1
+         and p.queries[0].kind == "explain"
+         and p.queries[0].target == "a3"
+         and p.queries[0].aspect == "why"
+         and not p.mutations and not p.settings,
+         "grounded why query targets the latest deterministic result",
+         analysis=LATEST_PLAN),
+    Case("what would need to change here?",
+         lambda p: len(p.queries) == 1
+         and p.queries[0].kind == "explain"
+         and p.queries[0].aspect == "changes"
+         and not p.mutations and not p.settings,
+         "change negotiation remains a read-only grounded explanation",
+         analysis=LATEST_PLAN),
+    Case("what if the audit only took 30 minutes?",
+         lambda p: len(p.queries) == 1
+         and p.queries[0].kind == "what_if"
+         and p.queries[0].target == "a3"
+         and p.queries[0].duration_minutes == 30
+         and not p.mutations and not p.settings,
+         "hypothetical task estimate cannot become a durable edit",
+         analysis=LATEST_PLAN),
+    Case("if I can grind until 7 does the rest fit?",
+         lambda p: len(p.queries) == 1
+         and p.queries[0].kind == "what_if"
+         and p.queries[0].work_end == "19:00"
+         and not p.mutations and not p.settings,
+         "hypothetical wider working bound is typed and temporary",
+         analysis=LATEST_PLAN),
+    Case("the audit takes 30 minutes now",
+         lambda p: kinds(p) == ["schedule"]
+         and p.mutations[0].target == "a3"
+         and p.mutations[0].duration_minutes == 30,
+         "explicit durable correction survives the hypothetical guard",
+         analysis=LATEST_PLAN),
+    Case("drop the audit",
+         lambda p: kinds(p) == ["drop"]
+         and p.mutations[0].target == "a3",
+         "explicit durable action survives the hypothetical guard",
+         analysis=LATEST_PLAN),
+    Case("buy milk tomorrow",
+         lambda p: kinds(p) == ["capture"]
+         and cap_due(p) == "2026-06-30",
+         "new capture after an analysis is not mistaken for a what-if",
+         analysis=LATEST_PLAN),
     Case("meeting ran over, I got interrupted; replan",
          lambda p: len(p.queries) == 1 and p.queries[0].kind == "plan"
          and not p.mutations,
@@ -529,6 +593,7 @@ def main() -> int:
             nudge=c.nudge,
             confirmation_pending=c.confirmation_pending,
             onboarding_stage=c.onboarding_stage,
+            analysis=c.analysis,
         )
         try:
             plan = reconcile(interpret(llm, ctx), ctx)

@@ -189,6 +189,21 @@ days, and reports deadline risk, leftovers, conflicts, and default-estimate
 assumptions. It is a load test, not a schedule: it changes no tasks, plans,
 reminders, or Calendar data.
 
+Each day plan or weekly outlook saves one bounded explanation snapshot for 24
+hours. Ask naturally why a task did not fit, which assumptions were used, or
+what would need to change. The model selects relevant fact and suggestion ids;
+Hob renders only deterministic text tied to the saved result, ignores invented
+ids, and falls back to the same grounded facts if the explanation call fails.
+
+A follow-up what-if reruns the same deterministic engine. Temporary inputs may
+change available minutes, energy, earliest/latest availability, working bounds,
+one task's duration, or its split permission. The result is labeled
+`what-if plan` or `what-if week outlook`. It does not edit the task estimate,
+planning profile, Calendar, or adopted plan. A day what-if is still only a
+proposal and requires explicit adoption. A separate semantic guard distinguishes
+counterfactual questions from durable corrections and fails closed if that
+guard is unavailable.
+
 ## Commands and queries
 
 - `/today` lists only today's on-deck items.
@@ -204,7 +219,8 @@ reminders, or Calendar data.
 
 Everything else is just plain language. You can ask ("what's on today", "what's
 overdue", "am I overloaded this week", "what will not fit by Friday", "anything
-about the audit", "what did I finish today"), move many at once ("push
+about the audit", "what did I finish today", "why didn't that fit?", "what if
+the audit only took 30 minutes?"), move many at once ("push
 everything to tomorrow"), and undo
 conversationally ("scratch that") as well as with `/undo`.
 

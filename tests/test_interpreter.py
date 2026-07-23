@@ -54,6 +54,40 @@ def test_interpret_multiple_captures():
     assert len(interpret(llm, ctx())) == 2
 
 
+def test_shared_leading_date_is_semantically_applied_to_every_capture():
+    llm = FakeLlm([
+        {"actions": [
+            {
+                "type": "capture",
+                "task": "look at slides",
+                "raw": "look at slides",
+                "when": {"kind": "tomorrow"},
+            },
+            {
+                "type": "capture",
+                "task": "prep meeting",
+                "raw": "prep meeting",
+                "when": {"kind": "none"},
+                "time": "11:30",
+            },
+        ]},
+        {
+            "applies_to_all": True,
+            "when": {"kind": "tomorrow"},
+            "confidence": 0.98,
+        },
+    ])
+
+    actions = interpret(
+        llm,
+        ctx("tomorrow I need to look at slides and prep my 11:30 meeting"),
+    )
+
+    assert len(actions) == 2
+    assert all(isinstance(action, Capture) for action in actions)
+    assert all(action.when and action.when.kind == "tomorrow" for action in actions)
+
+
 def test_model_call_failure_falls_back_to_unknown():
     class Boom:
         def complete_json(self, prompt, schema):
@@ -91,6 +125,153 @@ def test_outlook_query_preserves_what_if_constraint():
     }]})[0]
     assert isinstance(action, Query)
     assert action.kind == "outlook" and action.constraint == "mornings only"
+
+
+def test_explain_and_what_if_queries_preserve_only_typed_inputs():
+    actions = parse_actions({"actions": [
+        {
+            "type": "query",
+            "kind": "explain",
+            "target": "a2",
+            "aspect": "changes",
+            "constraint": "what would need to change?",
+        },
+        {
+            "type": "query",
+            "kind": "what_if",
+            "target": "a2",
+            "duration_minutes": 30,
+            "splittable": True,
+            "budget_delta_minutes": 60,
+            "work_end": "19:00",
+            "constraint": "what if it only took 30m and i worked until 7?",
+        },
+    ]})
+
+    assert isinstance(actions[0], Query)
+    assert actions[0].kind == "explain"
+    assert actions[0].target == "a2"
+    assert actions[0].aspect == "changes"
+    assert isinstance(actions[1], Query)
+    assert actions[1].kind == "what_if"
+    assert actions[1].target == "a2"
+    assert actions[1].duration_minutes == 30
+    assert actions[1].splittable is True
+    assert actions[1].budget_delta_minutes == 60
+    assert actions[1].work_end == "19:00"
+
+
+def test_hypothetical_audit_prevents_schedule_mutation_leakage():
+    c = ctx(
+        "what if the audit only took 30 minutes?",
+        active=[{"id": "a3", "label": "review audit", "due_date": None}],
+    )
+    c.analysis = {
+        "kind": "plan",
+        "item_ids": ["a3"],
+        "items": [{"id": "a3", "label": "review audit"}],
+    }
+    llm = FakeLlm(
+        {"actions": [{
+            "type": "schedule",
+            "target": "a3",
+            "duration_minutes": 30,
+            "confidence": 0.95,
+        }]},
+        review_responses=[
+            {"type": "other", "confidence": 0.9},
+            {
+                "outcome": "what_if",
+                "target": "a3",
+                "duration_minutes": 30,
+                "confidence": 0.98,
+            },
+        ],
+    )
+
+    action = interpret(llm, c)[0]
+
+    assert isinstance(action, Query)
+    assert action.kind == "what_if"
+    assert action.target == "a3"
+    assert action.duration_minutes == 30
+
+
+def test_hypothetical_audit_preserves_an_explicit_durable_correction():
+    c = ctx(
+        "the audit takes 30 minutes now",
+        active=[{"id": "a3", "label": "review audit", "due_date": None}],
+    )
+    c.analysis = {
+        "kind": "plan",
+        "item_ids": ["a3"],
+        "items": [{"id": "a3", "label": "review audit"}],
+    }
+    reviewed_schedule = {
+        "type": "schedule",
+        "target": "a3",
+        "deadline": {"kind": "none"},
+        "duration_minutes": 30,
+        "duration_confidence": 1.0,
+        "schedule_kind": None,
+        "splittable": None,
+        "earliest": {"kind": "none"},
+        "earliest_time": None,
+        "preferred_window": None,
+        "depends_on": [],
+        "reminder_offsets": [],
+        "clear": [],
+        "confidence": 0.99,
+    }
+    llm = FakeLlm(
+        {"actions": [{
+            "type": "schedule",
+            "target": "a3",
+            "duration_minutes": 30,
+            "confidence": 0.95,
+        }]},
+        review_responses=[
+            reviewed_schedule,
+            {"outcome": "durable", "confidence": 0.98},
+        ],
+    )
+
+    action = interpret(llm, c)[0]
+
+    assert isinstance(action, Schedule)
+    assert action.target == "a3"
+    assert action.duration_minutes == 30
+
+
+def test_hypothetical_guard_failure_is_fail_closed():
+    class AuditOutage:
+        def __init__(self):
+            self.calls = 0
+
+        def complete_json(self, prompt, schema):
+            self.calls += 1
+            if self.calls == 1:
+                return {"actions": [{
+                    "type": "drop",
+                    "target": "a3",
+                    "confidence": 1.0,
+                }]}
+            raise RuntimeError("audit unavailable")
+
+    c = ctx(
+        "what if I dropped the audit?",
+        active=[{"id": "a3", "label": "review audit", "due_date": None}],
+    )
+    c.analysis = {
+        "kind": "plan",
+        "item_ids": ["a3"],
+        "items": [{"id": "a3", "label": "review audit"}],
+    }
+
+    action = interpret(AuditOutage(), c)[0]
+
+    assert isinstance(action, Unknown)
+    assert action.note == MODEL_UNREACHABLE
 
 
 def test_capture_uses_raw_when_task_missing():
@@ -299,6 +480,105 @@ def test_bulk_scope_adjudication_resolves_numbered_exclusions():
     assert action.scope == "presented" and action.exclude == ["a1", "a3"]
 
 
+def test_bulk_scope_audit_cannot_select_a_list_that_does_not_exist():
+    llm = FakeLlm([
+        {"actions": [{
+            "type": "bulk",
+            "op": "complete",
+            "scope": "today",
+            "except": [],
+            "confidence": 1.0,
+        }]},
+        {
+            "scope": "presented",
+            "when": {"kind": "none"},
+            "exclude": [],
+            "confidence": 0.98,
+        },
+    ])
+
+    action = interpret(llm, ctx("did everything today"))[0]
+
+    assert isinstance(action, Bulk)
+    assert action.scope == "today"
+
+
+def test_bulk_scope_adjudication_confines_model_expanded_direct_actions():
+    c = ctx(
+        "move everything on that list to monday except the audit, "
+        "that goes to sunday",
+        active=[
+            {"id": "a1", "label": "call pool"},
+            {"id": "a2", "label": "write brief"},
+            {"id": "a3", "label": "review audit"},
+            {"id": "a4", "label": "unrelated future"},
+            {"id": "a5", "label": "another future"},
+        ],
+    )
+    c.presented_items = c.active_items[:3]
+    llm = FakeLlm([
+        {"actions": [
+            {
+                "type": "reschedule",
+                "target": item_id,
+                "when": {"kind": "weekday", "day": "mon"},
+                "confidence": 1.0,
+            }
+            for item_id in ("a1", "a2", "a4", "a5")
+        ] + [{
+            "type": "reschedule",
+            "target": "a3",
+            "when": {"kind": "weekday", "day": "sun"},
+            "confidence": 1.0,
+        }]},
+        {
+            "scope": "presented",
+            "when": {"kind": "weekday", "day": "mon"},
+            "exclude": [],
+            "confidence": 0.98,
+        },
+    ])
+
+    actions = interpret(llm, c)
+
+    assert all(isinstance(action, Reschedule) for action in actions)
+    assert {action.target for action in actions} == {"a1", "a2", "a3"}
+
+
+def test_direct_multi_task_scope_audit_failure_is_fail_closed():
+    class ScopeOutage:
+        def __init__(self):
+            self.calls = 0
+
+        def complete_json(self, prompt, schema):
+            self.calls += 1
+            if self.calls == 1:
+                return {"actions": [
+                    {
+                        "type": "complete",
+                        "target": target,
+                        "confidence": 1.0,
+                    }
+                    for target in ("a1", "a2", "a4")
+                ]}
+            raise RuntimeError("scope audit unavailable")
+
+    c = ctx(
+        "finished that list",
+        active=[
+            {"id": "a1", "label": "call pool"},
+            {"id": "a2", "label": "write brief"},
+            {"id": "a4", "label": "unrelated future"},
+        ],
+    )
+    c.presented_items = c.active_items[:2]
+
+    actions = interpret(ScopeOutage(), c)
+
+    assert len(actions) == 1 and isinstance(actions[0], Unknown)
+    assert actions[0].note == MODEL_UNREACHABLE
+
+
 def test_candidate_review_corrects_model_route_and_preserves_typed_contract():
     c = ctx("the first half of the day is shot, replan")
     llm = FakeLlm(
@@ -318,6 +598,35 @@ def test_candidate_review_corrects_model_route_and_preserves_typed_contract():
     assert action.kind == "plan" and action.earliest_time == "12:00"
     assert len(llm.calls) == 3
     assert llm.calls[1][0].startswith("Independently audit a first-pass")
+
+
+def test_candidate_review_cannot_erase_a_complete_typed_weekday():
+    llm = FakeLlm(
+        {"actions": [{
+            "type": "capture",
+            "task": "pay my taxes",
+            "raw": "remind me to pay my taxes Monday",
+            "when": {"kind": "weekday", "which": "next", "day": "mon"},
+            "confidence": 1.0,
+        }]},
+        review_responses=[{
+            "type": "capture",
+            "task": "pay my taxes",
+            "raw": "remind me to pay my taxes Monday",
+            "when": {"kind": "weekday", "which": "mon", "day": None},
+            "deadline": {"kind": "none"},
+            "repeat_end": {"kind": "none"},
+            "confidence": 1.0,
+        }],
+    )
+
+    action = interpret(llm, ctx("remind me to pay my taxes Monday"))[0]
+
+    assert isinstance(action, Capture)
+    assert action.when is not None
+    assert action.when.kind == "weekday"
+    assert action.when.which == "next"
+    assert action.when.day == "mon"
 
 
 def test_high_confidence_retraction_audit_is_bounded_by_recent_change():

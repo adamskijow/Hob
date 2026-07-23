@@ -11,17 +11,18 @@ snapshot.
 - **Live and in daily use.** Runs as a `launchd` daemon on macOS, with
   [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive. Model:
   `qwen2.5:14b-instruct` (7b works; 14b is more reliable on dense messages).
-- **Release target:** v0.9.8. v0.9 adds a deterministic weekly capacity outlook,
+- **Release target:** v0.9.9. v0.9 adds a deterministic weekly capacity outlook,
   explicit working days, plan-aware EOD, first-adoption coaching, accessible
   media fallback, privacy-safe activation metrics, and correct silent handling
   of Telegram-generated service events, and guarded shared-tense completion
   reports, plain-message digest decisions, safe numbered exclusions, and
-  token-wide Telegram singleton ownership, and contextual model-owned language
-  throughout the free-text surface. Schema remains 10.
-- **Green:** `uv run pytest` (417 passing), 29 native App Store foundation
+  token-wide Telegram singleton ownership, contextual model-owned language
+  throughout the free-text surface, and grounded why/what-if negotiation over
+  deterministic plan/outlook results. Schema remains 10.
+- **Green:** `uv run pytest` (431 passing), 29 native App Store foundation
   tests, signed native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
-  evals.interpreter_eval`, 102/102). The release head must pass exact Ubuntu and
+  evals.interpreter_eval`, 109/109), plus the end-to-end analysis eval. The release head must pass exact Ubuntu and
   macOS CI before tagging.
 - **Live v0.9:** release commit `c656459` passed exact Ubuntu/macOS CI in run
   `29165341007`, was tagged and published as v0.9.0, backed up, and deployed by
@@ -84,6 +85,13 @@ snapshot.
   raw date/deadline parsing and `dateparser` are gone. Daily use's accidental
   `eod_time` batch was backed up and restored to its recorded absent pre-state.
   See `docs/audits/v0.9.8.md`.
+- **v0.9.9 grounded why/what-if increment:** each plan/outlook keeps one
+  deterministic 24-hour explanation snapshot. The model selects only known
+  facts and safe levers; temporary duration, split, budget, energy, and working
+  bounds rerun feasibility without rewriting tasks or settings. A separate
+  counterfactual guard prevents mutation-shaped model output from leaking into
+  a hypothetical and fails closed when unavailable. See
+  `docs/audits/v0.9.9.md`.
 - **Mac App Store track:** ADR 0001 establishes one behavior with Open Local
   and Store distribution editions. `native/HobAppFoundation` starts the native
   menu-bar/settings surface, typed setup readiness, bounded Apple Foundation

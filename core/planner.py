@@ -94,7 +94,8 @@ class Mutation:
 
 @dataclass
 class QueryIntent:
-    kind: str  # today | date | all | overdue | week | search | done | tag | plan | outlook
+    kind: str  # today | date | all | overdue | week | search | done | tag |
+    #             plan | outlook | explain | what_if
     date: str | None = None  # ISO; query day, planning day, or done-period start
     term: str | None = None  # search keywords, for kind=search
     tag: str | None = None  # project/list name, for kind=tag
@@ -105,6 +106,13 @@ class QueryIntent:
     earliest_time: str | None = None  # HH:MM
     latest_time: str | None = None  # HH:MM
     period: str | None = None  # today | week, for completed-history queries
+    target: str | None = None  # exact task id in the latest analysis
+    aspect: str | None = None  # why | changes | assumptions
+    budget_delta_minutes: int | None = None
+    duration_minutes: int | None = None  # temporary what-if estimate
+    splittable: bool | None = None  # temporary what-if split permission
+    work_start: str | None = None  # temporary what-if working bound
+    work_end: str | None = None  # temporary what-if working bound
 
 
 @dataclass
@@ -1216,6 +1224,153 @@ def _typed_query(
 
 def _reconcile_query(action: Query, today: date, ctx, plan: Plan) -> None:
     kind, term = action.kind, action.term
+    if kind in {"explain", "what_if"}:
+        analysis = ctx.analysis if isinstance(ctx.analysis, dict) else None
+        analysis_kind = analysis.get("kind") if analysis else None
+        if analysis_kind not in {"plan", "outlook"}:
+            plan.questions.append(
+                "ask me to plan a day or check your outlook first, then ask why "
+                "or try a what-if."
+            )
+            return
+        item_ids = {
+            str(item_id)
+            for item_id in analysis.get("item_ids", [])
+            if isinstance(item_id, str)
+        }
+        target = action.target
+        if target and target not in item_ids:
+            if kind == "explain" and action.aspect in {
+                "changes", "assumptions"
+            }:
+                # Those aspects can validly address the whole saved result.
+                # An invented task id never reaches an item-specific claim.
+                target = None
+            else:
+                plan.questions.append(
+                    "i could not tie that task to the latest plan or outlook. "
+                    "nothing changed."
+                )
+                return
+        if kind == "explain":
+            plan.queries.append(
+                QueryIntent(
+                    kind="explain",
+                    target=target,
+                    aspect=(
+                        action.aspect
+                        if action.aspect in {"why", "changes", "assumptions"}
+                        else "why"
+                    ),
+                    constraint=action.constraint or ctx.message,
+                )
+            )
+            return
+        active_ids = {
+            str(item.get("id"))
+            for item in ctx.active_items
+            if item.get("id") is not None
+        }
+        if target and target not in active_ids:
+            plan.questions.append(
+                "that task is no longer open, so i did not run the hypothetical."
+            )
+            return
+        duration = (
+            action.duration_minutes
+            if isinstance(action.duration_minutes, int)
+            and 5 <= action.duration_minutes <= 480
+            else None
+        )
+        budget = (
+            action.budget_minutes
+            if isinstance(action.budget_minutes, int)
+            and 1 <= action.budget_minutes <= 10080
+            else None
+        )
+        delta = (
+            action.budget_delta_minutes
+            if isinstance(action.budget_delta_minutes, int)
+            and -10080 <= action.budget_delta_minutes <= 10080
+            and action.budget_delta_minutes != 0
+            else None
+        )
+        energy = (
+            action.energy
+            if action.energy in {"low", "normal", "high"}
+            else None
+        )
+        earliest = dates.parse_time(action.earliest_time)
+        latest = dates.parse_time(action.latest_time)
+        if earliest and latest and earliest >= latest:
+            plan.questions.append(
+                "the temporary working window needs a start before its end. "
+                "nothing changed."
+            )
+            return
+        clock_pattern = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+        work_start = (
+            action.work_start
+            if action.work_start and clock_pattern.fullmatch(action.work_start)
+            else None
+        )
+        work_end = (
+            action.work_end
+            if action.work_end and clock_pattern.fullmatch(action.work_end)
+            else None
+        )
+        if work_start and work_end and work_start >= work_end:
+            plan.questions.append(
+                "the temporary working bounds need a start before their end. "
+                "nothing changed."
+            )
+            return
+        if not any(
+            value is not None
+            for value in (
+                duration,
+                budget,
+                delta,
+                energy,
+                earliest,
+                latest,
+                action.splittable,
+                work_start,
+                work_end,
+            )
+        ):
+            plan.questions.append(
+                "what assumption should i test—available minutes, working "
+                "window, energy, task estimate, or split permission?"
+            )
+            return
+        if (duration is not None or action.splittable is not None) and not target:
+            plan.questions.append(
+                "which task should use that temporary estimate or split assumption?"
+            )
+            return
+        plan.queries.append(
+            QueryIntent(
+                kind="what_if",
+                target=target,
+                constraint=action.constraint or ctx.message,
+                budget_minutes=budget,
+                budget_scope=(
+                    action.budget_scope
+                    if action.budget_scope in {"day", "horizon"}
+                    else None
+                ),
+                budget_delta_minutes=delta,
+                energy=energy,
+                earliest_time=earliest,
+                latest_time=latest,
+                duration_minutes=duration,
+                splittable=action.splittable,
+                work_start=work_start,
+                work_end=work_end,
+            )
+        )
+        return
     if kind == "outlook":
         resolution = dates.resolve_intent(action.when, today)
         plan.queries.append(

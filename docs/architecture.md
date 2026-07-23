@@ -114,6 +114,22 @@ result as a read-only capacity answer. No forecast allocation enters plan,
 task, action, reminder, or Calendar state. Named boundaries such as "by Friday"
 are resolved by the deterministic date core.
 
+The latest day plan or outlook also becomes a versioned, 24-hour explanation
+snapshot in meta state. It contains deterministic facts, bounded suggestions,
+typed query inputs, and a compact item/result map. For a free-form explanation,
+the local model may select only known fact and suggestion ids; the edge renders
+the stored text and discards invented ids. Model failure falls back to relevant
+stored facts, so explanation never becomes an ungrounded prose path.
+
+A typed `what_if` query clones current open tasks in memory, applies bounded
+temporary duration/split/availability inputs, and reruns feasibility. The clone
+may produce a new explicit proposal but cannot write task metadata or profile
+settings. An independent semantic guard audits any mutation-shaped response
+while an analysis is conversationally active, distinguishing counterfactuals
+from durable corrections. Unavailable or uncertain guard output fails closed.
+A real mutation invalidates the old snapshot before any same-turn replan writes
+a fresh one.
+
 The Swift EventKit bridge is a signed background app because Calendar permission
 belongs to a stable macOS bundle identity. Apple exposes reads through a full-
 access permission tier, but the bridge implements only status, permission, and

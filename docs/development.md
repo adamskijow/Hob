@@ -31,6 +31,14 @@ feeds representative messages through Ollama and asserts the resulting plan:
 HOB_MODEL=qwen2.5:14b-instruct uv run python -m evals.interpreter_eval
 ```
 
+The explanation increment also has an end-to-end real-model gate. It builds a
+constrained plan, asks why a deferred task did not fit, tests a combined
+duration/window hypothetical, and verifies that durable task state is unchanged:
+
+```
+HOB_MODEL=qwen2.5:14b-instruct uv run python -m evals.analysis_eval
+```
+
 On Windows, a `tzdata` package is installed under a platform marker so the
 standard-library `zoneinfo` has a timezone database; on the macOS target the OS
 provides it and the marker keeps it off that environment.

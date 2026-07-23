@@ -123,6 +123,10 @@ HELP = (
     'calendar bridge is connected, plans avoid calendar conflicts. say "plan '
     'work from 9 to 5", "plan work weekdays", or "protect lunch noon to 1" '
     'to set the daily frame. /outlook shows the read-only capacity result. '
+    'after a plan or outlook, ask "why didn\'t that fit?", "what assumptions '
+    'did you use?", or test "what if it took 30 minutes?". explanations use '
+    'only verified planning facts; hypotheticals make a temporary proposal and '
+    'never rewrite a task or setting. '
     'say "use this plan" to adopt local sessions; /plan shows the active '
     'version. adoption never moves tasks or writes calendar events.'
 )
@@ -170,6 +174,7 @@ FOCUS_KEY = "focus"
 FOCUS_TTL_MINUTES = 15
 PRESENTED_LIST_KEY = "last_presented_list"
 LAST_PLAN_KEY = "last_day_plan"
+LAST_ANALYSIS_KEY = "last_deterministic_analysis"
 # Reactions on a Hob message that maps to an item: these complete it, this drops
 # it. Anything else (hearts on chit-chat) is appreciation, not an instruction.
 REACT_COMPLETE = {"\U0001F44D", "\U0001F44C", "\U0001F4AF", "\U0001F3C6"}
@@ -199,6 +204,28 @@ or invent tasks or ids. Calendar event names are intentionally unavailable.
 Today: {today}
 User constraint: {constraint}
 Feasible timeline: {items}
+"""
+
+EXPLANATION_SELECT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "fact_ids": {"type": "array", "items": {"type": "string"}},
+        "suggestion_ids": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["fact_ids", "suggestion_ids"],
+}
+EXPLANATION_SELECT_PROMPT = """\
+You are Hob selecting the most relevant grounded answer to a user's question
+about the latest deterministic plan or capacity outlook. Return only ids from
+the supplied facts and suggestions. Pick at most four facts and at most three
+suggestions. Prefer facts tied to the named task. Do not invent a claim, time,
+reason, task, id, calendar event, or recommendation. Empty lists are valid.
+
+Question: {question}
+Requested aspect: {aspect}
+Requested task id: {target}
+Grounded facts: {facts}
+Grounded suggestions: {suggestions}
 """
 
 SEARCH_SCHEMA = {
@@ -727,7 +754,65 @@ class MessageService:
             onboarding_stage=(
                 onboarding_stage if onboarding_stage in ONBOARDING_STEPS else None
             ),
+            analysis=self._analysis_context(),
         )
+
+    def _load_analysis_snapshot(self) -> dict | None:
+        raw = self._store.get_meta(LAST_ANALYSIS_KEY)
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        if (
+            not isinstance(data, dict)
+            or data.get("version") != 1
+            or data.get("kind") not in {"plan", "outlook"}
+            or not isinstance(data.get("facts"), list)
+            or not isinstance(data.get("suggestions"), list)
+            or not isinstance(data.get("query"), dict)
+        ):
+            return None
+        return data
+
+    def _analysis_context(self) -> dict | None:
+        """Compact latest-result context for semantic routing and references."""
+        data = self._load_analysis_snapshot()
+        if data is None:
+            return None
+        try:
+            generated = datetime.fromisoformat(str(data["generated_at"]))
+            now = self._clock.now()
+            if generated.tzinfo is None:
+                generated = generated.replace(tzinfo=now.tzinfo)
+            age = now - generated
+            if not timedelta(0) <= age <= timedelta(hours=24):
+                return None
+        except (KeyError, TypeError, ValueError):
+            return None
+        items = data.get("items")
+        compact_items = [
+            {
+                key: item.get(key)
+                for key in ("id", "label", "outcome", "reason")
+                if item.get(key) is not None
+            }
+            for item in items
+            if isinstance(item, dict) and item.get("id") and item.get("label")
+        ][:20] if isinstance(items, list) else []
+        return {
+            "kind": data["kind"],
+            "generated_at": data.get("generated_at"),
+            "target_day": data.get("target_day"),
+            "start_day": data.get("start_day"),
+            "end_day": data.get("end_day"),
+            "constraint": data.get("constraint"),
+            "item_ids": [
+                item["id"] for item in compact_items if isinstance(item.get("id"), str)
+            ],
+            "items": compact_items,
+        }
 
     def _load_presented_context(self) -> tuple[list[dict], str | None]:
         raw = self._store.get_meta(PRESENTED_LIST_KEY)
@@ -975,16 +1060,21 @@ class MessageService:
             else None
         )
         applied = self._apply(plan.mutations, message_id, batch_id=batch_id)
+        setting_answers = [
+            self._apply_setting(s, message_id, batch_id) for s in plan.settings
+        ]
+        # A real task or preference correction invalidates the prior analysis.
+        # If this same turn also replans, the query below replaces it with a
+        # fresh grounded snapshot after all durable changes are visible.
+        if applied or plan.settings:
+            self._store.delete_meta(LAST_ANALYSIS_KEY)
         if plan.nudge_decision:
             self._store.set_meta(DIGEST_DECISION_KEY, "")
         self._save_focus(applied)
         answers = [plan.acknowledgement] if plan.acknowledgement else []
         answers += [self._answer_start(item_id) for item_id in plan.starts]
-        answers += [self._answer_query(q) for q in plan.queries]
-        setting_answers = [
-            self._apply_setting(s, message_id, batch_id) for s in plan.settings
-        ]
         answers += setting_answers
+        answers += [self._answer_query(q) for q in plan.queries]
         if plan.plan_action:
             answers.append(
                 self._apply_plan_action(plan.plan_action, message_id, batch_id)
@@ -1399,6 +1489,8 @@ class MessageService:
             )
             applied.append((m.kind, item))
         self._store.append_actions(entries)
+        if applied:
+            self._store.delete_meta(LAST_ANALYSIS_KEY)
         return applied
 
     def _undo(self) -> str:
@@ -1433,6 +1525,7 @@ class MessageService:
                 self._store.update_item(op.item)
                 self._store.sync_plan_sessions(op.item)
         self._store.mark_batch_undone(batch[0].batch_id)
+        self._store.delete_meta(LAST_ANALYSIS_KEY)
 
     def _restore_batch(self, batch: list[ActionLogEntry]) -> None:
         """Restore an edit's original batch if replacement interpretation fails."""
@@ -1458,6 +1551,7 @@ class MessageService:
                 self._store.update_item(item)
             self._store.sync_plan_sessions(item)
         self._store.mark_batch_redone(batch[0].batch_id)
+        self._store.delete_meta(LAST_ANALYSIS_KEY)
 
     def _handle_edit(self, msg: InboundMessage) -> str:
         """The user edited an earlier message (their natural typo fix): revert
@@ -1481,6 +1575,10 @@ class MessageService:
 
     def _answer_query(self, q: QueryIntent) -> str:
         today = self._clock.today().isoformat()
+        if q.kind == "explain":
+            return self._answer_explanation(q)
+        if q.kind == "what_if":
+            return self._answer_what_if(q)
         if q.kind == "plan_status":
             return self._answer_plan_status()
         if q.kind == "outlook":
@@ -1613,7 +1711,12 @@ class MessageService:
         return "\n".join(lines)
 
     def _answer_outlook(
-        self, query: QueryIntent | str, requested_end: str | None = None
+        self,
+        query: QueryIntent | str,
+        requested_end: str | None = None,
+        *,
+        open_items: list[Item] | None = None,
+        temporary: bool = False,
     ) -> str:
         """Render a read-only seven-day capacity simulation."""
         q = query if isinstance(query, QueryIntent) else QueryIntent(
@@ -1641,7 +1744,9 @@ class MessageService:
             run = self._store.active_plan(day.isoformat())
             if run is not None:
                 adopted.extend(self._store.plan_sessions(run.id))
-        open_items = self._store.open_items()
+        open_items = (
+            open_items if open_items is not None else self._store.open_items()
+        )
         preferences = self._planning_preferences(q)
         forecast = build_week_forecast(
             open_items,
@@ -1651,8 +1756,12 @@ class MessageService:
             horizon_days=horizon_days,
             adopted_sessions=adopted,
         )
+        self._save_outlook_analysis(
+            q, open_items, forecast, snapshots, preferences
+        )
+        title = "what-if week outlook" if temporary else "week outlook"
         lines = [
-            f"week outlook {forecast.start_day} to {forecast.end_day}: "
+            f"{title} {forecast.start_day} to {forecast.end_day}: "
             f"{forecast.used_minutes}m allocated, {forecast.free_minutes}m open"
         ]
         for day in forecast.days:
@@ -1726,7 +1835,236 @@ class MessageService:
             "nothing changed. this is a read-only load test, not an adopted "
             "weekly schedule."
         )
+        if temporary:
+            lines.append(
+                "temporary assumptions only: tasks and your working profile "
+                "are unchanged."
+            )
+        elif forecast.risks or forecast.unplaced:
+            lines.append(
+                'ask "why?" or test a hypothetical such as "what if I had '
+                '90 minutes a day?"'
+            )
         return "\n".join(lines)
+
+    def _answer_explanation(self, query: QueryIntent) -> str:
+        """Let the model select relevance; render only deterministic claims."""
+        data = self._load_analysis_snapshot()
+        if data is None:
+            return (
+                "i do not have a current plan or outlook to explain. ask me to "
+                "plan a day or check capacity first. nothing changed."
+            )
+        facts = [
+            entry for entry in data["facts"]
+            if isinstance(entry, dict)
+            and isinstance(entry.get("id"), str)
+            and isinstance(entry.get("text"), str)
+        ]
+        suggestions = [
+            entry for entry in data["suggestions"]
+            if isinstance(entry, dict)
+            and isinstance(entry.get("id"), str)
+            and isinstance(entry.get("text"), str)
+        ]
+        target = query.target
+        valid_fact_ids = {
+            entry["id"]: entry
+            for entry in facts
+            if not target or entry.get("item_id") in {None, target}
+        }
+        valid_suggestion_ids = {
+            entry["id"]: entry
+            for entry in suggestions
+            if not target or entry.get("item_id") in {None, target}
+        }
+        selected_fact_ids: list[str] = []
+        selected_suggestion_ids: list[str] = []
+        try:
+            out = self._llm.complete_json(
+                EXPLANATION_SELECT_PROMPT.format(
+                    question=query.constraint or "why?",
+                    aspect=query.aspect or "why",
+                    target=target or "(none)",
+                    facts=json.dumps(facts, ensure_ascii=False),
+                    suggestions=json.dumps(suggestions, ensure_ascii=False),
+                ),
+                EXPLANATION_SELECT_SCHEMA,
+            )
+        except Exception:
+            out = {}
+        if isinstance(out, dict):
+            raw_fact_ids = out.get("fact_ids")
+            if isinstance(raw_fact_ids, list):
+                selected_fact_ids = list(dict.fromkeys(
+                    str(entry_id)
+                    for entry_id in raw_fact_ids
+                    if str(entry_id) in valid_fact_ids
+                ))[:4]
+            raw_suggestion_ids = out.get("suggestion_ids")
+            if isinstance(raw_suggestion_ids, list):
+                selected_suggestion_ids = list(dict.fromkeys(
+                    str(entry_id)
+                    for entry_id in raw_suggestion_ids
+                    if str(entry_id) in valid_suggestion_ids
+                ))[:3]
+
+        if not selected_fact_ids:
+            candidates = list(valid_fact_ids.values())
+            if query.aspect == "assumptions":
+                assumption_candidates = [
+                    entry for entry in candidates
+                    if entry.get("kind") in {"assumption", "calendar", "policy"}
+                ]
+                candidates = assumption_candidates or candidates
+            elif target:
+                target_candidates = [
+                    entry for entry in candidates
+                    if entry.get("item_id") == target
+                ]
+                global_candidates = [
+                    entry for entry in candidates
+                    if entry.get("item_id") is None
+                ]
+                candidates = target_candidates + global_candidates
+            selected_fact_ids = [entry["id"] for entry in candidates[:4]]
+        if query.aspect == "changes" and not selected_suggestion_ids:
+            candidates = list(valid_suggestion_ids.values())
+            if target:
+                candidates.sort(key=lambda entry: entry.get("item_id") != target)
+            selected_suggestion_ids = [entry["id"] for entry in candidates[:3]]
+
+        kind = "plan" if data["kind"] == "plan" else "outlook"
+        generated = str(data.get("generated_at") or "")
+        when = generated[11:16] if len(generated) >= 16 else "earlier"
+        if query.aspect == "changes":
+            lines = [f"what could change in the {kind} from {when}:"]
+        elif query.aspect == "assumptions":
+            lines = [f"assumptions behind the {kind} from {when}:"]
+        else:
+            lines = [f"why the {kind} from {when} came out that way:"]
+        lines.extend(
+            f"- {valid_fact_ids[entry_id]['text']}"
+            for entry_id in selected_fact_ids
+        )
+        if selected_suggestion_ids:
+            lines.append("safe levers:")
+            lines.extend(
+                f"- {valid_suggestion_ids[entry_id]['text']}"
+                for entry_id in selected_suggestion_ids
+            )
+        last_batch = self._store.last_batch()
+        if last_batch and generated and last_batch[0].ts > generated:
+            lines.append(
+                "this explains the saved result; a later task or setting change "
+                "may make it stale, so ask me to replan for the current answer."
+            )
+        lines.append(
+            "nothing changed. ask a what-if to test one of those levers, or "
+            "state a correction directly to make it durable."
+        )
+        return "\n".join(lines)
+
+    def _answer_what_if(self, query: QueryIntent) -> str:
+        """Rerun the latest deterministic analysis with temporary typed inputs."""
+        data = self._load_analysis_snapshot()
+        if data is None:
+            return (
+                "i do not have a current plan or outlook to test. ask me to "
+                "build one first. nothing changed."
+            )
+        base = data.get("query") or {}
+        budget = (
+            query.budget_minutes
+            if query.budget_minutes is not None
+            else base.get("budget_minutes")
+        )
+        if query.budget_delta_minutes is not None and query.budget_minutes is None:
+            if not isinstance(base.get("budget_minutes"), int):
+                return (
+                    "the last analysis had no explicit minutes budget; it was "
+                    "bounded by your working window and Calendar. tell me where "
+                    'the extra time exists, such as "what if i can work until '
+                    '7?", or give an absolute available-minute total. nothing changed.'
+                )
+            adjusted = base["budget_minutes"] + query.budget_delta_minutes
+            if not 1 <= adjusted <= 10080:
+                return (
+                    "that temporary available-time total is outside the supported "
+                    "range of 1 to 10,080 minutes. nothing changed."
+                )
+            budget = adjusted
+
+        scenario = QueryIntent(
+            kind=data["kind"],
+            date=(
+                data.get("target_day")
+                if data["kind"] == "plan"
+                else data.get("end_day")
+            ),
+            constraint=(
+                f"{base.get('constraint') or data.get('constraint') or data['kind']}; "
+                f"temporary what-if: {query.constraint or 'changed assumptions'}"
+            ),
+            budget_minutes=budget if isinstance(budget, int) else None,
+            budget_scope=(
+                query.budget_scope
+                or base.get("budget_scope")
+                or ("horizon" if data["kind"] == "outlook" else "day")
+            ),
+            energy=query.energy or base.get("energy"),
+            earliest_time=query.earliest_time or base.get("earliest_time"),
+            latest_time=query.latest_time or base.get("latest_time"),
+            # In a temporary scenario, an availability boundary may widen the
+            # durable profile as well as narrow it. Keep the earliest/latest
+            # constraint and also use it as the temporary outer bound.
+            work_start=(
+                query.work_start
+                or query.earliest_time
+                or base.get("work_start")
+            ),
+            work_end=(
+                query.work_end
+                or query.latest_time
+                or base.get("work_end")
+            ),
+        )
+        items = [
+            Item.from_dict(item.to_dict()) for item in self._store.open_items()
+        ]
+        if query.target:
+            target = next(
+                (item for item in items if item.id == query.target), None
+            )
+            if target is None:
+                return (
+                    "that task is no longer open, so i did not run the "
+                    "hypothetical. nothing changed."
+                )
+            if query.duration_minutes is not None:
+                target.duration_minutes = query.duration_minutes
+                target.duration_confidence = 1.0
+            if query.splittable is not None:
+                target.splittable = query.splittable
+
+        if data["kind"] == "plan":
+            target_day = data.get("target_day")
+            if not isinstance(target_day, str):
+                return "the saved plan target is invalid. nothing changed."
+            if target_day < self._clock.today().isoformat():
+                return (
+                    "that saved plan day has passed. ask me to plan today before "
+                    "testing a what-if. nothing changed."
+                )
+            return self._answer_plan(
+                scenario, items, target_day, temporary=True
+            )
+        return self._answer_outlook(
+            scenario,
+            data.get("end_day"),
+            open_items=items,
+            temporary=True,
+        )
 
     def _answer_start(self, item_id: str) -> str:
         item = self._store.get_item(item_id)
@@ -1850,6 +2188,8 @@ class MessageService:
             work_start, work_end = work_range.split("-", 1)
         except ValueError:
             work_start, work_end = self._work_start, self._work_end
+        work_start = query.work_start or work_start
+        work_end = query.work_end or work_end
         work_days = self._effective_work_days()
         stored_breaks = self._store.get_meta(BREAKS_KEY)
         break_range = (
@@ -1889,8 +2229,416 @@ class MessageService:
             ),
         )
 
+    @staticmethod
+    def _query_snapshot(query: QueryIntent) -> dict:
+        return {
+            key: getattr(query, key)
+            for key in (
+                "kind",
+                "date",
+                "constraint",
+                "budget_minutes",
+                "budget_scope",
+                "energy",
+                "earliest_time",
+                "latest_time",
+                "work_start",
+                "work_end",
+            )
+        }
+
+    def _save_plan_analysis(
+        self,
+        query: QueryIntent,
+        open_items: list[Item],
+        feasible,
+        snapshot: CalendarSnapshot,
+        preferences,
+    ) -> None:
+        """Persist only deterministic claims used by the explanation pass."""
+        facts: list[dict] = []
+        suggestions: list[dict] = []
+
+        def fact(kind: str, text: str, item_id: str | None = None) -> None:
+            facts.append(
+                {
+                    "id": f"f{len(facts) + 1}",
+                    "kind": kind,
+                    "text": text,
+                    "item_id": item_id,
+                }
+            )
+
+        def suggestion(text: str, item_id: str | None = None) -> None:
+            if any(entry["text"] == text for entry in suggestions):
+                return
+            suggestions.append(
+                {
+                    "id": f"s{len(suggestions) + 1}",
+                    "text": text,
+                    "item_id": item_id,
+                }
+            )
+
+        used = sum(
+            max(0, int((block.end - block.start).total_seconds() // 60))
+            for block in feasible.blocks
+        )
+        fact(
+            "capacity",
+            f"The pass scheduled {used} minutes and left "
+            f"{feasible.free_minutes} minutes open inside "
+            f"{preferences.work_start}–{preferences.work_end}.",
+        )
+        if preferences.budget_minutes is not None:
+            scope = (
+                "across the whole outlook"
+                if preferences.budget_scope == "horizon"
+                else "for the day"
+            )
+            fact(
+                "assumption",
+                f"The temporary available-time budget was "
+                f"{preferences.budget_minutes} minutes {scope}.",
+            )
+        if preferences.energy:
+            fact(
+                "assumption",
+                f"The pass used the explicit {preferences.energy}-energy ordering.",
+            )
+        if preferences.earliest_time or preferences.latest_time:
+            fact(
+                "assumption",
+                "The requested working window was limited to "
+                f"{preferences.earliest_time or preferences.work_start}–"
+                f"{preferences.latest_time or preferences.work_end}.",
+            )
+        if snapshot.status == "authorized":
+            fact(
+                "calendar",
+                f"EventKit contributed {len(snapshot.busy)} opaque busy block(s); "
+                "Hob did not receive their titles.",
+            )
+        else:
+            fact(
+                "calendar",
+                f"Calendar status was {snapshot.status}, so the pass used the "
+                "working profile without Calendar availability.",
+            )
+
+        blocks: dict[str, list] = {}
+        for block in feasible.blocks:
+            blocks.setdefault(block.item_id, []).append(block)
+        deferred = {entry.item_id: entry for entry in feasible.deferred}
+        item_summaries: list[dict] = []
+        target_day = feasible.day
+        for item in open_items:
+            placed = blocks.get(item.id, [])
+            held = deferred.get(item.id)
+            if placed:
+                total = sum(
+                    max(0, int((block.end - block.start).total_seconds() // 60))
+                    for block in placed
+                )
+                windows = ", ".join(
+                    f"{block.start:%H:%M}–{block.end:%H:%M}" for block in placed
+                )
+                reason = f"scheduled for {total} minutes at {windows}"
+                fact(
+                    "placement",
+                    f'"{item.task}" was {reason}.',
+                    item.id,
+                )
+                if any(block.inferred_duration for block in placed):
+                    fact(
+                        "assumption",
+                        f'"{item.task}" used the visible '
+                        f"{preferences.default_duration_minutes}-minute default "
+                        "because it has no durable estimate.",
+                        item.id,
+                    )
+                    suggestion(
+                        f'Tell Hob how long "{item.task}" takes to replace the '
+                        "default estimate durably.",
+                        item.id,
+                    )
+                outcome = "scheduled"
+            elif held is not None:
+                reason = held.reason
+                fact(
+                    "deferred",
+                    f'"{item.task}" was not placed. Deterministic reason: '
+                    f"{held.reason}. {held.remaining_minutes} minutes remained.",
+                    item.id,
+                )
+                outcome = "not placed"
+                low_reason = held.reason.lower()
+                if "waiting on" in low_reason:
+                    suggestion(
+                        f'Resume "{item.task}" only when its blocker has cleared.',
+                        item.id,
+                    )
+                elif "blocked by" in low_reason:
+                    suggestion(
+                        f'Finish or explicitly change the prerequisite for '
+                        f'"{item.task}".',
+                        item.id,
+                    )
+                elif "not ready until" in low_reason:
+                    suggestion(
+                        f'Correct the earliest-start constraint on "{item.task}" '
+                        "if it is no longer true.",
+                        item.id,
+                    )
+                elif "budget" in low_reason:
+                    suggestion(
+                        "Test a larger available-minute budget, or correct the "
+                        f'estimate/split permission for "{item.task}".',
+                        item.id,
+                    )
+                elif "fit" in low_reason or "partially" in low_reason:
+                    suggestion(
+                        "Test a wider working window, a corrected estimate, or "
+                        f'split permission for "{item.task}".',
+                        item.id,
+                    )
+            elif item.due_date and item.due_date > target_day:
+                outcome = "outside day"
+                reason = f"scheduled for {item.due_date}, after {target_day}"
+                fact(
+                    "eligibility",
+                    f'"{item.task}" was outside this day because its scheduled '
+                    f"date is {item.due_date}.",
+                    item.id,
+                )
+                suggestion(
+                    f'Move "{item.task}" only if its scheduled date is genuinely '
+                    "wrong; a what-if will not rewrite it.",
+                    item.id,
+                )
+            else:
+                outcome = "not selected"
+                reason = "outside the feasible pass"
+                fact(
+                    "eligibility",
+                    f'"{item.task}" was outside the feasible pass for {target_day}.',
+                    item.id,
+                )
+            if item.deadline_date:
+                fact(
+                    "constraint",
+                    f'"{item.task}" has a hard deadline of {item.deadline_date}.',
+                    item.id,
+                )
+            if item.priority != "normal":
+                fact(
+                    "constraint",
+                    f'"{item.task}" has {item.priority} priority.',
+                    item.id,
+                )
+            item_summaries.append(
+                {
+                    "id": item.id,
+                    "label": item.task,
+                    "outcome": outcome,
+                    "reason": reason,
+                }
+            )
+        for warning in dict.fromkeys(feasible.warnings):
+            fact("warning", warning)
+        fact(
+            "policy",
+            "Deterministic ordering considers scheduled-day urgency, hard "
+            "deadline, priority, the low-energy preference when present, due "
+            "date, and capture order. The model cannot reorder the timeline.",
+        )
+        data = {
+            "version": 1,
+            "kind": "plan",
+            "generated_at": feasible.generated_at,
+            "target_day": feasible.day,
+            "constraint": query.constraint,
+            "query": self._query_snapshot(query),
+            "items": item_summaries,
+            "facts": facts,
+            "suggestions": suggestions,
+            "result": feasible.to_dict(),
+        }
+        self._store.set_meta(LAST_ANALYSIS_KEY, json.dumps(data, ensure_ascii=False))
+
+    def _save_outlook_analysis(
+        self,
+        query: QueryIntent,
+        open_items: list[Item],
+        forecast,
+        snapshots: dict[str, CalendarSnapshot],
+        preferences,
+    ) -> None:
+        facts: list[dict] = []
+        suggestions: list[dict] = []
+
+        def fact(kind: str, text: str, item_id: str | None = None) -> None:
+            facts.append(
+                {
+                    "id": f"f{len(facts) + 1}",
+                    "kind": kind,
+                    "text": text,
+                    "item_id": item_id,
+                }
+            )
+
+        def suggestion(text: str, item_id: str | None = None) -> None:
+            if any(entry["text"] == text for entry in suggestions):
+                return
+            suggestions.append(
+                {
+                    "id": f"s{len(suggestions) + 1}",
+                    "text": text,
+                    "item_id": item_id,
+                }
+            )
+
+        fact(
+            "capacity",
+            f"The outlook allocated {forecast.used_minutes} minutes and left "
+            f"{forecast.free_minutes} minutes open from {forecast.start_day} "
+            f"through {forecast.end_day}.",
+        )
+        authorized = sum(
+            snapshot.status == "authorized" for snapshot in snapshots.values()
+        )
+        fact(
+            "calendar",
+            f"EventKit availability was used on {authorized} of "
+            f"{len(snapshots)} day(s); only opaque busy ranges were available.",
+        )
+        if preferences.budget_minutes is not None:
+            scope = (
+                "total across the horizon"
+                if preferences.budget_scope == "horizon"
+                else "per planning day"
+            )
+            fact(
+                "assumption",
+                f"The temporary budget was {preferences.budget_minutes} minutes "
+                f"{scope}.",
+            )
+        if preferences.energy:
+            fact(
+                "assumption",
+                f"The outlook used the explicit {preferences.energy}-energy ordering.",
+            )
+        allocated: dict[str, int] = {}
+        allocation_days: dict[str, list[str]] = {}
+        for day in forecast.days:
+            for block in day.blocks:
+                minutes = max(
+                    0, int((block.end - block.start).total_seconds() // 60)
+                )
+                allocated[block.item_id] = allocated.get(block.item_id, 0) + minutes
+                allocation_days.setdefault(block.item_id, []).append(day.day)
+        risks = {entry.item_id: entry for entry in forecast.risks}
+        unplaced = {entry.item_id: entry for entry in forecast.unplaced}
+        item_summaries: list[dict] = []
+        for item in open_items:
+            risk = risks.get(item.id)
+            outside = unplaced.get(item.id)
+            if risk is not None:
+                outcome = "at risk"
+                reason = risk.reason
+                fact(
+                    "risk",
+                    f'"{item.task}" was at risk. Deterministic reason: '
+                    f"{risk.reason}. {risk.remaining_minutes} minutes remained.",
+                    item.id,
+                )
+            elif outside is not None:
+                outcome = "outside horizon"
+                reason = outside.reason
+                fact(
+                    "unplaced",
+                    f'"{item.task}" was outside the fit. Deterministic reason: '
+                    f"{outside.reason}. {outside.remaining_minutes} minutes remained.",
+                    item.id,
+                )
+            elif item.id in allocated:
+                outcome = "allocated"
+                days = ", ".join(dict.fromkeys(allocation_days[item.id]))
+                reason = f"{allocated[item.id]} minutes across {days}"
+                fact(
+                    "placement",
+                    f'"{item.task}" received {reason}.',
+                    item.id,
+                )
+            else:
+                outcome = "outside horizon"
+                reason = f"its constraints put it outside {forecast.end_day}"
+                fact(
+                    "eligibility",
+                    f'"{item.task}" was not part of this horizon; its scheduled, '
+                    "deadline, or earliest-start constraints are later.",
+                    item.id,
+                )
+            if item.id in forecast.assumed_item_ids:
+                fact(
+                    "assumption",
+                    f'"{item.task}" used the visible '
+                    f"{preferences.default_duration_minutes}-minute default "
+                    "because it has no durable estimate.",
+                    item.id,
+                )
+                suggestion(
+                    f'Tell Hob how long "{item.task}" takes to make the estimate durable.',
+                    item.id,
+                )
+            if risk is not None or outside is not None:
+                low_reason = reason.lower()
+                if "waiting on" in low_reason:
+                    suggestion(
+                        f'Resume "{item.task}" when the blocker clears.',
+                        item.id,
+                    )
+                elif "blocked by" in low_reason or "prerequisite" in low_reason:
+                    suggestion(
+                        f'Finish or correct the prerequisite for "{item.task}".',
+                        item.id,
+                    )
+                else:
+                    suggestion(
+                        "Test more available time, a wider working window, or "
+                        f'a corrected estimate/split assumption for "{item.task}".',
+                        item.id,
+                    )
+            item_summaries.append(
+                {
+                    "id": item.id,
+                    "label": item.task,
+                    "outcome": outcome,
+                    "reason": reason,
+                }
+            )
+        data = {
+            "version": 1,
+            "kind": "outlook",
+            "generated_at": self._clock.now().isoformat(),
+            "start_day": forecast.start_day,
+            "end_day": forecast.end_day,
+            "constraint": query.constraint,
+            "query": self._query_snapshot(query),
+            "items": item_summaries,
+            "facts": facts,
+            "suggestions": suggestions,
+            "result": forecast.to_dict(),
+        }
+        self._store.set_meta(LAST_ANALYSIS_KEY, json.dumps(data, ensure_ascii=False))
+
     def _answer_plan(
-        self, query: QueryIntent, open_items: list[Item], target_iso: str
+        self,
+        query: QueryIntent,
+        open_items: list[Item],
+        target_iso: str,
+        *,
+        temporary: bool = False,
     ) -> str:
         """Build a read-only timeline; the model can explain but cannot schedule."""
         constraint = query.constraint or "plan my day"
@@ -2008,7 +2756,21 @@ class MessageService:
                 if item_id in scheduled_ids and reason:
                     reasons[item_id] = reason
 
-        title = "plan" if target_iso == self._clock.today().isoformat() else f"plan for {target_iso}"
+        self._save_plan_analysis(
+            query, open_items, feasible, snapshot, preferences
+        )
+        if temporary:
+            title = (
+                "what-if plan"
+                if target_iso == self._clock.today().isoformat()
+                else f"what-if plan for {target_iso}"
+            )
+        else:
+            title = (
+                "plan"
+                if target_iso == self._clock.today().isoformat()
+                else f"plan for {target_iso}"
+            )
         lines = [f"{title}: {headline}"]
         if snapshot.status == "authorized":
             lines.append(f"calendar checked: {len(snapshot.busy)} busy block(s)")
@@ -2061,6 +2823,17 @@ class MessageService:
             f"{feasible.free_minutes}m remains open. nothing moved; tell me what "
             'changed and i will replan, or say "use this plan" to adopt it.'
         )
+        if temporary:
+            lines.append(
+                "temporary assumptions only: task estimates and your working "
+                "profile are unchanged. adopting uses these proposed sessions; "
+                "say the correction directly if it should become durable."
+            )
+        elif feasible.deferred:
+            lines.append(
+                'ask "why didn\'t that fit?" or test a hypothetical such as '
+                '"what if it took 30 minutes?"'
+            )
         return "\n".join(lines)
 
     def _reply(
@@ -2296,12 +3069,13 @@ class DigestService:
         )
         if release_notice:
             text += (
-                f"\n\nnew in hob {__version__}: answer recaps, stale-task "
-                "questions, confirmations, and setup in your own words. the "
-                "local model now owns those meanings plus planning constraints "
-                "and corrections; deterministic checks still confine every "
-                "effect to the verified task, prompt, or displayed list. "
-                "there are no hidden command-phrase shortcuts. "
+                f"\n\nnew in hob {__version__}: after a plan or outlook, ask "
+                '"why?", "what assumptions did you use?", or test a temporary '
+                '"what if?". the local model understands the question and '
+                "selects only facts produced by the deterministic planner. "
+                "hypotheticals create a labeled proposal; they never rewrite a "
+                "task, setting, adopted plan, or calendar without explicit "
+                "durable language and adoption. "
                 "this note appears once."
             )
         digest = Digest(
