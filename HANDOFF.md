@@ -11,18 +11,19 @@ snapshot.
 - **Live and in daily use.** Runs as a `launchd` daemon on macOS, with
   [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive. Model:
   `qwen2.5:14b-instruct` (7b works; 14b is more reliable on dense messages).
-- **Release target:** v0.9.9. v0.9 adds a deterministic weekly capacity outlook,
+- **Release target:** v0.9.10. v0.9 adds a deterministic weekly capacity outlook,
   explicit working days, plan-aware EOD, first-adoption coaching, accessible
   media fallback, privacy-safe activation metrics, and correct silent handling
   of Telegram-generated service events, and guarded shared-tense completion
   reports, plain-message digest decisions, safe numbered exclusions, and
   token-wide Telegram singleton ownership, contextual model-owned language
-  throughout the free-text surface, and grounded why/what-if negotiation over
-  deterministic plan/outlook results. Schema remains 10.
-- **Green:** `uv run pytest` (431 passing), 29 native App Store foundation
+  throughout the free-text surface, grounded why/what-if negotiation over
+  deterministic plan/outlook results, and a fail-closed semantic safety pass
+  over every evening-recap reply. Schema remains 10.
+- **Green target:** `uv run pytest` (436 passing), 29 native App Store foundation
   tests, signed native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
-  evals.interpreter_eval`, 109/109), plus the end-to-end analysis eval. The release head must pass exact Ubuntu and
+  evals.interpreter_eval`, 111/111), plus the end-to-end analysis eval. The release head must pass exact Ubuntu and
   macOS CI before tagging.
 - **Live v0.9:** release commit `c656459` passed exact Ubuntu/macOS CI in run
   `29165341007`, was tagged and published as v0.9.0, backed up, and deployed by
@@ -92,6 +93,19 @@ snapshot.
   counterfactual guard prevents mutation-shaped model output from leaking into
   a hypothetical and fails closed when unavailable. See
   `docs/audits/v0.9.9.md`.
+- **v0.9.10 evening-recap safety patch:** every uncontested machine-owned EOD
+  reply gets an independent reasoning-first model pass, regardless of the first
+  pass's proposed action type or count. This prevents slang such as “Jack shit
+  bud” from becoming a task drop while preserving explicit drops, new tasks,
+  positive completion reports, partial progress, and social replies. The guard
+  fails closed. The live erroneous drop was restored from its recorded
+  before-state. See `docs/audits/v0.9.10.md`.
+- **New 1.0 operational finding:** Hearth's configured 20-second deep probe can
+  queue behind direct 14B traffic, call the healthy server stuck, and restart
+  it. It interrupted three long-corpus attempts. Pausing supervision through
+  Hearth's authenticated local control API yielded an uninterrupted 111/111
+  run, and Hearth was returned to healthy managed ownership afterward. Durable
+  setup must make in-flight work visible or validate a safe probe policy.
 - **Mac App Store track:** ADR 0001 establishes one behavior with Open Local
   and Store distribution editions. `native/HobAppFoundation` starts the native
   menu-bar/settings surface, typed setup readiness, bounded Apple Foundation

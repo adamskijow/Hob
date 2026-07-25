@@ -1,4 +1,4 @@
 # SPDX-License-Identifier: MIT
 """Single runtime version used by diagnostics and release tooling."""
 
-__version__ = "0.9.9"
+__version__ = "0.9.10"

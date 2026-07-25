@@ -263,19 +263,25 @@ ACTION_SCHEMA = {
     "required": ["actions"],
 }
 
-# A deliberately small second-pass contract for replies to a current evening
-# recap. It validates direct recap proposals and recovers terse answers that the
-# main model called chitchat or unknown, without a language-specific phrase list.
+# A deliberately small independent contract for every reply to a current
+# evening recap. The first pass may mistake terse zero-work language for a task
+# mutation, so the safety pass must not be conditional on its proposed type.
 RECAP_OUTCOME_SCHEMA = {
     "type": "object",
     "properties": {
-        "outcome": {
-            "type": "string",
-            "enum": ["none", "social", "other"],
-        },
+        "paraphrase": {"type": "string"},
+        "reported_zero_completed": {"type": "boolean"},
+        "social_only": {"type": "boolean"},
+        "explicit_task_request": {"type": "boolean"},
         "confidence": {"type": "number"},
     },
-    "required": ["outcome", "confidence"],
+    "required": [
+        "paraphrase",
+        "reported_zero_completed",
+        "social_only",
+        "explicit_task_request",
+        "confidence",
+    ],
 }
 
 CONTEXT_DECISION_SCHEMA = {
@@ -1354,20 +1360,19 @@ which displayed tasks they completed:
 The user's answer:
 {ctx.message}
 
-Classify the answer by meaning in this conversational context, not by matching
-particular words. Interpret terse language, slang, idiom, humor, and the user's
-language naturally.
+First paraphrase what that utterance means as a reply in this conversational
+context. Interpret casual speech, implied words, slang, ellipsis, idiom, humor,
+profanity, and the user's language naturally. Do not treat profanity itself as
+an instruction to delete a task. Then classify it.
 
 The existence of the recap is not evidence that every later message answers it.
-First decide whether the message actually makes a claim about the user's work
-outcome. Gratitude, a greeting, affection, or a conversational acknowledgment
-alone is social and does not imply zero work.
-
-Return outcome "none" only when the message semantically reports that zero
-displayed tasks were completed. Return outcome "social" for a social remark
-with no task or recap answer. Return outcome "other" for questions, new tasks,
-commands, partial progress, or any report that some work was completed. Include
-a confidence from 0 to 1.
+Set reported_zero_completed true only when the message semantically communicates
+that the number of displayed tasks completed is zero. Set explicit_task_request
+true for a new task, edit, delete/drop, move, question, or other request. Set
+social_only true only for pure greeting, gratitude, affection, or acknowledgment
+with no work report and no task request. At most one boolean may be true. A
+partial-progress report or a report that some work was completed has all three
+false. Include confidence from 0 to 1.
 """
 
 
@@ -2075,14 +2080,12 @@ def _adjudicate_hypothetical(
 
 
 def _needs_recap_adjudication(actions: list, ctx: InterpreterContext) -> bool:
-    """Whether a recap-adjacent result needs focused semantic validation."""
+    """Whether this turn answers an uncontested machine-owned evening recap."""
     return (
         ctx.presented_kind == "eod"
         and bool(ctx.presented_items)
         and not ctx.forwarded_from
         and not ctx.pending
-        and len(actions) == 1
-        and isinstance(actions[0], (Recap, Chitchat, Unknown))
     )
 
 
@@ -2105,17 +2108,36 @@ def interpret(llm: Llm, ctx: InterpreterContext) -> list:
             _recap_adjudication_prompt(ctx), RECAP_OUTCOME_SCHEMA
         )
     except Exception:
-        return actions
-    outcome = verdict.get("outcome") if isinstance(verdict, dict) else None
-    if outcome == "none":
+        # A failed independent pass must never let a first-pass mutation through
+        # in recap context. The durable inbox will retry when the model recovers.
+        return [Unknown(note=MODEL_UNREACHABLE)]
+    confidence = (
+        _float(verdict.get("confidence"), 0.0)
+        if isinstance(verdict, dict)
+        else 0.0
+    )
+    if confidence < 0.6:
+        return [Unknown(note=MODEL_UNREACHABLE)]
+    zero = verdict.get("reported_zero_completed") is True
+    social = verdict.get("social_only") is True
+    explicit = verdict.get("explicit_task_request") is True
+    if sum((zero, social, explicit)) > 1:
+        return [Unknown(note=MODEL_UNREACHABLE)]
+    if zero:
         return [
             Recap(
                 outcome="none",
-                confidence=_float(verdict.get("confidence"), 0.0),
+                confidence=confidence,
             )
         ]
-    if outcome == "social":
-        return actions if isinstance(actions[0], Chitchat) else [Chitchat()]
-    if isinstance(actions[0], Recap):
+    if social:
+        return (
+            actions
+            if len(actions) == 1 and isinstance(actions[0], Chitchat)
+            else [Chitchat()]
+        )
+    if any(isinstance(action, Recap) for action in actions):
         return [Unknown(note="recap outcome not confirmed")]
-    return actions
+    if explicit or not any((zero, social, explicit)):
+        return actions
+    return [Unknown(note=MODEL_UNREACHABLE)]

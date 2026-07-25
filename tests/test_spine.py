@@ -183,7 +183,13 @@ def test_eod_report_completes_multiple():
 def test_eod_zero_completion_report_is_model_interpreted_and_mutation_free():
     llm = FakeLlm([
         {"actions": [{"type": "recap", "outcome": "none", "confidence": 1.0}]},
-        {"outcome": "none", "confidence": 1.0},
+        {
+            "paraphrase": "nothing was completed",
+            "reported_zero_completed": True,
+            "social_only": False,
+            "explicit_task_request": False,
+            "confidence": 1.0,
+        },
     ])
     svc, store = service(llm)
     store.set_meta(
@@ -213,7 +219,13 @@ def test_eod_zero_completion_report_is_model_interpreted_and_mutation_free():
 def test_eod_zero_completion_idiom_is_semantically_recovered_by_model():
     llm = FakeLlm([
         {"actions": [{"type": "chitchat", "reply": "got it"}]},
-        {"outcome": "none", "confidence": 0.96},
+        {
+            "paraphrase": "nothing was completed",
+            "reported_zero_completed": True,
+            "social_only": False,
+            "explicit_task_request": False,
+            "confidence": 0.96,
+        },
     ])
     svc, store = service(llm)
     store.set_meta(
@@ -238,7 +250,42 @@ def test_eod_zero_completion_idiom_is_semantically_recovered_by_model():
     assert len(llm.calls) == 2
 
 
-def test_eod_ambiguous_recap_outage_preserves_safe_main_result():
+def test_eod_zero_completion_slang_cannot_apply_first_pass_drop():
+    llm = FakeLlm([
+        {"actions": [{"type": "drop", "target": "a2", "confidence": 0.91}]},
+        {
+            "paraphrase": "nothing was completed",
+            "reported_zero_completed": True,
+            "social_only": False,
+            "explicit_task_request": False,
+            "confidence": 0.99,
+        },
+    ])
+    svc, store = service(llm)
+    store.set_meta(
+        PRESENTED_LIST_KEY,
+        json.dumps(
+            {
+                "ts": "2026-06-29T08:30:00-04:00",
+                "kind": "eod",
+                "items": [
+                    {"id": "a1", "label": "org prez"},
+                    {"id": "a2", "label": "call the pool guy"},
+                ],
+            }
+        ),
+    )
+
+    out = svc.handle(msg("Jack shit bud"))
+
+    assert out == "okay. nothing marked done. both items stay open on deck."
+    assert store.get_item("a1").status == "open"
+    assert store.get_item("a2").status == "open"
+    assert store.last_batch() == []
+    assert len(llm.calls) == 2
+
+
+def test_eod_ambiguous_recap_outage_reports_model_failure_without_mutation():
     class StopsOnAdjudication:
         def __init__(self):
             self.calls = 0
@@ -264,7 +311,7 @@ def test_eod_ambiguous_recap_outage_preserves_safe_main_result():
 
     out = svc.handle(msg("the scoreboard stayed empty"))
 
-    assert "did not catch" in out
+    assert "can't reach the model" in out
     assert all(item.status == "open" for item in store.open_items())
     assert store.last_batch() == []
 
@@ -272,7 +319,13 @@ def test_eod_ambiguous_recap_outage_preserves_safe_main_result():
 def test_chitchat_after_eod_survives_semantic_adjudication():
     llm = FakeLlm([
         {"actions": [{"type": "chitchat", "reply": "anytime"}]},
-        {"outcome": "social", "confidence": 1.0},
+        {
+            "paraphrase": "a thank-you",
+            "reported_zero_completed": False,
+            "social_only": True,
+            "explicit_task_request": False,
+            "confidence": 1.0,
+        },
         {"reply": "always happy to help"},
     ])
     svc, store = service(llm)
@@ -299,7 +352,13 @@ def test_zero_completion_report_preserves_previous_batch_for_undo():
     llm = FakeLlm([
         {"actions": [{"type": "complete", "target": "a1", "confidence": 1.0}]},
         {"actions": [{"type": "recap", "outcome": "none", "confidence": 1.0}]},
-        {"outcome": "none", "confidence": 1.0},
+        {
+            "paraphrase": "nothing was completed",
+            "reported_zero_completed": True,
+            "social_only": False,
+            "explicit_task_request": False,
+            "confidence": 1.0,
+        },
     ])
     svc, store = service(llm)
     svc.handle(msg("did the prez", message_id=1))
@@ -1951,7 +2010,15 @@ def test_eod_that_list_reschedule_cannot_move_unpresented_tasks():
                 "when": {"kind": "weekday", "which": "next", "day": "sun"},
             },
         ]
-    }, {"scope": "presented", "confidence": 1.0}])
+    }, {
+        "scope": "presented", "confidence": 1.0
+    }, {
+        "paraphrase": "move the displayed tasks",
+        "reported_zero_completed": False,
+        "social_only": False,
+        "explicit_task_request": True,
+        "confidence": 1.0,
+    }])
     svc, store = service(llm)
     for task_id, label, due in (
         ("a4", "hit the grift", "2026-07-10"),

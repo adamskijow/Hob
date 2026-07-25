@@ -373,7 +373,13 @@ def test_ambiguous_eod_answer_gets_model_semantic_adjudication():
     c.presented_kind = "eod"
     llm = FakeLlm([
         {"actions": [{"type": "chitchat", "reply": "got it"}]},
-        {"outcome": "none", "confidence": 0.94},
+        {
+            "paraphrase": "nothing was completed",
+            "reported_zero_completed": True,
+            "social_only": False,
+            "explicit_task_request": False,
+            "confidence": 0.94,
+        },
     ])
 
     action = interpret(llm, c)[0]
@@ -381,7 +387,7 @@ def test_ambiguous_eod_answer_gets_model_semantic_adjudication():
     assert isinstance(action, Recap)
     assert action.outcome == "none" and action.confidence == 0.94
     assert len(llm.calls) == 2
-    assert "meaning in this conversational context" in llm.calls[1][0]
+    assert "paraphrase what that utterance means" in llm.calls[1][0]
 
 
 def test_active_nudge_gets_focused_semantic_adjudication():
@@ -711,7 +717,13 @@ def test_eod_adjudication_preserves_actual_chitchat():
     c.presented_kind = "eod"
     llm = FakeLlm([
         {"actions": [{"type": "chitchat", "reply": "anytime"}]},
-        {"outcome": "social", "confidence": 0.99},
+        {
+            "paraphrase": "a thank-you",
+            "reported_zero_completed": False,
+            "social_only": True,
+            "explicit_task_request": False,
+            "confidence": 0.99,
+        },
     ])
 
     action = interpret(llm, c)[0]
@@ -726,7 +738,13 @@ def test_eod_adjudication_corrects_direct_recap_false_positive():
     c.presented_kind = "eod"
     llm = FakeLlm([
         {"actions": [{"type": "recap", "outcome": "none", "confidence": 1.0}]},
-        {"outcome": "social", "confidence": 0.99},
+        {
+            "paraphrase": "a thank-you",
+            "reported_zero_completed": False,
+            "social_only": True,
+            "explicit_task_request": False,
+            "confidence": 0.99,
+        },
     ])
 
     action = interpret(llm, c)[0]
@@ -741,7 +759,13 @@ def test_eod_adjudication_rejects_unconfirmed_direct_recap():
     c.presented_kind = "eod"
     llm = FakeLlm([
         {"actions": [{"type": "recap", "outcome": "none", "confidence": 1.0}]},
-        {"outcome": "other", "confidence": 0.99},
+        {
+            "paraphrase": "a schedule question",
+            "reported_zero_completed": False,
+            "social_only": False,
+            "explicit_task_request": True,
+            "confidence": 0.99,
+        },
     ])
 
     action = interpret(llm, c)[0]
@@ -750,23 +774,157 @@ def test_eod_adjudication_rejects_unconfirmed_direct_recap():
     assert action.note == "recap outcome not confirmed"
 
 
-def test_eod_adjudication_does_not_override_concrete_action():
+def test_eod_adjudication_preserves_concrete_action_after_semantic_audit():
     c = ctx("buy milk")
     c.presented_items = [{"id": "a1", "label": "call pool"}]
     c.presented_kind = "eod"
-    llm = FakeLlm({
-        "actions": [{
-            "type": "capture",
-            "task": "buy milk",
-            "raw": "buy milk",
-            "when": {"kind": "none"},
-        }]
-    })
+    llm = FakeLlm([
+        {
+            "actions": [{
+                "type": "capture",
+                "task": "buy milk",
+                "raw": "buy milk",
+                "when": {"kind": "none"},
+            }]
+        },
+        {
+            "paraphrase": "add a task",
+            "reported_zero_completed": False,
+            "social_only": False,
+            "explicit_task_request": True,
+            "confidence": 0.99,
+        },
+    ])
 
     action = interpret(llm, c)[0]
 
     assert isinstance(action, Capture)
-    assert len(llm.calls) == 1
+    assert len(llm.calls) == 2
+
+
+def test_eod_adjudication_corrects_destructive_zero_report_misclassification():
+    c = ctx(
+        "Jack shit bud",
+        active=[
+            {"id": "a1", "label": "pay taxes", "due_date": None},
+            {"id": "a2", "label": "add two paths", "due_date": None},
+        ],
+    )
+    c.presented_items = [
+        {"id": "a1", "label": "pay taxes"},
+        {"id": "a2", "label": "add two paths"},
+    ]
+    c.presented_kind = "eod"
+    llm = FakeLlm([
+        {"actions": [{"type": "drop", "target": "a2", "confidence": 0.91}]},
+        {
+            "paraphrase": "nothing was completed",
+            "reported_zero_completed": True,
+            "social_only": False,
+            "explicit_task_request": False,
+            "confidence": 0.99,
+        },
+    ])
+
+    actions = interpret(llm, c)
+
+    assert len(actions) == 1
+    assert isinstance(actions[0], Recap)
+    assert actions[0].outcome == "none"
+    assert len(llm.calls) == 2
+
+
+def test_eod_adjudication_audits_multi_action_zero_report_misclassification():
+    c = ctx(
+        "Whole lot of nothing",
+        active=[
+            {"id": "a1", "label": "pay taxes", "due_date": None},
+            {"id": "a2", "label": "add two paths", "due_date": None},
+        ],
+    )
+    c.presented_items = [
+        {"id": "a1", "label": "pay taxes"},
+        {"id": "a2", "label": "add two paths"},
+    ]
+    c.presented_kind = "eod"
+    llm = FakeLlm([
+        {"actions": [
+            {"type": "drop", "target": "a1", "confidence": 0.91},
+            {"type": "drop", "target": "a2", "confidence": 0.91},
+        ]},
+        {
+            "paraphrase": "nothing was completed",
+            "reported_zero_completed": True,
+            "social_only": False,
+            "explicit_task_request": False,
+            "confidence": 0.99,
+        },
+    ])
+
+    actions = interpret(llm, c)
+
+    assert len(actions) == 1
+    assert isinstance(actions[0], Recap)
+
+
+def test_eod_adjudication_low_confidence_fails_closed():
+    c = ctx(
+        "drop the second one maybe",
+        active=[
+            {"id": "a1", "label": "pay taxes", "due_date": None},
+            {"id": "a2", "label": "add two paths", "due_date": None},
+        ],
+    )
+    c.presented_items = [
+        {"id": "a1", "label": "pay taxes"},
+        {"id": "a2", "label": "add two paths"},
+    ]
+    c.presented_kind = "eod"
+    llm = FakeLlm([
+        {"actions": [{"type": "drop", "target": "a2", "confidence": 0.91}]},
+        {
+            "paraphrase": "possibly remove the second task",
+            "reported_zero_completed": False,
+            "social_only": False,
+            "explicit_task_request": True,
+            "confidence": 0.4,
+        },
+    ])
+
+    action = interpret(llm, c)[0]
+
+    assert isinstance(action, Unknown)
+    assert action.note == MODEL_UNREACHABLE
+
+
+def test_eod_adjudication_preserves_explicit_drop_after_semantic_audit():
+    c = ctx(
+        "drop the second one",
+        active=[
+            {"id": "a1", "label": "pay taxes", "due_date": None},
+            {"id": "a2", "label": "add two paths", "due_date": None},
+        ],
+    )
+    c.presented_items = [
+        {"id": "a1", "label": "pay taxes"},
+        {"id": "a2", "label": "add two paths"},
+    ]
+    c.presented_kind = "eod"
+    llm = FakeLlm([
+        {"actions": [{"type": "drop", "target": "a2", "confidence": 0.99}]},
+        {
+            "paraphrase": "drop the second task",
+            "reported_zero_completed": False,
+            "social_only": False,
+            "explicit_task_request": True,
+            "confidence": 0.99,
+        },
+    ])
+
+    action = interpret(llm, c)[0]
+
+    assert isinstance(action, Drop)
+    assert action.target == "a2"
 
 
 def test_eod_adjudication_requires_uncontested_machine_context():
@@ -800,7 +958,7 @@ def test_eod_adjudication_requires_uncontested_machine_context():
         )
 
 
-def test_eod_adjudication_outage_preserves_safe_main_model_result():
+def test_eod_adjudication_outage_fails_closed():
     class FailsSecondCall:
         def __init__(self):
             self.calls = 0
@@ -817,8 +975,8 @@ def test_eod_adjudication_outage_preserves_safe_main_model_result():
 
     action = interpret(FailsSecondCall(), c)[0]
 
-    assert isinstance(action, Chitchat)
-    assert action.reply == "got it"
+    assert isinstance(action, Unknown)
+    assert action.note == MODEL_UNREACHABLE
 
 
 def test_empty_actions_list_is_unknown():

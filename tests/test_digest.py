@@ -400,10 +400,10 @@ def test_upgraded_owner_gets_one_digest_discovery_note_but_fresh_install_does_no
     asyncio.run(service.fire())
 
     assert "new in hob" in sent.calls[0][1]
-    assert 'ask "why?"' in sent.calls[0][1]
-    assert 'test a temporary "what if?"' in sent.calls[0][1]
-    assert "hypotheticals create a labeled proposal" in sent.calls[0][1]
-    assert "without explicit durable language and adoption" in sent.calls[0][1]
+    assert "evening recap" in sent.calls[0][1]
+    assert "slang, humor, or profanity" in sent.calls[0][1]
+    assert "explicit task commands" in sent.calls[0][1]
+    assert "changes nothing and asks you to retry" in sent.calls[0][1]
     assert "new in hob" not in sent.calls[1][1]
     assert upgraded.get_meta(RELEASE_NOTICE_KEY) == __version__
 
