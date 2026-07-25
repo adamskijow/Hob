@@ -85,7 +85,8 @@ changed from the previous proposal, and no task is moved automatically.
 
 One command installs [uv](https://docs.astral.sh/uv/) and
 [Ollama](https://ollama.com/) if missing, syncs deps, pulls the model, and runs
-the preflight:
+the preflight. On macOS it also installs automatic background startup and a
+native menu-bar flame that shows whether Hob is running:
 
 ```
 scripts/setup.sh                  # honors HOB_MODEL; safe to re-run
@@ -97,7 +98,7 @@ Or do it by hand (needs uv and a local Ollama with a JSON-capable instruct model
 ollama pull qwen2.5:7b-instruct   # or 14b-instruct if you have headroom
 uv sync                           # venv, Python 3.12, deps
 uv run python app.py doctor       # preflight: token, ollama, model, config, db
-uv run python app.py              # start hob
+scripts/install_macos.sh           # automatic startup + menu-bar controls
 ```
 
 On macOS, setup also builds Hob's signed Calendar bridge. Calendar access is a
@@ -224,6 +225,20 @@ database exist, daemon startup, status, and data commands refuse to guess; set
 `HOB_DB_PATH` explicitly. Hob also takes a content-free, token-scoped process
 lease so two local databases cannot poll or send through the same Telegram bot.
 Portable export and verified restore include proposal and adopted-plan sessions.
+
+### Mac menu bar and restart recovery
+
+The Open Local edition installs **Hob Local.app** in your user Applications
+folder. Its flame in the macOS menu bar shows whether background delivery is
+running and provides **Turn Hob On**, **Restart Hob**, **Check Health**, and log
+access. Both Hob and the menu return at login; restarting Hob does not lose an
+acknowledged Telegram turn.
+
+Re-run `scripts/install_macos.sh` to update or repair the native controls. For a
+text-only or remote-session fallback, `scripts/hobctl status`,
+`scripts/hobctl on`, `scripts/hobctl restart`, and `scripts/hobctl logs` expose
+the same operations. The App Store track has a separate sandboxed menu-bar app;
+it does not control this Open Local LaunchAgent.
 
 ## Reliability
 

@@ -16,3 +16,4 @@ __pycache__/
 .swift-module-cache/
 native/HobCalendarBridge/.build/
 native/HobAppFoundation/.build/
+native/HobOpenLocalMenu/.build/

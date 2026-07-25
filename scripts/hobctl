@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+#
+# Human-friendly fallback for the native menu-bar controls.
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+USER_HOME="${HOME:?Hob needs a home directory}"
+USER_ID="$(id -u)"
+SERVICE_TARGET="gui/$USER_ID/com.local.hob"
+DOMAIN_TARGET="gui/$USER_ID"
+SERVICE_PLIST="$USER_HOME/Library/LaunchAgents/com.local.hob.plist"
+LOG_PATH="$USER_HOME/Library/Application Support/Hob/hob.log"
+
+plist_value() {
+  local key="$1"
+  if [ -f "$SERVICE_PLIST" ]; then
+    plutil -extract "$key" raw -o - "$SERVICE_PLIST" 2>/dev/null || true
+  fi
+}
+
+DATABASE_PATH="${HOB_DB_PATH:-$(plist_value EnvironmentVariables.HOB_DB_PATH)}"
+DATABASE_PATH="${DATABASE_PATH:-$USER_HOME/Library/Application Support/Hob/hob.db}"
+MODEL_NAME="${HOB_MODEL:-$(plist_value EnvironmentVariables.HOB_MODEL)}"
+MODEL_NAME="${MODEL_NAME:-qwen2.5:7b-instruct}"
+OLLAMA_ENDPOINT="${HOB_OLLAMA_HOST:-$(plist_value EnvironmentVariables.HOB_OLLAMA_HOST)}"
+OLLAMA_ENDPOINT="${OLLAMA_ENDPOINT:-http://localhost:11434}"
+TIMEZONE_NAME="${HOB_TIMEZONE:-$(plist_value EnvironmentVariables.HOB_TIMEZONE)}"
+TIMEZONE_NAME="${TIMEZONE_NAME:-UTC}"
+UV_PATH="$(plist_value ProgramArguments.0)"
+UV_PATH="${UV_PATH:-$(command -v uv || true)}"
+
+usage() {
+  printf 'usage: scripts/hobctl [status|on|restart|logs|install]\n'
+}
+
+service_on() {
+  if launchctl print "$SERVICE_TARGET" >/dev/null 2>&1; then
+    launchctl kickstart "$SERVICE_TARGET"
+  elif [ -f "$SERVICE_PLIST" ]; then
+    launchctl bootstrap "$DOMAIN_TARGET" "$SERVICE_PLIST"
+    launchctl kickstart "$SERVICE_TARGET"
+  else
+    printf 'Hob is not installed. Run: scripts/hobctl install\n' >&2
+    return 1
+  fi
+  printf 'Hob is turning on.\n'
+}
+
+case "${1:-status}" in
+  status)
+    if launchctl print "$SERVICE_TARGET" 2>/dev/null |
+      /usr/bin/awk '/state = running/ { found = 1 } END { exit !found }'; then
+      printf 'Hob background delivery is running.\n'
+    elif [ -f "$SERVICE_PLIST" ]; then
+      printf 'Hob is installed but not running.\n'
+    else
+      printf 'Hob is not installed.\n'
+    fi
+    if [ -z "$UV_PATH" ]; then
+      printf 'uv is unavailable; run scripts/hobctl install\n' >&2
+      exit 1
+    fi
+    HOB_DB_PATH="$DATABASE_PATH" \
+      HOB_MODEL="$MODEL_NAME" \
+      HOB_OLLAMA_HOST="$OLLAMA_ENDPOINT" \
+      HOB_TIMEZONE="$TIMEZONE_NAME" \
+      "$UV_PATH" run --directory "$PROJECT_ROOT" python app.py status
+    ;;
+  on|start)
+    service_on
+    ;;
+  restart)
+    if launchctl print "$SERVICE_TARGET" >/dev/null 2>&1; then
+      launchctl kickstart -k "$SERVICE_TARGET"
+      printf 'Hob restarted.\n'
+    else
+      service_on
+    fi
+    ;;
+  logs)
+    if [ ! -f "$LOG_PATH" ]; then
+      printf 'Hob has not created a log yet: %s\n' "$LOG_PATH" >&2
+      exit 1
+    fi
+    tail -n 100 -f "$LOG_PATH"
+    ;;
+  install)
+    exec "$PROJECT_ROOT/scripts/install_macos.sh"
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

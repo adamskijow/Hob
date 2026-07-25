@@ -37,6 +37,14 @@ jobs:
         if: runner.os == 'macOS'
         run: swift test --package-path native/HobAppFoundation
 
+      - name: Build and test Open Local menu bar
+        if: runner.os == 'macOS'
+        run: |
+          swift test --package-path native/HobOpenLocalMenu
+          swift build -c release --package-path native/HobOpenLocalMenu
+          plutil -lint deploy/com.local.hob.menu.plist native/HobOpenLocalMenu/Resources/Info.plist
+          bash -n scripts/setup.sh scripts/install_macos.sh scripts/hobctl
+
       - name: Build App Store shell bundle
         if: runner.os == 'macOS'
         run: |

@@ -3069,13 +3069,11 @@ class DigestService:
         )
         if release_notice:
             text += (
-                f"\n\nnew in hob {__version__}: every answer to an evening "
-                "recap now gets an independent local-model meaning check before "
-                "hob changes a task. say that nothing got done however you "
-                "naturally would—even with slang, humor, or profanity. explicit "
-                "task commands, new tasks, progress, and completed-work reports "
-                "still work normally. if that safety check is unavailable or "
-                "uncertain, hob changes nothing and asks you to retry. "
+                f"\n\nnew in hob {__version__}: on mac, the flame in your menu "
+                "bar now shows whether hob is running. open it to turn hob on, "
+                "restart it, check database/queue/telegram/model health, or "
+                "open the log—no launchctl commands or database path required. "
+                "hob and the menu return automatically when you log in. "
                 "this note appears once."
             )
         digest = Digest(
