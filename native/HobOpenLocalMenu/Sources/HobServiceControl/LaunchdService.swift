@@ -134,17 +134,23 @@ public struct LaunchdServiceClient<Runner: CommandRunning>: Sendable {
     public let userID: UInt32
     public let launchAgentPath: String
     public let runner: Runner
+    public let reloadAttempts: Int
+    public let reloadRetryDelay: TimeInterval
 
     public init(
         label: String = "com.local.hob",
         userID: UInt32,
         launchAgentPath: String,
-        runner: Runner
+        runner: Runner,
+        reloadAttempts: Int = 100,
+        reloadRetryDelay: TimeInterval = 0.1
     ) {
         self.label = label
         self.userID = userID
         self.launchAgentPath = launchAgentPath
         self.runner = runner
+        self.reloadAttempts = reloadAttempts
+        self.reloadRetryDelay = reloadRetryDelay
     }
 
     public var serviceTarget: String {
@@ -209,10 +215,17 @@ public struct LaunchdServiceClient<Runner: CommandRunning>: Sendable {
         if current.exitCode != 0 {
             return startAfterMissingPrint()
         }
-        return action(
-            arguments: ["kickstart", "-k", serviceTarget],
-            success: "Hob restarted."
+        let stop = runner.run(
+            executable: "/bin/launchctl",
+            arguments: ["bootout", serviceTarget]
         )
+        guard stop.exitCode == 0 else {
+            return ServiceActionResult(
+                succeeded: false,
+                message: "macOS could not stop Hob before restarting it."
+            )
+        }
+        return bootstrapAfterStop(success: "Hob restarted.")
     }
 
     public static func parseStatus(
@@ -255,6 +268,25 @@ public struct LaunchdServiceClient<Runner: CommandRunning>: Sendable {
         return action(
             arguments: ["kickstart", serviceTarget],
             success: "Hob is turning on."
+        )
+    }
+
+    private func bootstrapAfterStop(success: String) -> ServiceActionResult {
+        for attempt in 0..<max(1, reloadAttempts) {
+            let result = runner.run(
+                executable: "/bin/launchctl",
+                arguments: ["bootstrap", domainTarget, launchAgentPath]
+            )
+            if result.exitCode == 0 {
+                return ServiceActionResult(succeeded: true, message: success)
+            }
+            if attempt + 1 < reloadAttempts && reloadRetryDelay > 0 {
+                Thread.sleep(forTimeInterval: reloadRetryDelay)
+            }
+        }
+        return ServiceActionResult(
+            succeeded: false,
+            message: "macOS could not reload Hob's background service."
         )
     }
 

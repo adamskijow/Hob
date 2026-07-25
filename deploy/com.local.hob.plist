@@ -12,11 +12,7 @@
   <key>Label</key>            <string>com.local.hob</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/you/.local/bin/uv</string>
-    <string>run</string>
-    <string>--directory</string>
-    <string>/Users/you/Git/Hob</string>
-    <string>python</string>
+    <string>/Users/you/Git/Hob/.venv/bin/python</string>
     <string>app.py</string>
   </array>
   <key>WorkingDirectory</key>  <string>/Users/you/Git/Hob</string>

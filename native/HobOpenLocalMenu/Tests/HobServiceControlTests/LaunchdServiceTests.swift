@@ -55,7 +55,7 @@ import Testing
     )
 }
 
-@Test func restartUsesForcedKickstartForLoadedService() throws {
+@Test func restartFullyUnloadsBeforeReloadingService() throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(
@@ -68,11 +68,13 @@ import Testing
     let runner = StubRunner(responses: [
         CommandResult(exitCode: 0, standardOutput: "state = running\n"),
         CommandResult(exitCode: 0),
+        CommandResult(exitCode: 0),
     ])
     let client = LaunchdServiceClient(
         userID: 501,
         launchAgentPath: plist.path,
-        runner: runner
+        runner: runner,
+        reloadRetryDelay: 0
     )
 
     #expect(client.restart().succeeded)
@@ -83,8 +85,45 @@ import Testing
         ),
         Invocation(
             executable: "/bin/launchctl",
-            arguments: ["kickstart", "-k", "gui/501/com.local.hob"]
+            arguments: ["bootout", "gui/501/com.local.hob"]
         ),
+        Invocation(
+            executable: "/bin/launchctl",
+            arguments: ["bootstrap", "gui/501", plist.path]
+        ),
+    ])
+}
+
+@Test func restartRetriesTransientBootstrapFailure() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+    )
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let plist = directory.appendingPathComponent("com.local.hob.plist")
+    try Data().write(to: plist)
+    let runner = StubRunner(responses: [
+        CommandResult(exitCode: 0, standardOutput: "state = running\n"),
+        CommandResult(exitCode: 0),
+        CommandResult(exitCode: 5),
+        CommandResult(exitCode: 0),
+    ])
+    let client = LaunchdServiceClient(
+        userID: 501,
+        launchAgentPath: plist.path,
+        runner: runner,
+        reloadAttempts: 2,
+        reloadRetryDelay: 0
+    )
+
+    #expect(client.restart().succeeded)
+    #expect(runner.invocations.map(\.arguments) == [
+        ["print", "gui/501/com.local.hob"],
+        ["bootout", "gui/501/com.local.hob"],
+        ["bootstrap", "gui/501", plist.path],
+        ["bootstrap", "gui/501", plist.path],
     ])
 }
 

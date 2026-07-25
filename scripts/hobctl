@@ -27,24 +27,71 @@ OLLAMA_ENDPOINT="${HOB_OLLAMA_HOST:-$(plist_value EnvironmentVariables.HOB_OLLAM
 OLLAMA_ENDPOINT="${OLLAMA_ENDPOINT:-http://localhost:11434}"
 TIMEZONE_NAME="${HOB_TIMEZONE:-$(plist_value EnvironmentVariables.HOB_TIMEZONE)}"
 TIMEZONE_NAME="${TIMEZONE_NAME:-UTC}"
-UV_PATH="$(plist_value ProgramArguments.0)"
-UV_PATH="${UV_PATH:-$(command -v uv || true)}"
+UV_PATH="${HOB_UV_PATH:-$(command -v uv || true)}"
+UV_PATH="${UV_PATH:-$USER_HOME/.local/bin/uv}"
 
 usage() {
   printf 'usage: scripts/hobctl [status|on|restart|logs|install]\n'
+}
+
+bootstrap_agent() {
+  local attempt
+  for attempt in {1..100}; do
+    if launchctl bootstrap "$DOMAIN_TARGET" "$SERVICE_PLIST" \
+      >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  launchctl bootstrap "$DOMAIN_TARGET" "$SERVICE_PLIST"
+}
+
+wait_for_running_service() {
+  local attempt
+  local current_pid=""
+  local previous_pid=""
+  local stable_checks=0
+  local details
+  for attempt in {1..60}; do
+    details="$(launchctl print "$SERVICE_TARGET" 2>/dev/null || true)"
+    current_pid="$(
+      printf '%s\n' "$details" |
+        /usr/bin/awk '/^[[:space:]]*pid = [0-9]+/ { print $3; exit }'
+    )"
+    if printf '%s\n' "$details" |
+      /usr/bin/grep -q '^[[:space:]]*state = running$' &&
+      [ -n "$current_pid" ]; then
+      if [ "$current_pid" = "$previous_pid" ]; then
+        stable_checks=$((stable_checks + 1))
+      else
+        stable_checks=1
+        previous_pid="$current_pid"
+      fi
+      if [ "$stable_checks" -ge 4 ]; then
+        return 0
+      fi
+    else
+      stable_checks=0
+      previous_pid=""
+    fi
+    sleep 0.5
+  done
+  printf 'Hob did not reach a stable running state. Check: scripts/hobctl logs\n' >&2
+  return 1
 }
 
 service_on() {
   if launchctl print "$SERVICE_TARGET" >/dev/null 2>&1; then
     launchctl kickstart "$SERVICE_TARGET"
   elif [ -f "$SERVICE_PLIST" ]; then
-    launchctl bootstrap "$DOMAIN_TARGET" "$SERVICE_PLIST"
+    bootstrap_agent
     launchctl kickstart "$SERVICE_TARGET"
   else
     printf 'Hob is not installed. Run: scripts/hobctl install\n' >&2
     return 1
   fi
-  printf 'Hob is turning on.\n'
+  wait_for_running_service
+  printf 'Hob is on.\n'
 }
 
 case "${1:-status}" in
@@ -72,7 +119,9 @@ case "${1:-status}" in
     ;;
   restart)
     if launchctl print "$SERVICE_TARGET" >/dev/null 2>&1; then
-      launchctl kickstart -k "$SERVICE_TARGET"
+      launchctl bootout "$SERVICE_TARGET"
+      bootstrap_agent
+      wait_for_running_service
       printf 'Hob restarted.\n'
     else
       service_on

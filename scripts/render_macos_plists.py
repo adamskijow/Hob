@@ -23,6 +23,7 @@ def render_daemon(
     *,
     template: Path,
     output: Path,
+    python_path: str,
     uv_path: str,
     project_root: str,
     model: str,
@@ -32,14 +33,7 @@ def render_daemon(
     allowed_telegram_user_id: str | None,
 ) -> None:
     payload = _load(template)
-    payload["ProgramArguments"] = [
-        uv_path,
-        "run",
-        "--directory",
-        project_root,
-        "python",
-        "app.py",
-    ]
+    payload["ProgramArguments"] = [python_path, "app.py"]
     payload["WorkingDirectory"] = project_root
     payload["StandardOutPath"] = log_path
     payload["StandardErrorPath"] = log_path
@@ -98,6 +92,7 @@ def _parser() -> argparse.ArgumentParser:
     daemon = commands.add_parser("daemon")
     daemon.add_argument("--template", type=Path, required=True)
     daemon.add_argument("--output", type=Path, required=True)
+    daemon.add_argument("--python-path", required=True)
     daemon.add_argument("--uv-path", required=True)
     daemon.add_argument("--project-root", required=True)
     daemon.add_argument("--model", required=True)
