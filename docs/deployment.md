@@ -9,13 +9,28 @@ depends on alive (readiness checks, restart on crash or wedge, sleep
 prevention). Ready-to-edit `LaunchAgent` templates for both are in
 [`deploy/`](../deploy/).
 
-Hob is one process started by `launchd`. The run command is:
+For the Open Local edition, the supported macOS install/update/repair path is:
+
+```
+scripts/install_macos.sh
+```
+
+It preserves an existing daemon configuration, builds and ad-hoc signs the
+native **Hob Local.app** menu-bar companion, installs both user LaunchAgents,
+and starts or restarts Hob when its Telegram credential is available. It
+refuses to guess when legacy and app-data databases conflict. Re-running it is
+safe. The menu appears at login and exposes Turn On, Restart, privacy-safe
+health, logs, and the data folder. `scripts/hobctl` is the text-only fallback.
+
+Underneath that product surface, Hob is one process started by `launchd`. The
+run command is:
 
 ```
 uv run --directory /path/to/hob python app.py
 ```
 
-`launchd` sets the environment, runs that command, and restarts it on exit. Copy
+`launchd` sets the environment, runs that command, and restarts it on exit.
+For manual or managed deployment, copy
 [`deploy/com.local.hob.plist`](../deploy/com.local.hob.plist) to
 `~/Library/LaunchAgents/`, edit the paths, store the bot token with
 `uv run python app.py token set`, and load it with
@@ -85,7 +100,10 @@ short.
 Create `~/Library/Application Support/Hob` before loading the agent. Hob does
 not manage its own log files.
 
-**Restart behavior and recovery.** Hob is safe to kill at any moment.
+**Restart behavior and recovery.** Hob is safe to kill at any moment. Use
+**Restart Hob** under the menu-bar flame. In a remote or non-graphical session,
+use `scripts/hobctl restart`. The equivalent raw command remains
+`launchctl kickstart -k gui/$(id -u)/com.local.hob`.
 
 - Telegram updates are normalized into a durable inbox before the polling
   offset advances. Model outages and processing failures leave the message

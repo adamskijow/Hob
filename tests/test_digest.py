@@ -400,10 +400,11 @@ def test_upgraded_owner_gets_one_digest_discovery_note_but_fresh_install_does_no
     asyncio.run(service.fire())
 
     assert "new in hob" in sent.calls[0][1]
-    assert "evening recap" in sent.calls[0][1]
-    assert "slang, humor, or profanity" in sent.calls[0][1]
-    assert "explicit task commands" in sent.calls[0][1]
-    assert "changes nothing and asks you to retry" in sent.calls[0][1]
+    assert "flame in your menu bar" in sent.calls[0][1]
+    assert "turn hob on" in sent.calls[0][1]
+    assert "check database/queue/telegram/model health" in sent.calls[0][1]
+    assert "no launchctl commands" in sent.calls[0][1]
+    assert "return automatically when you log in" in sent.calls[0][1]
     assert "new in hob" not in sent.calls[1][1]
     assert upgraded.get_meta(RELEASE_NOTICE_KEY) == __version__
 

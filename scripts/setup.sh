@@ -84,8 +84,9 @@ if [ -z "${HOB_TELEGRAM_TOKEN:-}" ]; then
 Create your Telegram bot (about a minute):
   1. In Telegram, message @BotFather and send /newbot
   2. Run: uv run python app.py token set
-  3. Start Hob and privately send the new bot /start. That first /start pairs
-     Hob to your Telegram user; other users and group chats are rejected.
+  3. On macOS, click Turn Hob On under the flame in the menu bar, then privately
+     send the new bot /start. That first /start pairs Hob to your Telegram user;
+     other users and group chats are rejected.
 
 For unattended deployment, also set HOB_ALLOWED_TELEGRAM_USER_ID explicitly.
 
@@ -96,5 +97,15 @@ fi
 say "Preflight (app.py doctor)"
 HOB_MODEL="$MODEL" uv run python app.py doctor || true
 
-say "Setup complete. Start Hob with:  uv run python app.py"
-echo "For a durable install that survives reboot and sleep, see docs/deployment.md"
+if [ "$(uname -s)" = "Darwin" ] && have swift; then
+  say "Installing automatic startup and the Hob menu bar"
+  HOB_MODEL="$MODEL" scripts/install_macos.sh ||
+    warn "Native controls were not installed; run scripts/install_macos.sh after fixing the error."
+fi
+
+say "Setup complete"
+if [ "$(uname -s)" = "Darwin" ]; then
+  echo "Use the flame in the menu bar to check health, turn Hob on, or restart it."
+else
+  echo "Start Hob with:  uv run python app.py"
+fi

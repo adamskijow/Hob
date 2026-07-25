@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- SPDX-License-Identifier: MIT -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.local.hob.menu</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/you/Applications/Hob Local.app/Contents/MacOS/HobOpenLocalMenu</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOB_PROJECT_PATH</key>
+    <string>/Users/you/Git/Hob</string>
+    <key>HOB_DB_PATH</key>
+    <string>/Users/you/Library/Application Support/Hob/hob.db</string>
+    <key>HOB_UV_PATH</key>
+    <string>/Users/you/.local/bin/uv</string>
+    <key>HOB_LOG_PATH</key>
+    <string>/Users/you/Library/Application Support/Hob/hob.log</string>
+    <key>HOB_MODEL</key>
+    <string>qwen2.5:7b-instruct</string>
+    <key>HOB_OLLAMA_HOST</key>
+    <string>http://localhost:11434</string>
+    <key>HOB_TIMEZONE</key>
+    <string>UTC</string>
+  </dict>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>StandardOutPath</key>
+  <string>/Users/you/Library/Logs/Hob/menu.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/you/Library/Logs/Hob/menu.log</string>
+</dict>
+</plist>

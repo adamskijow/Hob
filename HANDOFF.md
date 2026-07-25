@@ -11,17 +11,18 @@ snapshot.
 - **Live and in daily use.** Runs as a `launchd` daemon on macOS, with
   [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive. Model:
   `qwen2.5:14b-instruct` (7b works; 14b is more reliable on dense messages).
-- **Release target:** v0.9.10. v0.9 adds a deterministic weekly capacity outlook,
+- **Release target:** v0.9.11. v0.9 adds a deterministic weekly capacity outlook,
   explicit working days, plan-aware EOD, first-adoption coaching, accessible
   media fallback, privacy-safe activation metrics, and correct silent handling
   of Telegram-generated service events, and guarded shared-tense completion
   reports, plain-message digest decisions, safe numbered exclusions, and
   token-wide Telegram singleton ownership, contextual model-owned language
   throughout the free-text surface, grounded why/what-if negotiation over
-  deterministic plan/outlook results, and a fail-closed semantic safety pass
-  over every evening-recap reply. Schema remains 10.
+  deterministic plan/outlook results, a fail-closed semantic safety pass over
+  every evening-recap reply, and a native Open Local menu-bar recovery surface
+  with one-command durable installation. Schema remains 10.
 - **Green target:** `uv run pytest` (436 passing), 29 native App Store foundation
-  tests, signed native bridge build, and the
+  tests plus 9 Open Local service/health tests, signed native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
   evals.interpreter_eval`, 111/111), plus the end-to-end analysis eval. The release head must pass exact Ubuntu and
   macOS CI before tagging.
@@ -100,6 +101,15 @@ snapshot.
   positive completion reports, partial progress, and social replies. The guard
   fails closed. The live erroneous drop was restored from its recorded
   before-state. See `docs/audits/v0.9.10.md`.
+- **v0.9.11 desktop recovery increment:** the Open Local edition has a distinct
+  native SwiftUI menu-bar companion with visible launchd state, Turn On,
+  Restart, explicit privacy-safe health, logs, and data-folder access.
+  `scripts/install_macos.sh` preserves the installed daemon configuration,
+  refuses ambiguous databases, installs both login services, and retains prior
+  companion/plist copies. `scripts/setup.sh` invokes it; `scripts/hobctl`
+  provides the same text-only recovery vocabulary. The App Store shell remains
+  sandboxed and separate. ADR 0002 records the shared future Windows tray
+  contract without claiming Windows support. See `docs/audits/v0.9.11.md`.
 - **New 1.0 operational finding:** Hearth's configured 20-second deep probe can
   queue behind direct 14B traffic, call the healthy server stuck, and restart
   it. It interrupted three long-corpus attempts. Pausing supervision through
