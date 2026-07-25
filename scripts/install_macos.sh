@@ -22,24 +22,67 @@ DOMAIN_TARGET="gui/$USER_ID"
 DATABASE_PATH="${HOB_DB_PATH:-$APP_SUPPORT_DIR/hob.db}"
 MODEL_NAME="${HOB_MODEL:-qwen2.5:7b-instruct}"
 UV_PATH="$(command -v uv || true)"
+PYTHON_PATH="$PROJECT_ROOT/.venv/bin/python"
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[33mwarning: %s\033[0m\n' "$*" >&2; }
 
 bootstrap_agent() {
-  local target="$1"
-  local plist="$2"
+  local plist="$1"
   local attempt
-  for attempt in {1..30}; do
+  # launchd can hold a just-booted-out label for several seconds while its
+  # minimum-runtime accounting settles. Bound the retry instead of reporting
+  # the transient error 5 as a failed install.
+  for attempt in {1..100}; do
     if launchctl bootstrap "$DOMAIN_TARGET" "$plist" >/dev/null 2>&1; then
-      return 0
-    fi
-    if launchctl print "$target" >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.1
   done
   launchctl bootstrap "$DOMAIN_TARGET" "$plist"
+}
+
+restart_agent() {
+  local target="$1"
+  local plist="$2"
+  launchctl bootout "$target"
+  bootstrap_agent "$plist"
+}
+
+wait_for_running_agent() {
+  local target="$1"
+  local label="$2"
+  local attempt
+  local current_pid=""
+  local previous_pid=""
+  local stable_checks=0
+  local details
+  for attempt in {1..60}; do
+    details="$(launchctl print "$target" 2>/dev/null || true)"
+    current_pid="$(
+      printf '%s\n' "$details" |
+        /usr/bin/awk '/^[[:space:]]*pid = [0-9]+/ { print $3; exit }'
+    )"
+    if printf '%s\n' "$details" |
+      /usr/bin/grep -q '^[[:space:]]*state = running$' &&
+      [ -n "$current_pid" ]; then
+      if [ "$current_pid" = "$previous_pid" ]; then
+        stable_checks=$((stable_checks + 1))
+      else
+        stable_checks=1
+        previous_pid="$current_pid"
+      fi
+      if [ "$stable_checks" -ge 4 ]; then
+        return 0
+      fi
+    else
+      stable_checks=0
+      previous_pid=""
+    fi
+    sleep 0.5
+  done
+  printf 'hob: %s did not reach a stable running state\n' "$label" >&2
+  return 1
 }
 
 if [ "$(uname -s)" != "Darwin" ]; then
@@ -48,6 +91,10 @@ if [ "$(uname -s)" != "Darwin" ]; then
 fi
 if [ -z "$UV_PATH" ]; then
   printf 'hob: uv is required; run scripts/setup.sh first\n' >&2
+  exit 2
+fi
+if [ ! -x "$PYTHON_PATH" ]; then
+  printf 'hob: the Python environment is missing; run scripts/setup.sh first\n' >&2
   exit 2
 fi
 if ! command -v swift >/dev/null 2>&1; then
@@ -153,31 +200,42 @@ if [ -d "$INSTALL_APP" ]; then
 fi
 ditto "$STAGED_APP" "$INSTALL_APP"
 
-if [ ! -f "$DAEMON_PLIST" ]; then
+DAEMON_TEMPLATE="$PROJECT_ROOT/deploy/com.local.hob.plist"
+if [ -f "$DAEMON_PLIST" ]; then
+  DAEMON_TEMPLATE="$DAEMON_PLIST"
+else
   say "Installing Hob's automatic background service"
-  DAEMON_TEMP="$STAGE_DIR/com.local.hob.plist"
-  DAEMON_RENDER_ARGS=(
-    daemon
-    --template "$PROJECT_ROOT/deploy/com.local.hob.plist"
-    --output "$DAEMON_TEMP"
-    --uv-path "$UV_PATH"
-    --project-root "$PROJECT_ROOT"
-    --model "$MODEL_NAME"
-    --timezone "$TIMEZONE_NAME"
-    --database-path "$DATABASE_PATH"
-    --log-path "$APP_SUPPORT_DIR/hob.log"
-  )
-  if [ -n "${HOB_ALLOWED_TELEGRAM_USER_ID:-}" ]; then
-    DAEMON_RENDER_ARGS+=(
-      --allowed-telegram-user-id "$HOB_ALLOWED_TELEGRAM_USER_ID"
-    )
-  fi
-  "$UV_PATH" run --directory "$PROJECT_ROOT" python \
-    "$PROJECT_ROOT/scripts/render_macos_plists.py" \
-    "${DAEMON_RENDER_ARGS[@]}"
-  plutil -lint "$DAEMON_TEMP"
-  mv "$DAEMON_TEMP" "$DAEMON_PLIST"
 fi
+OWNER_ID="${HOB_ALLOWED_TELEGRAM_USER_ID:-}"
+if [ -z "$OWNER_ID" ] && [ -f "$DAEMON_PLIST" ]; then
+  OWNER_ID="$(
+    plist_value EnvironmentVariables.HOB_ALLOWED_TELEGRAM_USER_ID "$DAEMON_PLIST"
+  )"
+fi
+DAEMON_TEMP="$STAGE_DIR/com.local.hob.plist"
+DAEMON_RENDER_ARGS=(
+  daemon
+  --template "$DAEMON_TEMPLATE"
+  --output "$DAEMON_TEMP"
+  --python-path "$PYTHON_PATH"
+  --uv-path "$UV_PATH"
+  --project-root "$PROJECT_ROOT"
+  --model "$MODEL_NAME"
+  --timezone "$TIMEZONE_NAME"
+  --database-path "$DATABASE_PATH"
+  --log-path "$APP_SUPPORT_DIR/hob.log"
+)
+if [ -n "$OWNER_ID" ]; then
+  DAEMON_RENDER_ARGS+=(--allowed-telegram-user-id "$OWNER_ID")
+fi
+"$UV_PATH" run --directory "$PROJECT_ROOT" python \
+  "$PROJECT_ROOT/scripts/render_macos_plists.py" \
+  "${DAEMON_RENDER_ARGS[@]}"
+plutil -lint "$DAEMON_TEMP"
+if [ -f "$DAEMON_PLIST" ]; then
+  cp "$DAEMON_PLIST" "$DAEMON_PLIST.previous"
+fi
+mv "$DAEMON_TEMP" "$DAEMON_PLIST"
 
 say "Installing Hob's login menu"
 MENU_TEMP="$STAGE_DIR/com.local.hob.menu.plist"
@@ -202,7 +260,7 @@ fi
 mv "$MENU_TEMP" "$MENU_PLIST"
 
 launchctl bootout "$MENU_TARGET" >/dev/null 2>&1 || true
-bootstrap_agent "$MENU_TARGET" "$MENU_PLIST"
+bootstrap_agent "$MENU_PLIST"
 
 TOKEN_READY=false
 if [ -n "${HOB_TELEGRAM_TOKEN:-}" ]; then
@@ -215,11 +273,13 @@ fi
 
 if launchctl print "$DAEMON_TARGET" >/dev/null 2>&1; then
   say "Restarting Hob on the installed release"
-  launchctl kickstart -k "$DAEMON_TARGET"
+  restart_agent "$DAEMON_TARGET" "$DAEMON_PLIST"
+  wait_for_running_agent "$DAEMON_TARGET" "background delivery"
 elif [ "$TOKEN_READY" = true ]; then
   say "Turning Hob on"
-  bootstrap_agent "$DAEMON_TARGET" "$DAEMON_PLIST"
+  bootstrap_agent "$DAEMON_PLIST"
   launchctl kickstart "$DAEMON_TARGET"
+  wait_for_running_agent "$DAEMON_TARGET" "background delivery"
 else
   warn "The menu bar is installed, but Hob is off until a Telegram token is saved."
   warn "Run: uv run --directory \"$PROJECT_ROOT\" python app.py token set"

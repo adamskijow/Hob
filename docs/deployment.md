@@ -47,11 +47,7 @@ and `HOB_KEEP_ALIVE`:
   <key>Label</key>            <string>com.local.hob</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/you/.local/bin/uv</string>
-    <string>run</string>
-    <string>--directory</string>
-    <string>/Users/you/hob</string>
-    <string>python</string>
+    <string>/Users/you/hob/.venv/bin/python</string>
     <string>app.py</string>
   </array>
   <key>EnvironmentVariables</key>

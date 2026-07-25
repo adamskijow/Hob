@@ -19,6 +19,7 @@ def test_daemon_renderer_replaces_arrays_atomically(tmp_path):
     render_daemon(
         template=ROOT / "deploy/com.local.hob.plist",
         output=output,
+        python_path="/Users/test user/Git/Hob/.venv/bin/python",
         uv_path="/Users/test user/.local/bin/uv",
         project_root="/Users/test user/Git/Hob",
         model="test-model",
@@ -30,11 +31,7 @@ def test_daemon_renderer_replaces_arrays_atomically(tmp_path):
 
     payload = read_plist(output)
     assert payload["ProgramArguments"] == [
-        "/Users/test user/.local/bin/uv",
-        "run",
-        "--directory",
-        "/Users/test user/Git/Hob",
-        "python",
+        "/Users/test user/Git/Hob/.venv/bin/python",
         "app.py",
     ]
     assert payload["WorkingDirectory"] == "/Users/test user/Git/Hob"
@@ -47,6 +44,7 @@ def test_daemon_renderer_keeps_explicit_owner(tmp_path):
     render_daemon(
         template=ROOT / "deploy/com.local.hob.plist",
         output=output,
+        python_path="/opt/hob/.venv/bin/python",
         uv_path="/opt/uv",
         project_root="/opt/hob",
         model="test-model",
@@ -60,6 +58,34 @@ def test_daemon_renderer_keeps_explicit_owner(tmp_path):
         read_plist(output)["EnvironmentVariables"]["HOB_ALLOWED_TELEGRAM_USER_ID"]
         == "8761124835"
     )
+
+
+def test_daemon_renderer_preserves_existing_schedule_and_preferences(tmp_path):
+    existing = tmp_path / "existing.plist"
+    with (ROOT / "deploy/com.local.hob.plist").open("rb") as source:
+        payload = plistlib.load(source)
+    payload["EnvironmentVariables"]["HOB_WAKE_TIME"] = "06:45"
+    payload["EnvironmentVariables"]["HOB_WORK_DAYS"] = "mon,wed,fri"
+    with existing.open("wb") as destination:
+        plistlib.dump(payload, destination)
+    output = tmp_path / "rendered.plist"
+
+    render_daemon(
+        template=existing,
+        output=output,
+        python_path="/opt/hob/.venv/bin/python",
+        uv_path="/opt/uv",
+        project_root="/opt/hob",
+        model="test-model",
+        timezone="UTC",
+        database_path="/data/hob.db",
+        log_path="/logs/hob.log",
+        allowed_telegram_user_id="8761124835",
+    )
+
+    environment = read_plist(output)["EnvironmentVariables"]
+    assert environment["HOB_WAKE_TIME"] == "06:45"
+    assert environment["HOB_WORK_DAYS"] == "mon,wed,fri"
 
 
 def test_menu_renderer_has_exactly_one_executable(tmp_path):
