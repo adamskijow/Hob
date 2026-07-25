@@ -3069,13 +3069,13 @@ class DigestService:
         )
         if release_notice:
             text += (
-                f"\n\nnew in hob {__version__}: after a plan or outlook, ask "
-                '"why?", "what assumptions did you use?", or test a temporary '
-                '"what if?". the local model understands the question and '
-                "selects only facts produced by the deterministic planner. "
-                "hypotheticals create a labeled proposal; they never rewrite a "
-                "task, setting, adopted plan, or calendar without explicit "
-                "durable language and adoption. "
+                f"\n\nnew in hob {__version__}: every answer to an evening "
+                "recap now gets an independent local-model meaning check before "
+                "hob changes a task. say that nothing got done however you "
+                "naturally would—even with slang, humor, or profanity. explicit "
+                "task commands, new tasks, progress, and completed-work reports "
+                "still work normally. if that safety check is unavailable or "
+                "uncertain, hob changes nothing and asks you to retry. "
                 "this note appears once."
             )
         digest = Digest(
