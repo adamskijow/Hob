@@ -140,52 +140,44 @@ ditto "$STAGED_APP" "$INSTALL_APP"
 if [ ! -f "$DAEMON_PLIST" ]; then
   say "Installing Hob's automatic background service"
   DAEMON_TEMP="$STAGE_DIR/com.local.hob.plist"
-  cp "$PROJECT_ROOT/deploy/com.local.hob.plist" "$DAEMON_TEMP"
-  plutil -replace ProgramArguments.0 -string "$UV_PATH" "$DAEMON_TEMP"
-  plutil -replace ProgramArguments.3 -string "$PROJECT_ROOT" "$DAEMON_TEMP"
-  plutil -replace WorkingDirectory -string "$PROJECT_ROOT" "$DAEMON_TEMP"
-  plutil -replace EnvironmentVariables.HOB_MODEL -string "$MODEL_NAME" "$DAEMON_TEMP"
-  plutil -replace EnvironmentVariables.HOB_TIMEZONE -string "$TIMEZONE_NAME" "$DAEMON_TEMP"
-  plutil -replace EnvironmentVariables.HOB_DB_PATH -string "$DATABASE_PATH" "$DAEMON_TEMP"
-  plutil -replace EnvironmentVariables.PATH -string \
-    "$(dirname "$UV_PATH"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
-    "$DAEMON_TEMP"
-  plutil -replace StandardOutPath -string "$APP_SUPPORT_DIR/hob.log" "$DAEMON_TEMP"
-  plutil -replace StandardErrorPath -string "$APP_SUPPORT_DIR/hob.log" "$DAEMON_TEMP"
+  DAEMON_RENDER_ARGS=(
+    daemon
+    --template "$PROJECT_ROOT/deploy/com.local.hob.plist"
+    --output "$DAEMON_TEMP"
+    --uv-path "$UV_PATH"
+    --project-root "$PROJECT_ROOT"
+    --model "$MODEL_NAME"
+    --timezone "$TIMEZONE_NAME"
+    --database-path "$DATABASE_PATH"
+    --log-path "$APP_SUPPORT_DIR/hob.log"
+  )
   if [ -n "${HOB_ALLOWED_TELEGRAM_USER_ID:-}" ]; then
-    plutil -replace EnvironmentVariables.HOB_ALLOWED_TELEGRAM_USER_ID \
-      -string "$HOB_ALLOWED_TELEGRAM_USER_ID" "$DAEMON_TEMP"
-  else
-    plutil -remove EnvironmentVariables.HOB_ALLOWED_TELEGRAM_USER_ID \
-      "$DAEMON_TEMP"
+    DAEMON_RENDER_ARGS+=(
+      --allowed-telegram-user-id "$HOB_ALLOWED_TELEGRAM_USER_ID"
+    )
   fi
+  "$UV_PATH" run --directory "$PROJECT_ROOT" python \
+    "$PROJECT_ROOT/scripts/render_macos_plists.py" \
+    "${DAEMON_RENDER_ARGS[@]}"
   plutil -lint "$DAEMON_TEMP"
   mv "$DAEMON_TEMP" "$DAEMON_PLIST"
 fi
 
 say "Installing Hob's login menu"
 MENU_TEMP="$STAGE_DIR/com.local.hob.menu.plist"
-cp "$PROJECT_ROOT/deploy/com.local.hob.menu.plist" "$MENU_TEMP"
-plutil -replace ProgramArguments.0 \
-  -string "$INSTALL_APP/Contents/MacOS/HobOpenLocalMenu" "$MENU_TEMP"
-plutil -replace EnvironmentVariables.HOB_PROJECT_PATH \
-  -string "$PROJECT_ROOT" "$MENU_TEMP"
-plutil -replace EnvironmentVariables.HOB_DB_PATH \
-  -string "$DATABASE_PATH" "$MENU_TEMP"
-plutil -replace EnvironmentVariables.HOB_UV_PATH \
-  -string "$UV_PATH" "$MENU_TEMP"
-plutil -replace EnvironmentVariables.HOB_LOG_PATH \
-  -string "$APP_SUPPORT_DIR/hob.log" "$MENU_TEMP"
-plutil -replace EnvironmentVariables.HOB_MODEL \
-  -string "$MODEL_NAME" "$MENU_TEMP"
-plutil -replace EnvironmentVariables.HOB_OLLAMA_HOST \
-  -string "$OLLAMA_ENDPOINT" "$MENU_TEMP"
-plutil -replace EnvironmentVariables.HOB_TIMEZONE \
-  -string "$TIMEZONE_NAME" "$MENU_TEMP"
-plutil -replace StandardOutPath \
-  -string "$USER_LOG_DIR/menu.log" "$MENU_TEMP"
-plutil -replace StandardErrorPath \
-  -string "$USER_LOG_DIR/menu.log" "$MENU_TEMP"
+"$UV_PATH" run --directory "$PROJECT_ROOT" python \
+  "$PROJECT_ROOT/scripts/render_macos_plists.py" menu \
+  --template "$PROJECT_ROOT/deploy/com.local.hob.menu.plist" \
+  --output "$MENU_TEMP" \
+  --executable-path "$INSTALL_APP/Contents/MacOS/HobOpenLocalMenu" \
+  --project-root "$PROJECT_ROOT" \
+  --database-path "$DATABASE_PATH" \
+  --uv-path "$UV_PATH" \
+  --log-path "$APP_SUPPORT_DIR/hob.log" \
+  --model "$MODEL_NAME" \
+  --ollama-host "$OLLAMA_ENDPOINT" \
+  --timezone "$TIMEZONE_NAME" \
+  --menu-log-path "$USER_LOG_DIR/menu.log"
 plutil -lint "$MENU_TEMP"
 
 if [ -f "$MENU_PLIST" ]; then
