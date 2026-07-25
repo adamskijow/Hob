@@ -400,7 +400,8 @@ def test_upgraded_owner_gets_one_digest_discovery_note_but_fresh_install_does_no
     asyncio.run(service.fire())
 
     assert "new in hob" in sent.calls[0][1]
-    assert "flame in your menu bar" in sent.calls[0][1]
+    assert "uses its teapot" in sent.calls[0][1]
+    assert "hearth keeps the flame" in sent.calls[0][1]
     assert "turn hob on" in sent.calls[0][1]
     assert "check database/queue/telegram/model health" in sent.calls[0][1]
     assert "no launchctl commands" in sent.calls[0][1]

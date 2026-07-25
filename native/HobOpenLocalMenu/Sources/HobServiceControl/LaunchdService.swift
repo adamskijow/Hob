@@ -95,16 +95,16 @@ public enum LocalServiceState: Equatable, Sendable {
         }
     }
 
-    public var symbolName: String {
+    public var statusBadgeSymbolName: String? {
         switch self {
         case .checking:
-            return "hourglass"
+            return "ellipsis.circle.fill"
         case .running:
-            return "flame.fill"
+            return nil
         case .stopped:
-            return "flame"
+            return "pause.circle.fill"
         case .notInstalled, .unavailable:
-            return "exclamationmark.triangle"
+            return "exclamationmark.circle.fill"
         }
     }
 }

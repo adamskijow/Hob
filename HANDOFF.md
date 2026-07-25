@@ -11,7 +11,7 @@ snapshot.
 - **Live and in daily use.** Runs as a `launchd` daemon on macOS, with
   [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive. Model:
   `qwen2.5:14b-instruct` (7b works; 14b is more reliable on dense messages).
-- **Release target:** v0.9.11. v0.9 adds a deterministic weekly capacity outlook,
+- **Release target:** v0.9.12. v0.9 adds a deterministic weekly capacity outlook,
   explicit working days, plan-aware EOD, first-adoption coaching, accessible
   media fallback, privacy-safe activation metrics, and correct silent handling
   of Telegram-generated service events, and guarded shared-tense completion
@@ -21,8 +21,8 @@ snapshot.
   deterministic plan/outlook results, a fail-closed semantic safety pass over
   every evening-recap reply, and a native Open Local menu-bar recovery surface
   with one-command durable installation. Schema remains 10.
-- **Green target:** `uv run pytest` (436 passing), 29 native App Store foundation
-  tests plus 9 Open Local service/health tests, signed native bridge build, and the
+- **Green target:** `uv run pytest` (440 passing), 29 native App Store foundation
+  tests plus 11 Open Local service/health/branding tests, signed native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
   evals.interpreter_eval`, 111/111), plus the end-to-end analysis eval. The release head must pass exact Ubuntu and
   macOS CI before tagging.
@@ -110,6 +110,12 @@ snapshot.
   provides the same text-only recovery vocabulary. The App Store shell remains
   sandboxed and separate. ADR 0002 records the shared future Windows tray
   contract without claiming Windows support. See `docs/audits/v0.9.11.md`.
+- **v0.9.12 teapot identity increment:** Hob now uses a custom vector teapot in
+  the macOS menu bar instead of Hearth's flame. Filled, outlined, checking,
+  paused, and warning presentations keep the product identity stable while
+  communicating status, with explicit text remaining the accessibility source
+  of truth. Setup and recovery language consistently point to the teapot. See
+  `docs/audits/v0.9.12.md`.
 - **New 1.0 operational finding:** Hearth's configured 20-second deep probe can
   queue behind direct 14B traffic, call the healthy server stuck, and restart
   it. It interrupted three long-corpus attempts. Pausing supervision through

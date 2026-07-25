@@ -84,7 +84,7 @@ if [ -z "${HOB_TELEGRAM_TOKEN:-}" ]; then
 Create your Telegram bot (about a minute):
   1. In Telegram, message @BotFather and send /newbot
   2. Run: uv run python app.py token set
-  3. On macOS, click Turn Hob On under the flame in the menu bar, then privately
+  3. On macOS, click Turn Hob On under the teapot in the menu bar, then privately
      send the new bot /start. That first /start pairs Hob to your Telegram user;
      other users and group chats are rejected.
 
@@ -105,7 +105,7 @@ fi
 
 say "Setup complete"
 if [ "$(uname -s)" = "Darwin" ]; then
-  echo "Use the flame in the menu bar to check health, turn Hob on, or restart it."
+  echo "Use the teapot in the menu bar to check health, turn Hob on, or restart it."
 else
   echo "Start Hob with:  uv run python app.py"
 fi
