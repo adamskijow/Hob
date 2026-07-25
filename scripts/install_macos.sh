@@ -26,6 +26,22 @@ UV_PATH="$(command -v uv || true)"
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[33mwarning: %s\033[0m\n' "$*" >&2; }
 
+bootstrap_agent() {
+  local target="$1"
+  local plist="$2"
+  local attempt
+  for attempt in {1..30}; do
+    if launchctl bootstrap "$DOMAIN_TARGET" "$plist" >/dev/null 2>&1; then
+      return 0
+    fi
+    if launchctl print "$target" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  launchctl bootstrap "$DOMAIN_TARGET" "$plist"
+}
+
 if [ "$(uname -s)" != "Darwin" ]; then
   printf 'hob: the native menu-bar installer requires macOS\n' >&2
   exit 2
@@ -186,7 +202,7 @@ fi
 mv "$MENU_TEMP" "$MENU_PLIST"
 
 launchctl bootout "$MENU_TARGET" >/dev/null 2>&1 || true
-launchctl bootstrap "$DOMAIN_TARGET" "$MENU_PLIST"
+bootstrap_agent "$MENU_TARGET" "$MENU_PLIST"
 
 TOKEN_READY=false
 if [ -n "${HOB_TELEGRAM_TOKEN:-}" ]; then
@@ -202,7 +218,7 @@ if launchctl print "$DAEMON_TARGET" >/dev/null 2>&1; then
   launchctl kickstart -k "$DAEMON_TARGET"
 elif [ "$TOKEN_READY" = true ]; then
   say "Turning Hob on"
-  launchctl bootstrap "$DOMAIN_TARGET" "$DAEMON_PLIST"
+  bootstrap_agent "$DAEMON_TARGET" "$DAEMON_PLIST"
   launchctl kickstart "$DAEMON_TARGET"
 else
   warn "The menu bar is installed, but Hob is off until a Telegram token is saved."
