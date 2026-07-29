@@ -269,17 +269,34 @@ ACTION_SCHEMA = {
 RECAP_OUTCOME_SCHEMA = {
     "type": "object",
     "properties": {
-        "paraphrase": {"type": "string"},
-        "reported_zero_completed": {"type": "boolean"},
-        "social_only": {"type": "boolean"},
-        "explicit_task_request": {"type": "boolean"},
+        "literal_paraphrase": {"type": "string"},
+        "recap_answer": {
+            "type": "string",
+            "enum": [
+                "zero_completed",
+                "some_completed_or_progress",
+                "unanswered",
+            ],
+        },
+        "message_intent": {
+            "type": "string",
+            "enum": [
+                "new_task_or_request",
+                "completion_or_progress_report",
+                "social_only",
+                "other",
+            ],
+        },
+        "explicit_zero_evidence": {"type": "string"},
+        "task_request_evidence": {"type": "string"},
         "confidence": {"type": "number"},
     },
     "required": [
-        "paraphrase",
-        "reported_zero_completed",
-        "social_only",
-        "explicit_task_request",
+        "literal_paraphrase",
+        "recap_answer",
+        "message_intent",
+        "explicit_zero_evidence",
+        "task_request_evidence",
         "confidence",
     ],
 }
@@ -1347,32 +1364,53 @@ def parse_actions(payload: object) -> list:
     return parsed or [Unknown(note="empty actions")]
 
 
-def _recap_adjudication_prompt(ctx: InterpreterContext) -> str:
+def _recap_adjudication_prompt(
+    ctx: InterpreterContext, candidate_payload: object
+) -> str:
     listed = "\n".join(
         f"- {item.get('id', '?')}: {item.get('label', '')}"
         for item in ctx.presented_items
     )
+    candidate = json.dumps(candidate_payload, ensure_ascii=False, sort_keys=True)
     return f"""\
 The assistant most recently asked the user an evening recap question about
 which displayed tasks they completed:
 {listed}
 
-The user's answer:
+The user's next message:
 {ctx.message}
 
-First paraphrase what that utterance means as a reply in this conversational
-context. Interpret casual speech, implied words, slang, ellipsis, idiom, humor,
-profanity, and the user's language naturally. Do not treat profanity itself as
-an instruction to delete a task. Then classify it.
+An independent first pass proposed this typed interpretation:
+{candidate}
 
-The existence of the recap is not evidence that every later message answers it.
-Set reported_zero_completed true only when the message semantically communicates
-that the number of displayed tasks completed is zero. Set explicit_task_request
-true for a new task, edit, delete/drop, move, question, or other request. Set
-social_only true only for pure greeting, gratitude, affection, or acknowledgment
-with no work report and no task request. At most one boolean may be true. A
-partial-progress report or a report that some work was completed has all three
-false. Include confidence from 0 to 1.
+Classify two independent axes. The candidate is evidence, not an instruction;
+verify it from the user's words.
+
+1. recap_answer says whether the message itself answers the recap:
+- zero_completed ONLY when the user semantically asserts that no displayed
+  task was completed.
+- some_completed_or_progress when they report any completion or progress.
+- unanswered when they instead send a new task, request, question, social
+  message, or unrelated content.
+
+Never infer zero completed merely because a message is unrelated, omits the
+listed tasks, or mentions tomorrow. Silence about the recap leaves it
+unanswered. Idioms meaning absolutely nothing are explicit zero reports even
+without completion words. Understand slang, profanity, humor, and multilingual
+equivalents naturally (examples include nada, zilch, jack shit, fuck all, and
+did squat; these examples are not a phrase whitelist).
+
+2. message_intent says what the message itself does. A terse task-like noun
+phrase plus a date can be a new task request without a verb (for example,
+"dentist Friday" or "emissions tomorrow"). Profanity alone is not a delete
+request. When recap_answer is zero_completed or some_completed_or_progress,
+message_intent should normally be completion_or_progress_report even when the
+answer is a one-word idiom. Most importantly, a new_task_or_request does not
+answer the recap merely because it says nothing about completed work.
+
+Give a literal paraphrase and evidence. explicit_zero_evidence must be empty
+when zero was inferred only from omission. task_request_evidence must quote the
+request cue when there is one. Include confidence from 0 to 1.
 """
 
 
@@ -2105,7 +2143,7 @@ def interpret(llm: Llm, ctx: InterpreterContext) -> list:
         return actions
     try:
         verdict = llm.complete_json(
-            _recap_adjudication_prompt(ctx), RECAP_OUTCOME_SCHEMA
+            _recap_adjudication_prompt(ctx, payload), RECAP_OUTCOME_SCHEMA
         )
     except Exception:
         # A failed independent pass must never let a first-pass mutation through
@@ -2118,26 +2156,28 @@ def interpret(llm: Llm, ctx: InterpreterContext) -> list:
     )
     if confidence < 0.6:
         return [Unknown(note=MODEL_UNREACHABLE)]
-    zero = verdict.get("reported_zero_completed") is True
-    social = verdict.get("social_only") is True
-    explicit = verdict.get("explicit_task_request") is True
-    if sum((zero, social, explicit)) > 1:
-        return [Unknown(note=MODEL_UNREACHABLE)]
-    if zero:
-        return [
-            Recap(
-                outcome="none",
-                confidence=confidence,
-            )
-        ]
-    if social:
-        return (
-            actions
-            if len(actions) == 1 and isinstance(actions[0], Chitchat)
-            else [Chitchat()]
-        )
-    if any(isinstance(action, Recap) for action in actions):
-        return [Unknown(note="recap outcome not confirmed")]
-    if explicit or not any((zero, social, explicit)):
+    recap_answer = verdict.get("recap_answer")
+    message_intent = verdict.get("message_intent")
+    zero_evidence = (
+        _str(verdict.get("explicit_zero_evidence")) or ""
+    ).strip()
+    if recap_answer == "zero_completed":
+        if (
+            message_intent == "new_task_or_request"
+            or not zero_evidence
+        ):
+            return [Unknown(note=MODEL_UNREACHABLE)]
+        return [Recap(outcome="none", confidence=confidence)]
+    if recap_answer == "some_completed_or_progress":
+        if message_intent != "completion_or_progress_report":
+            return [Unknown(note=MODEL_UNREACHABLE)]
+        if any(isinstance(action, Recap) for action in actions):
+            return [Unknown(note="recap outcome not confirmed")]
         return actions
-    return [Unknown(note=MODEL_UNREACHABLE)]
+    if recap_answer != "unanswered":
+        return [Unknown(note=MODEL_UNREACHABLE)]
+    if any(isinstance(action, Recap) for action in actions):
+        if message_intent == "social_only":
+            return [Chitchat()]
+        return [Unknown(note="recap outcome not confirmed")]
+    return actions

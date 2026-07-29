@@ -184,10 +184,11 @@ def test_eod_zero_completion_report_is_model_interpreted_and_mutation_free():
     llm = FakeLlm([
         {"actions": [{"type": "recap", "outcome": "none", "confidence": 1.0}]},
         {
-            "paraphrase": "nothing was completed",
-            "reported_zero_completed": True,
-            "social_only": False,
-            "explicit_task_request": False,
+            "literal_paraphrase": "nothing was completed",
+            "recap_answer": "zero_completed",
+            "message_intent": "completion_or_progress_report",
+            "explicit_zero_evidence": "Nothing got done",
+            "task_request_evidence": "",
             "confidence": 1.0,
         },
     ])
@@ -220,10 +221,11 @@ def test_eod_zero_completion_idiom_is_semantically_recovered_by_model():
     llm = FakeLlm([
         {"actions": [{"type": "chitchat", "reply": "got it"}]},
         {
-            "paraphrase": "nothing was completed",
-            "reported_zero_completed": True,
-            "social_only": False,
-            "explicit_task_request": False,
+            "literal_paraphrase": "nothing was completed",
+            "recap_answer": "zero_completed",
+            "message_intent": "completion_or_progress_report",
+            "explicit_zero_evidence": "nada",
+            "task_request_evidence": "",
             "confidence": 0.96,
         },
     ])
@@ -254,10 +256,11 @@ def test_eod_zero_completion_slang_cannot_apply_first_pass_drop():
     llm = FakeLlm([
         {"actions": [{"type": "drop", "target": "a2", "confidence": 0.91}]},
         {
-            "paraphrase": "nothing was completed",
-            "reported_zero_completed": True,
-            "social_only": False,
-            "explicit_task_request": False,
+            "literal_paraphrase": "nothing was completed",
+            "recap_answer": "zero_completed",
+            "message_intent": "completion_or_progress_report",
+            "explicit_zero_evidence": "Jack shit",
+            "task_request_evidence": "",
             "confidence": 0.99,
         },
     ])
@@ -283,6 +286,53 @@ def test_eod_zero_completion_slang_cannot_apply_first_pass_drop():
     assert store.get_item("a2").status == "open"
     assert store.last_batch() == []
     assert len(llm.calls) == 2
+
+
+def test_new_dated_task_after_eod_prompt_is_captured_not_misread_as_zero():
+    llm = FakeLlm([
+        {
+            "actions": [{
+                "type": "capture",
+                "task": "Emissions",
+                "raw": "Emissions tomorrow",
+                "when": {"kind": "tomorrow"},
+                "confidence": 0.99,
+            }]
+        },
+        {
+            "literal_paraphrase": "Add an emissions task for tomorrow",
+            "recap_answer": "unanswered",
+            "message_intent": "new_task_or_request",
+            "explicit_zero_evidence": "",
+            "task_request_evidence": "Emissions tomorrow",
+            "confidence": 0.99,
+        },
+    ])
+    svc, store = service(llm)
+    store.set_meta(
+        PRESENTED_LIST_KEY,
+        json.dumps(
+            {
+                "ts": "2026-06-29T08:30:00-04:00",
+                "kind": "eod",
+                "items": [
+                    {"id": "a1", "label": "org prez"},
+                    {"id": "a2", "label": "call the pool guy"},
+                ],
+            }
+        ),
+    )
+
+    out = svc.handle(msg("Emissions tomorrow"))
+
+    captured = store.get_item("a4")
+    assert captured is not None
+    assert captured.task == "Emissions"
+    assert captured.due_date == "2026-06-30"
+    assert store.get_item("a1").status == "open"
+    assert store.get_item("a2").status == "open"
+    assert 'got it: "Emissions" for 2026-06-30 (tomorrow)' in out
+    assert "nothing marked done" not in out
 
 
 def test_eod_ambiguous_recap_outage_reports_model_failure_without_mutation():
@@ -320,10 +370,11 @@ def test_chitchat_after_eod_survives_semantic_adjudication():
     llm = FakeLlm([
         {"actions": [{"type": "chitchat", "reply": "anytime"}]},
         {
-            "paraphrase": "a thank-you",
-            "reported_zero_completed": False,
-            "social_only": True,
-            "explicit_task_request": False,
+            "literal_paraphrase": "a thank-you",
+            "recap_answer": "unanswered",
+            "message_intent": "social_only",
+            "explicit_zero_evidence": "",
+            "task_request_evidence": "",
             "confidence": 1.0,
         },
         {"reply": "always happy to help"},
@@ -353,10 +404,11 @@ def test_zero_completion_report_preserves_previous_batch_for_undo():
         {"actions": [{"type": "complete", "target": "a1", "confidence": 1.0}]},
         {"actions": [{"type": "recap", "outcome": "none", "confidence": 1.0}]},
         {
-            "paraphrase": "nothing was completed",
-            "reported_zero_completed": True,
-            "social_only": False,
-            "explicit_task_request": False,
+            "literal_paraphrase": "nothing was completed",
+            "recap_answer": "zero_completed",
+            "message_intent": "completion_or_progress_report",
+            "explicit_zero_evidence": "Nothing got done",
+            "task_request_evidence": "",
             "confidence": 1.0,
         },
     ])
@@ -2013,10 +2065,11 @@ def test_eod_that_list_reschedule_cannot_move_unpresented_tasks():
     }, {
         "scope": "presented", "confidence": 1.0
     }, {
-        "paraphrase": "move the displayed tasks",
-        "reported_zero_completed": False,
-        "social_only": False,
-        "explicit_task_request": True,
+        "literal_paraphrase": "move the displayed tasks",
+        "recap_answer": "unanswered",
+        "message_intent": "new_task_or_request",
+        "explicit_zero_evidence": "",
+        "task_request_evidence": "Move everything on that list",
         "confidence": 1.0,
     }])
     svc, store = service(llm)

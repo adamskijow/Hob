@@ -21,7 +21,7 @@ snapshot.
   deterministic plan/outlook results, a fail-closed semantic safety pass over
   every evening-recap reply, and a native Open Local menu-bar recovery surface
   with one-command durable installation. Schema remains 10.
-- **Green target:** `uv run pytest` (440 passing), 29 native App Store foundation
+- **Green target:** `uv run pytest` (443 passing), 29 native App Store foundation
   tests plus 11 Open Local service/health/branding tests, signed native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
   evals.interpreter_eval`, 111/111), plus the end-to-end analysis eval. The release head must pass exact Ubuntu and
@@ -114,8 +114,11 @@ snapshot.
   the macOS menu bar instead of Hearth's flame. Filled, outlined, checking,
   paused, and warning presentations keep the product identity stable while
   communicating status, with explicit text remaining the accessibility source
-  of truth. Setup and recovery language consistently point to the teapot. See
-  `docs/audits/v0.9.12.md`.
+  of truth. Setup and recovery language consistently point to the teapot.
+  Daily-use follow-up also split evening-recap adjudication into independent
+  recap-answer and message-intent judgments, so unrelated dated captures are
+  preserved while open-ended slang and multilingual zero reports remain
+  model-owned. See `docs/audits/v0.9.12.md`.
 - **New 1.0 operational finding:** Hearth's configured 20-second deep probe can
   queue behind direct 14B traffic, call the healthy server stuck, and restart
   it. It interrupted three long-corpus attempts. Pausing supervision through
