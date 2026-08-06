@@ -36,6 +36,22 @@ def msg(text, message_id=1, reply_to=None):
     )
 
 
+def context_verdict(outcome, confidence=1.0, intent=None, evidence=None):
+    answers = outcome != "other"
+    return {
+        "literal_paraphrase": "an answer" if answers else "an unrelated message",
+        "answers_active_question": answers,
+        "outcome": outcome,
+        "message_intent": intent or (
+            "context_answer" if answers else "task_or_work_update"
+        ),
+        "explicit_answer_evidence": (
+            evidence if evidence is not None else (outcome if answers else "")
+        ),
+        "confidence": confidence,
+    }
+
+
 def seed(store):
     base = [
         ("a1", "org prez", None, "2026-06-25T08:00:00"),
@@ -120,7 +136,7 @@ def test_low_confidence_confirmation_resumes_on_yes_and_cancels_on_no():
     llm = FakeLlm([
         {"actions": [{"type": "complete", "target": "a1", "confidence": 0.2}]},
         {"actions": [{"type": "confirmation_decision", "decision": "approve"}]},
-        {"outcome": "approve", "confidence": 1.0},
+        context_verdict("approve", evidence="yes"),
     ])
     svc, store = service(llm)
 
@@ -133,7 +149,7 @@ def test_low_confidence_confirmation_resumes_on_yes_and_cancels_on_no():
     llm2 = FakeLlm([
         {"actions": [{"type": "drop", "target": "a2", "confidence": 0.2}]},
         {"actions": [{"type": "confirmation_decision", "decision": "reject"}]},
-        {"outcome": "reject", "confidence": 1.0},
+        context_verdict("reject", evidence="no"),
     ])
     svc2, store2 = service(llm2)
     svc2.handle(msg("maybe drop the pool one"))
@@ -150,7 +166,7 @@ def test_confirmation_requires_semantic_approval_not_a_yes_prefix():
             "raw": "yesterday notes need review",
             "when": {"kind": "none"},
         }]},
-        {"outcome": "other", "confidence": 1.0},
+        context_verdict("other"),
     ])
     svc, store = service(llm)
 
@@ -545,9 +561,15 @@ def test_numbered_digest_exclusions_are_typed_end_to_end():
 
 
 def test_plain_keep_uses_single_use_digest_decision_without_reply_metadata():
-    llm = FakeLlm({"actions": [{
-        "type": "nudge_decision", "decision": "keep", "confidence": 1.0,
-    }]})
+    llm = FakeLlm([
+        {"actions": [{
+            "type": "nudge_decision", "decision": "keep", "confidence": 1.0,
+        }]},
+        context_verdict("keep", evidence="Keep"),
+        {"actions": [{
+            "type": "nudge_decision", "decision": "keep", "confidence": 1.0,
+        }]},
+    ])
     svc, store = service(llm)
     store.set_meta(
         DIGEST_DECISION_KEY,
@@ -583,7 +605,7 @@ def test_natural_digest_answer_overrides_a_bad_setting_guess_safely():
             "time": "20:00",
             "confidence": 0.9,
         }]},
-        {"outcome": "keep", "confidence": 0.98},
+        context_verdict("keep", 0.98, evidence="stay on"),
     ])
     svc, store = service(llm)
     store.set_meta(
@@ -603,10 +625,51 @@ def test_natural_digest_answer_overrides_a_bad_setting_guess_safely():
     assert "Active morning digest nudge" in llm.calls[0][0]
 
 
+def test_named_completion_and_new_capture_survive_lingering_digest_nudge():
+    llm = FakeLlm([
+        {"actions": [{
+            "type": "complete", "target": "a2", "confidence": 1.0,
+        }]},
+        context_verdict("drop", 0.95, evidence="finished"),
+        {"actions": [{
+            "type": "capture",
+            "task": "do haircut for Willow",
+            "raw": "Need to do haircut for Willow",
+            "confidence": 1.0,
+        }]},
+        context_verdict("drop", 0.95, evidence="need to do"),
+    ])
+    svc, store = service(llm)
+    store.set_meta(
+        DIGEST_DECISION_KEY,
+        json.dumps({
+            "item_id": "a1",
+            "sent_at": "2026-06-29T07:00:00-04:00",
+            "kind": "stale_task",
+        }),
+    )
+
+    completed = svc.handle(msg("I finished the pool call!!", message_id=1))
+    captured = svc.handle(msg("Need to do haircut for Willow", message_id=2))
+
+    assert store.get_item("a1").status == "open"
+    assert store.get_item("a2").status == "done"
+    assert 'done: "call the pool guy"' in completed
+    assert any(
+        item.task == "do haircut for Willow" and item.status == "open"
+        for item in store.open_items()
+    )
+    assert 'got it: "do haircut for Willow"' in captured
+    assert store.get_meta(DIGEST_DECISION_KEY)
+
+
 def test_plain_digest_tomorrow_and_drop_apply_to_the_prompted_item():
-    tomorrow_llm = FakeLlm({"actions": [{
-        "type": "nudge_decision", "decision": "tomorrow", "confidence": 1.0,
-    }]})
+    tomorrow_llm = FakeLlm([
+        {"actions": [{
+            "type": "nudge_decision", "decision": "tomorrow", "confidence": 1.0,
+        }]},
+        context_verdict("tomorrow", evidence="tomorrow"),
+    ])
     tomorrow_svc, tomorrow_store = service(tomorrow_llm)
     tomorrow_store.set_meta(
         DIGEST_DECISION_KEY,
@@ -623,9 +686,12 @@ def test_plain_digest_tomorrow_and_drop_apply_to_the_prompted_item():
     assert 'moved "call the pool guy" to 2026-06-30' in moved
     assert len(tomorrow_llm.calls) == 2
 
-    drop_llm = FakeLlm({"actions": [{
-        "type": "nudge_decision", "decision": "drop", "confidence": 1.0,
-    }]})
+    drop_llm = FakeLlm([
+        {"actions": [{
+            "type": "nudge_decision", "decision": "drop", "confidence": 1.0,
+        }]},
+        context_verdict("drop", evidence="drop"),
+    ])
     drop_svc, drop_store = service(drop_llm)
     drop_store.set_meta(
         DIGEST_DECISION_KEY,
@@ -685,9 +751,12 @@ def test_digest_decision_is_same_day_and_newer_task_focus_wins():
 
 
 def test_upgrade_uses_todays_pinned_digest_anchor_for_plain_keep():
-    llm = FakeLlm({"actions": [{
-        "type": "nudge_decision", "decision": "keep", "confidence": 1.0,
-    }]})
+    llm = FakeLlm([
+        {"actions": [{
+            "type": "nudge_decision", "decision": "keep", "confidence": 1.0,
+        }]},
+        context_verdict("keep", evidence="Keep"),
+    ])
     svc, store = service(llm)
     store.save_digest(
         Digest(
@@ -707,9 +776,12 @@ def test_upgrade_uses_todays_pinned_digest_anchor_for_plain_keep():
 
 
 def test_plain_back_on_resolves_the_waiting_digest_prompt():
-    llm = FakeLlm({"actions": [{
-        "type": "nudge_decision", "decision": "resume", "confidence": 1.0,
-    }]})
+    llm = FakeLlm([
+        {"actions": [{
+            "type": "nudge_decision", "decision": "resume", "confidence": 1.0,
+        }]},
+        context_verdict("resume", evidence="back on"),
+    ])
     svc, store = service(llm)
     waiting = store.get_item("a2")
     waiting.waiting_since = "2026-06-25"
@@ -1060,15 +1132,15 @@ def test_fresh_start_runs_resumable_guided_setup_to_completion():
 
     llm = FakeLlm([
         {"actions": [{"type": "setting", "key": "work_hours", "raw": "9 to 5", "start_time": "09:00", "end_time": "17:00"}]},
-        {"outcome": "other", "confidence": 1.0},
+        context_verdict("other", intent="new_request_or_setting"),
         {"actions": [{"type": "setting", "key": "work_days", "raw": "weekdays", "days": ["mon", "tue", "wed", "thu", "fri"]}]},
-        {"outcome": "other", "confidence": 1.0},
+        context_verdict("other", intent="new_request_or_setting"),
         {"actions": [{"type": "setting", "key": "break_window", "raw": "no break", "clear": True}]},
-        {"outcome": "other", "confidence": 1.0},
+        context_verdict("other", intent="new_request_or_setting"),
         {"actions": [{"type": "setting", "key": "default_duration", "raw": "45 minutes", "minutes": 45}]},
-        {"outcome": "other", "confidence": 1.0},
+        context_verdict("other", intent="new_request_or_setting"),
         {"actions": [{"type": "setting", "key": "transition_buffer", "raw": "10 minutes", "minutes": 10}]},
-        {"outcome": "other", "confidence": 1.0},
+        context_verdict("other", intent="new_request_or_setting"),
     ])
     store = SqliteStore(":memory:")
     clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
@@ -1111,18 +1183,24 @@ def test_setup_resumes_after_restart_and_can_skip_or_cancel():
     restarted = MessageService(
         store,
         clock,
-        FakeLlm({"actions": [{
-            "type": "onboarding_decision", "decision": "skip", "confidence": 1.0,
-        }]}),
+        FakeLlm([
+            {"actions": [{
+                "type": "onboarding_decision", "decision": "skip", "confidence": 1.0,
+            }]},
+            context_verdict("skip", evidence="skip"),
+        ]),
         "America/New_York",
     )
     resumed = restarted.handle(InboundMessage("/setup", 10, 1, 1, user_id=42))
     assert "setup 3/5" in resumed
     skipped = restarted.handle(InboundMessage("skip", 10, 2, 2, user_id=42))
     assert "setup 4/5" in skipped
-    restarted._llm = FakeLlm({"actions": [{
-        "type": "onboarding_decision", "decision": "cancel", "confidence": 1.0,
-    }]})
+    restarted._llm = FakeLlm([
+        {"actions": [{
+            "type": "onboarding_decision", "decision": "cancel", "confidence": 1.0,
+        }]},
+        context_verdict("cancel", evidence="cancel setup"),
+    ])
     canceled = restarted.handle(InboundMessage("cancel setup", 10, 3, 3, user_id=42))
     assert "setup paused" in canceled
     assert store.get_meta(ONBOARDING_STAGE_KEY) == "default_duration"
@@ -1142,9 +1220,12 @@ def test_workday_onboarding_skip_records_displayed_default():
     svc = MessageService(
         store,
         FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ)),
-        FakeLlm({"actions": [{
-            "type": "onboarding_decision", "decision": "skip", "confidence": 1.0,
-        }]}),
+        FakeLlm([
+            {"actions": [{
+                "type": "onboarding_decision", "decision": "skip", "confidence": 1.0,
+            }]},
+            context_verdict("skip", evidence="skip"),
+        ]),
         "America/New_York",
     )
 
@@ -1995,7 +2076,7 @@ def test_far_future_capture_confirms_then_applies():
                       "raw": "take out the trash in 200 years",
                       "when": {"kind": "offset", "n": 200, "unit": "year"}}]},
         {"actions": [{"type": "confirmation_decision", "decision": "approve"}]},
-        {"outcome": "approve", "confidence": 1.0},
+        context_verdict("approve", evidence="yes"),
     ])
     svc, store = service(llm)
 
@@ -2014,7 +2095,7 @@ def test_bulk_drop_across_days_confirms_then_applies():
         {"actions": [{"type": "bulk", "op": "drop", "scope": "all"}]},
         {"scope": "all", "confidence": 1.0},
         {"actions": [{"type": "confirmation_decision", "decision": "approve"}]},
-        {"outcome": "approve", "confidence": 1.0},
+        context_verdict("approve", evidence="yes"),
     ])
     svc, store = service(llm)  # seed spans undated items + a3 on 2026-06-28
 
@@ -2034,7 +2115,7 @@ def test_bulk_confirm_cancelled_by_non_yes():
             {"actions": [{"type": "bulk", "op": "drop", "scope": "all"}]},
             {"scope": "all", "confidence": 1.0},
             {"actions": [{"type": "capture", "task": "buy milk", "raw": "buy milk"}]},
-            {"outcome": "other", "confidence": 1.0},
+            context_verdict("other", intent="new_request_or_setting"),
         ]
     )
     svc, store = service(llm)

@@ -304,6 +304,8 @@ RECAP_OUTCOME_SCHEMA = {
 CONTEXT_DECISION_SCHEMA = {
     "type": "object",
     "properties": {
+        "literal_paraphrase": {"type": "string"},
+        "answers_active_question": {"type": "boolean"},
         "outcome": {
             "type": "string",
             "enum": [
@@ -311,9 +313,26 @@ CONTEXT_DECISION_SCHEMA = {
                 "approve", "reject", "skip", "cancel", "other",
             ],
         },
+        "message_intent": {
+            "type": "string",
+            "enum": [
+                "context_answer",
+                "task_or_work_update",
+                "new_request_or_setting",
+                "social_or_other",
+            ],
+        },
+        "explicit_answer_evidence": {"type": "string"},
         "confidence": {"type": "number"},
     },
-    "required": ["outcome", "confidence"],
+    "required": [
+        "literal_paraphrase",
+        "answers_active_question",
+        "outcome",
+        "message_intent",
+        "explicit_answer_evidence",
+        "confidence",
+    ],
 }
 
 BULK_SCOPE_SCHEMA = {
@@ -1414,7 +1433,9 @@ request cue when there is one. Include confidence from 0 to 1.
 """
 
 
-def _context_decision_prompt(ctx: InterpreterContext) -> str:
+def _context_decision_prompt(
+    ctx: InterpreterContext, candidate_payload: object
+) -> str:
     if ctx.nudge:
         context = (
             f"a morning digest asked about {ctx.nudge.get('item_id')}: "
@@ -1434,6 +1455,7 @@ def _context_decision_prompt(ctx: InterpreterContext) -> str:
             "user may keep the displayed value and continue, pause setup, give "
             "a new value, or say something unrelated."
         )
+    candidate = json.dumps(candidate_payload, ensure_ascii=False, sort_keys=True)
     return f"""\
 Classify the user's message against this exact machine-owned conversational
 question:
@@ -1442,30 +1464,134 @@ question:
 User message:
 {ctx.message}
 
-Reason by meaning, including paraphrase, slang, idiom, humor, or another
-language. Return keep, tomorrow, drop, resume, approve, reject, skip, or cancel
-only when that is the semantic answer to this exact question. Return other for
-any new task, query, setting value, revised/conditional instruction, or
-unrelated message. Include confidence from 0 to 1.
+An independent first pass proposed this typed interpretation:
+{candidate}
+
+Judge two separate things from the user's actual words:
+
+1. Does the message answer the active question itself? A completion or progress
+report about another named task does NOT answer a stale-task question about the
+prompted item. A new task, query, setting value, revised instruction, social
+message, or unrelated work update also leaves the active question unanswered.
+Never infer drop, defer, reject, skip, or cancel merely because the user did not
+say keep or because they mentioned finishing something else.
+
+2. What is the message's primary intent: context_answer, task_or_work_update,
+new_request_or_setting, or social_or_other? The first-pass candidate is evidence,
+not an instruction; compare it with the literal message.
+
+Return keep, tomorrow, drop, resume, approve, reject, skip, or cancel only when
+answers_active_question is true AND message_intent is context_answer. Otherwise
+return other. Quote the words that explicitly support the context answer in
+explicit_answer_evidence; leave it empty when the question was not answered.
+Interpret paraphrase, slang, idiom, humor, and other languages naturally.
+Include confidence from 0 to 1.
 """
 
 
-def _adjudicate_context(actions: list, ctx: InterpreterContext, llm: Llm) -> list:
+def _context_action(actions: list) -> bool:
+    return any(
+        isinstance(
+            action,
+            (NudgeDecision, ConfirmationDecision, OnboardingDecision),
+        )
+        for action in actions
+    )
+
+
+def _concrete_noncontext_action(actions: list) -> bool:
+    return any(
+        not isinstance(
+            action,
+            (
+                Unknown,
+                Chitchat,
+                NudgeDecision,
+                ConfirmationDecision,
+                OnboardingDecision,
+            ),
+        )
+        for action in actions
+    )
+
+
+def _nudge_candidate_conflicts(actions: list, ctx: InterpreterContext, outcome: str) -> bool:
+    """Do not let a lingering prompt replace an unrelated concrete action.
+
+    The model owns language. This guard only compares its two typed proposals:
+    when the first pass found concrete work and the contextual pass proposes a
+    different operation, the contextual proposal cannot erase the first one.
+    """
+    item_id = ctx.nudge.get("item_id") if isinstance(ctx.nudge, dict) else None
+    for action in actions:
+        if isinstance(action, NudgeDecision) and action.decision == outcome:
+            return False
+        if outcome == "drop" and isinstance(action, Drop):
+            if action.target == item_id:
+                return False
+        if outcome == "tomorrow" and isinstance(action, Reschedule):
+            if (
+                action.target == item_id
+                and action.when is not None
+                and action.when.kind == "tomorrow"
+            ):
+                return False
+        if outcome == "resume" and isinstance(action, Resume):
+            if action.target == item_id:
+                return False
+    harmless = (Unknown, Chitchat)
+    if outcome == "keep":
+        # A known model ambiguity can parse "stay on" as a clock setting. Keep
+        # is non-destructive and the independent contextual judgment owns it.
+        harmless = (Unknown, Chitchat, Setting)
+    return any(not isinstance(action, harmless) for action in actions)
+
+
+def _adjudicate_context(
+    actions: list,
+    ctx: InterpreterContext,
+    llm: Llm,
+    candidate_payload: object,
+) -> list:
     if not (ctx.nudge or ctx.confirmation_pending or ctx.onboarding_stage):
         return actions
     try:
         verdict = llm.complete_json(
-            _context_decision_prompt(ctx), CONTEXT_DECISION_SCHEMA
+            _context_decision_prompt(ctx, candidate_payload),
+            CONTEXT_DECISION_SCHEMA,
         )
     except Exception:
         return actions
     if not isinstance(verdict, dict):
         return actions
     outcome = verdict.get("outcome")
+    answers = verdict.get("answers_active_question") is True
+    message_intent = verdict.get("message_intent")
+    evidence = (
+        _str(verdict.get("explicit_answer_evidence")) or ""
+    ).strip()
     confidence = _float(verdict.get("confidence"), 0.0)
-    if outcome == "other":
+    valid_answer = (
+        answers
+        and message_intent == "context_answer"
+        and outcome != "other"
+        and bool(evidence)
+        and confidence >= 0.6
+    )
+    valid_nonanswer = (
+        not answers
+        and message_intent != "context_answer"
+        and outcome == "other"
+        and not evidence
+        and confidence >= 0.6
+    )
+    if valid_nonanswer:
         return actions
+    if not valid_answer:
+        return [Unknown(note=MODEL_UNREACHABLE)] if _context_action(actions) else actions
     if ctx.nudge and outcome in {"keep", "tomorrow", "drop", "resume"}:
+        if _nudge_candidate_conflicts(actions, ctx, outcome):
+            return actions
         return [NudgeDecision(decision=outcome, confidence=confidence)]
     if ctx.confirmation_pending and outcome == "approve":
         # Releasing a held mutation requires two independent model passes to
@@ -1476,8 +1602,12 @@ def _adjudicate_context(actions: list, ctx: InterpreterContext, llm: Llm) -> lis
                 return [ConfirmationDecision(decision=outcome, confidence=confidence)]
         return actions
     if ctx.confirmation_pending and outcome == "reject":
+        if _concrete_noncontext_action(actions):
+            return actions
         return [ConfirmationDecision(decision=outcome, confidence=confidence)]
     if ctx.onboarding_stage and outcome in {"skip", "cancel"}:
+        if _concrete_noncontext_action(actions):
+            return actions
         return [OnboardingDecision(decision=outcome, confidence=confidence)]
     return actions
 
@@ -2134,7 +2264,7 @@ def interpret(llm: Llm, ctx: InterpreterContext) -> list:
     except Exception:
         return [Unknown(note=MODEL_UNREACHABLE)]
     actions = parse_actions(payload)
-    actions = _adjudicate_context(actions, ctx, llm)
+    actions = _adjudicate_context(actions, ctx, llm, payload)
     actions = _review_candidate(payload, actions, ctx, llm)
     actions = _adjudicate_shared_capture_date(actions, ctx, llm)
     actions = _adjudicate_hypothetical(payload, actions, ctx, llm)

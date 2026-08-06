@@ -21,7 +21,7 @@ snapshot.
   deterministic plan/outlook results, a fail-closed semantic safety pass over
   every evening-recap reply, and a native Open Local menu-bar recovery surface
   with one-command durable installation. Schema remains 10.
-- **Green target:** `uv run pytest` (443 passing), 29 native App Store foundation
+- **Green target:** `uv run pytest` (447 passing), 29 native App Store foundation
   tests plus 11 Open Local service/health/branding tests, signed native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
   evals.interpreter_eval`, 111/111), plus the end-to-end analysis eval. The release head must pass exact Ubuntu and
@@ -118,7 +118,12 @@ snapshot.
   Daily-use follow-up also split evening-recap adjudication into independent
   recap-answer and message-intent judgments, so unrelated dated captures are
   preserved while open-ended slang and multilingual zero reports remain
-  model-owned. See `docs/audits/v0.9.12.md`.
+  model-owned. A later morning-digest collision extended the same non-modal
+  contract to stale nudges, confirmations, and onboarding: independent passes
+  see the first typed proposal, require explicit answer evidence, and cannot
+  replace a different concrete task, work update, setting, or request. The live
+  business-case drop was reversed, emissions completed, and the later haircut
+  capture preserved from a verified backup. See `docs/audits/v0.9.12.md`.
 - **New 1.0 operational finding:** Hearth's configured 20-second deep probe can
   queue behind direct 14B traffic, call the healthy server stuck, and restart
   it. It interrupted three long-corpus attempts. Pausing supervision through
