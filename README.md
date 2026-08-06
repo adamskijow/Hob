@@ -86,7 +86,7 @@ changed from the previous proposal, and no task is moved automatically.
 One command installs [uv](https://docs.astral.sh/uv/) and
 [Ollama](https://ollama.com/) if missing, syncs deps, pulls the model, and runs
 the preflight. On macOS it also installs automatic background startup and a
-native menu-bar flame that shows whether Hob is running:
+native menu-bar teapot that shows whether Hob is running:
 
 ```
 scripts/setup.sh                  # honors HOB_MODEL; safe to re-run
@@ -229,7 +229,7 @@ Portable export and verified restore include proposal and adopted-plan sessions.
 ### Mac menu bar and restart recovery
 
 The Open Local edition installs **Hob Local.app** in your user Applications
-folder. Its flame in the macOS menu bar shows whether background delivery is
+folder. Its teapot in the macOS menu bar shows whether background delivery is
 running and provides **Turn Hob On**, **Restart Hob**, **Check Health**, and log
 access. Both Hob and the menu return at login; restarting Hob does not lose an
 acknowledged Telegram turn.

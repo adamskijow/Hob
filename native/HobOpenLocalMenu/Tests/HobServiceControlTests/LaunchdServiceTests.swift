@@ -55,6 +55,26 @@ import Testing
     )
 }
 
+@Test func teapotStatusBadgesDoNotReuseHearthsFlame() {
+    #expect(LocalServiceState.running(pid: 1).statusBadgeSymbolName == nil)
+    #expect(
+        LocalServiceState.stopped.statusBadgeSymbolName
+            == "pause.circle.fill"
+    )
+    #expect(
+        LocalServiceState.notInstalled.statusBadgeSymbolName
+            == "exclamationmark.circle.fill"
+    )
+    #expect(
+        LocalServiceState.unavailable.statusBadgeSymbolName
+            == "exclamationmark.circle.fill"
+    )
+    #expect(
+        LocalServiceState.checking.statusBadgeSymbolName
+            == "ellipsis.circle.fill"
+    )
+}
+
 @Test func restartFullyUnloadsBeforeReloadingService() throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString)

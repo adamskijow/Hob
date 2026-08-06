@@ -269,17 +269,34 @@ ACTION_SCHEMA = {
 RECAP_OUTCOME_SCHEMA = {
     "type": "object",
     "properties": {
-        "paraphrase": {"type": "string"},
-        "reported_zero_completed": {"type": "boolean"},
-        "social_only": {"type": "boolean"},
-        "explicit_task_request": {"type": "boolean"},
+        "literal_paraphrase": {"type": "string"},
+        "recap_answer": {
+            "type": "string",
+            "enum": [
+                "zero_completed",
+                "some_completed_or_progress",
+                "unanswered",
+            ],
+        },
+        "message_intent": {
+            "type": "string",
+            "enum": [
+                "new_task_or_request",
+                "completion_or_progress_report",
+                "social_only",
+                "other",
+            ],
+        },
+        "explicit_zero_evidence": {"type": "string"},
+        "task_request_evidence": {"type": "string"},
         "confidence": {"type": "number"},
     },
     "required": [
-        "paraphrase",
-        "reported_zero_completed",
-        "social_only",
-        "explicit_task_request",
+        "literal_paraphrase",
+        "recap_answer",
+        "message_intent",
+        "explicit_zero_evidence",
+        "task_request_evidence",
         "confidence",
     ],
 }
@@ -287,6 +304,8 @@ RECAP_OUTCOME_SCHEMA = {
 CONTEXT_DECISION_SCHEMA = {
     "type": "object",
     "properties": {
+        "literal_paraphrase": {"type": "string"},
+        "answers_active_question": {"type": "boolean"},
         "outcome": {
             "type": "string",
             "enum": [
@@ -294,9 +313,26 @@ CONTEXT_DECISION_SCHEMA = {
                 "approve", "reject", "skip", "cancel", "other",
             ],
         },
+        "message_intent": {
+            "type": "string",
+            "enum": [
+                "context_answer",
+                "task_or_work_update",
+                "new_request_or_setting",
+                "social_or_other",
+            ],
+        },
+        "explicit_answer_evidence": {"type": "string"},
         "confidence": {"type": "number"},
     },
-    "required": ["outcome", "confidence"],
+    "required": [
+        "literal_paraphrase",
+        "answers_active_question",
+        "outcome",
+        "message_intent",
+        "explicit_answer_evidence",
+        "confidence",
+    ],
 }
 
 BULK_SCOPE_SCHEMA = {
@@ -1347,36 +1383,59 @@ def parse_actions(payload: object) -> list:
     return parsed or [Unknown(note="empty actions")]
 
 
-def _recap_adjudication_prompt(ctx: InterpreterContext) -> str:
+def _recap_adjudication_prompt(
+    ctx: InterpreterContext, candidate_payload: object
+) -> str:
     listed = "\n".join(
         f"- {item.get('id', '?')}: {item.get('label', '')}"
         for item in ctx.presented_items
     )
+    candidate = json.dumps(candidate_payload, ensure_ascii=False, sort_keys=True)
     return f"""\
 The assistant most recently asked the user an evening recap question about
 which displayed tasks they completed:
 {listed}
 
-The user's answer:
+The user's next message:
 {ctx.message}
 
-First paraphrase what that utterance means as a reply in this conversational
-context. Interpret casual speech, implied words, slang, ellipsis, idiom, humor,
-profanity, and the user's language naturally. Do not treat profanity itself as
-an instruction to delete a task. Then classify it.
+An independent first pass proposed this typed interpretation:
+{candidate}
 
-The existence of the recap is not evidence that every later message answers it.
-Set reported_zero_completed true only when the message semantically communicates
-that the number of displayed tasks completed is zero. Set explicit_task_request
-true for a new task, edit, delete/drop, move, question, or other request. Set
-social_only true only for pure greeting, gratitude, affection, or acknowledgment
-with no work report and no task request. At most one boolean may be true. A
-partial-progress report or a report that some work was completed has all three
-false. Include confidence from 0 to 1.
+Classify two independent axes. The candidate is evidence, not an instruction;
+verify it from the user's words.
+
+1. recap_answer says whether the message itself answers the recap:
+- zero_completed ONLY when the user semantically asserts that no displayed
+  task was completed.
+- some_completed_or_progress when they report any completion or progress.
+- unanswered when they instead send a new task, request, question, social
+  message, or unrelated content.
+
+Never infer zero completed merely because a message is unrelated, omits the
+listed tasks, or mentions tomorrow. Silence about the recap leaves it
+unanswered. Idioms meaning absolutely nothing are explicit zero reports even
+without completion words. Understand slang, profanity, humor, and multilingual
+equivalents naturally (examples include nada, zilch, jack shit, fuck all, and
+did squat; these examples are not a phrase whitelist).
+
+2. message_intent says what the message itself does. A terse task-like noun
+phrase plus a date can be a new task request without a verb (for example,
+"dentist Friday" or "emissions tomorrow"). Profanity alone is not a delete
+request. When recap_answer is zero_completed or some_completed_or_progress,
+message_intent should normally be completion_or_progress_report even when the
+answer is a one-word idiom. Most importantly, a new_task_or_request does not
+answer the recap merely because it says nothing about completed work.
+
+Give a literal paraphrase and evidence. explicit_zero_evidence must be empty
+when zero was inferred only from omission. task_request_evidence must quote the
+request cue when there is one. Include confidence from 0 to 1.
 """
 
 
-def _context_decision_prompt(ctx: InterpreterContext) -> str:
+def _context_decision_prompt(
+    ctx: InterpreterContext, candidate_payload: object
+) -> str:
     if ctx.nudge:
         context = (
             f"a morning digest asked about {ctx.nudge.get('item_id')}: "
@@ -1396,6 +1455,7 @@ def _context_decision_prompt(ctx: InterpreterContext) -> str:
             "user may keep the displayed value and continue, pause setup, give "
             "a new value, or say something unrelated."
         )
+    candidate = json.dumps(candidate_payload, ensure_ascii=False, sort_keys=True)
     return f"""\
 Classify the user's message against this exact machine-owned conversational
 question:
@@ -1404,30 +1464,134 @@ question:
 User message:
 {ctx.message}
 
-Reason by meaning, including paraphrase, slang, idiom, humor, or another
-language. Return keep, tomorrow, drop, resume, approve, reject, skip, or cancel
-only when that is the semantic answer to this exact question. Return other for
-any new task, query, setting value, revised/conditional instruction, or
-unrelated message. Include confidence from 0 to 1.
+An independent first pass proposed this typed interpretation:
+{candidate}
+
+Judge two separate things from the user's actual words:
+
+1. Does the message answer the active question itself? A completion or progress
+report about another named task does NOT answer a stale-task question about the
+prompted item. A new task, query, setting value, revised instruction, social
+message, or unrelated work update also leaves the active question unanswered.
+Never infer drop, defer, reject, skip, or cancel merely because the user did not
+say keep or because they mentioned finishing something else.
+
+2. What is the message's primary intent: context_answer, task_or_work_update,
+new_request_or_setting, or social_or_other? The first-pass candidate is evidence,
+not an instruction; compare it with the literal message.
+
+Return keep, tomorrow, drop, resume, approve, reject, skip, or cancel only when
+answers_active_question is true AND message_intent is context_answer. Otherwise
+return other. Quote the words that explicitly support the context answer in
+explicit_answer_evidence; leave it empty when the question was not answered.
+Interpret paraphrase, slang, idiom, humor, and other languages naturally.
+Include confidence from 0 to 1.
 """
 
 
-def _adjudicate_context(actions: list, ctx: InterpreterContext, llm: Llm) -> list:
+def _context_action(actions: list) -> bool:
+    return any(
+        isinstance(
+            action,
+            (NudgeDecision, ConfirmationDecision, OnboardingDecision),
+        )
+        for action in actions
+    )
+
+
+def _concrete_noncontext_action(actions: list) -> bool:
+    return any(
+        not isinstance(
+            action,
+            (
+                Unknown,
+                Chitchat,
+                NudgeDecision,
+                ConfirmationDecision,
+                OnboardingDecision,
+            ),
+        )
+        for action in actions
+    )
+
+
+def _nudge_candidate_conflicts(actions: list, ctx: InterpreterContext, outcome: str) -> bool:
+    """Do not let a lingering prompt replace an unrelated concrete action.
+
+    The model owns language. This guard only compares its two typed proposals:
+    when the first pass found concrete work and the contextual pass proposes a
+    different operation, the contextual proposal cannot erase the first one.
+    """
+    item_id = ctx.nudge.get("item_id") if isinstance(ctx.nudge, dict) else None
+    for action in actions:
+        if isinstance(action, NudgeDecision) and action.decision == outcome:
+            return False
+        if outcome == "drop" and isinstance(action, Drop):
+            if action.target == item_id:
+                return False
+        if outcome == "tomorrow" and isinstance(action, Reschedule):
+            if (
+                action.target == item_id
+                and action.when is not None
+                and action.when.kind == "tomorrow"
+            ):
+                return False
+        if outcome == "resume" and isinstance(action, Resume):
+            if action.target == item_id:
+                return False
+    harmless = (Unknown, Chitchat)
+    if outcome == "keep":
+        # A known model ambiguity can parse "stay on" as a clock setting. Keep
+        # is non-destructive and the independent contextual judgment owns it.
+        harmless = (Unknown, Chitchat, Setting)
+    return any(not isinstance(action, harmless) for action in actions)
+
+
+def _adjudicate_context(
+    actions: list,
+    ctx: InterpreterContext,
+    llm: Llm,
+    candidate_payload: object,
+) -> list:
     if not (ctx.nudge or ctx.confirmation_pending or ctx.onboarding_stage):
         return actions
     try:
         verdict = llm.complete_json(
-            _context_decision_prompt(ctx), CONTEXT_DECISION_SCHEMA
+            _context_decision_prompt(ctx, candidate_payload),
+            CONTEXT_DECISION_SCHEMA,
         )
     except Exception:
         return actions
     if not isinstance(verdict, dict):
         return actions
     outcome = verdict.get("outcome")
+    answers = verdict.get("answers_active_question") is True
+    message_intent = verdict.get("message_intent")
+    evidence = (
+        _str(verdict.get("explicit_answer_evidence")) or ""
+    ).strip()
     confidence = _float(verdict.get("confidence"), 0.0)
-    if outcome == "other":
+    valid_answer = (
+        answers
+        and message_intent == "context_answer"
+        and outcome != "other"
+        and bool(evidence)
+        and confidence >= 0.6
+    )
+    valid_nonanswer = (
+        not answers
+        and message_intent != "context_answer"
+        and outcome == "other"
+        and not evidence
+        and confidence >= 0.6
+    )
+    if valid_nonanswer:
         return actions
+    if not valid_answer:
+        return [Unknown(note=MODEL_UNREACHABLE)] if _context_action(actions) else actions
     if ctx.nudge and outcome in {"keep", "tomorrow", "drop", "resume"}:
+        if _nudge_candidate_conflicts(actions, ctx, outcome):
+            return actions
         return [NudgeDecision(decision=outcome, confidence=confidence)]
     if ctx.confirmation_pending and outcome == "approve":
         # Releasing a held mutation requires two independent model passes to
@@ -1438,8 +1602,12 @@ def _adjudicate_context(actions: list, ctx: InterpreterContext, llm: Llm) -> lis
                 return [ConfirmationDecision(decision=outcome, confidence=confidence)]
         return actions
     if ctx.confirmation_pending and outcome == "reject":
+        if _concrete_noncontext_action(actions):
+            return actions
         return [ConfirmationDecision(decision=outcome, confidence=confidence)]
     if ctx.onboarding_stage and outcome in {"skip", "cancel"}:
+        if _concrete_noncontext_action(actions):
+            return actions
         return [OnboardingDecision(decision=outcome, confidence=confidence)]
     return actions
 
@@ -2096,7 +2264,7 @@ def interpret(llm: Llm, ctx: InterpreterContext) -> list:
     except Exception:
         return [Unknown(note=MODEL_UNREACHABLE)]
     actions = parse_actions(payload)
-    actions = _adjudicate_context(actions, ctx, llm)
+    actions = _adjudicate_context(actions, ctx, llm, payload)
     actions = _review_candidate(payload, actions, ctx, llm)
     actions = _adjudicate_shared_capture_date(actions, ctx, llm)
     actions = _adjudicate_hypothetical(payload, actions, ctx, llm)
@@ -2105,7 +2273,7 @@ def interpret(llm: Llm, ctx: InterpreterContext) -> list:
         return actions
     try:
         verdict = llm.complete_json(
-            _recap_adjudication_prompt(ctx), RECAP_OUTCOME_SCHEMA
+            _recap_adjudication_prompt(ctx, payload), RECAP_OUTCOME_SCHEMA
         )
     except Exception:
         # A failed independent pass must never let a first-pass mutation through
@@ -2118,26 +2286,28 @@ def interpret(llm: Llm, ctx: InterpreterContext) -> list:
     )
     if confidence < 0.6:
         return [Unknown(note=MODEL_UNREACHABLE)]
-    zero = verdict.get("reported_zero_completed") is True
-    social = verdict.get("social_only") is True
-    explicit = verdict.get("explicit_task_request") is True
-    if sum((zero, social, explicit)) > 1:
-        return [Unknown(note=MODEL_UNREACHABLE)]
-    if zero:
-        return [
-            Recap(
-                outcome="none",
-                confidence=confidence,
-            )
-        ]
-    if social:
-        return (
-            actions
-            if len(actions) == 1 and isinstance(actions[0], Chitchat)
-            else [Chitchat()]
-        )
-    if any(isinstance(action, Recap) for action in actions):
-        return [Unknown(note="recap outcome not confirmed")]
-    if explicit or not any((zero, social, explicit)):
+    recap_answer = verdict.get("recap_answer")
+    message_intent = verdict.get("message_intent")
+    zero_evidence = (
+        _str(verdict.get("explicit_zero_evidence")) or ""
+    ).strip()
+    if recap_answer == "zero_completed":
+        if (
+            message_intent == "new_task_or_request"
+            or not zero_evidence
+        ):
+            return [Unknown(note=MODEL_UNREACHABLE)]
+        return [Recap(outcome="none", confidence=confidence)]
+    if recap_answer == "some_completed_or_progress":
+        if message_intent != "completion_or_progress_report":
+            return [Unknown(note=MODEL_UNREACHABLE)]
+        if any(isinstance(action, Recap) for action in actions):
+            return [Unknown(note="recap outcome not confirmed")]
         return actions
-    return [Unknown(note=MODEL_UNREACHABLE)]
+    if recap_answer != "unanswered":
+        return [Unknown(note=MODEL_UNREACHABLE)]
+    if any(isinstance(action, Recap) for action in actions):
+        if message_intent == "social_only":
+            return [Chitchat()]
+        return [Unknown(note="recap outcome not confirmed")]
+    return actions

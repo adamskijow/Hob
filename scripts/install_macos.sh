@@ -283,8 +283,8 @@ elif [ "$TOKEN_READY" = true ]; then
 else
   warn "The menu bar is installed, but Hob is off until a Telegram token is saved."
   warn "Run: uv run --directory \"$PROJECT_ROOT\" python app.py token set"
-  warn "Then choose Turn Hob On from the flame in the menu bar."
+  warn "Then choose Turn Hob On from the teapot in the menu bar."
 fi
 
-printf '\nHob is installed. Look for the flame in the macOS menu bar.\n'
+printf '\nHob is installed. Look for the teapot in the macOS menu bar.\n'
 printf 'It starts at login and shows whether background delivery is running.\n'

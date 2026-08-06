@@ -34,6 +34,22 @@ def ctx(message="x", active=None):
     )
 
 
+def context_verdict(outcome, confidence=1.0, intent=None, evidence=None):
+    answers = outcome != "other"
+    return {
+        "literal_paraphrase": "an answer" if answers else "an unrelated message",
+        "answers_active_question": answers,
+        "outcome": outcome,
+        "message_intent": intent or (
+            "context_answer" if answers else "task_or_work_update"
+        ),
+        "explicit_answer_evidence": (
+            evidence if evidence is not None else (outcome if answers else "")
+        ),
+        "confidence": confidence,
+    }
+
+
 def test_interpret_capture():
     llm = FakeLlm(
         {"actions": [{"type": "capture", "task": "org prez", "raw": "org prez Monday",
@@ -374,10 +390,11 @@ def test_ambiguous_eod_answer_gets_model_semantic_adjudication():
     llm = FakeLlm([
         {"actions": [{"type": "chitchat", "reply": "got it"}]},
         {
-            "paraphrase": "nothing was completed",
-            "reported_zero_completed": True,
-            "social_only": False,
-            "explicit_task_request": False,
+            "literal_paraphrase": "nothing was completed",
+            "recap_answer": "zero_completed",
+            "message_intent": "social_only",
+            "explicit_zero_evidence": "nada",
+            "task_request_evidence": "",
             "confidence": 0.94,
         },
     ])
@@ -387,7 +404,7 @@ def test_ambiguous_eod_answer_gets_model_semantic_adjudication():
     assert isinstance(action, Recap)
     assert action.outcome == "none" and action.confidence == 0.94
     assert len(llm.calls) == 2
-    assert "paraphrase what that utterance means" in llm.calls[1][0]
+    assert "Classify two independent axes" in llm.calls[1][0]
 
 
 def test_active_nudge_gets_focused_semantic_adjudication():
@@ -403,14 +420,76 @@ def test_active_nudge_gets_focused_semantic_adjudication():
             "type": "setting", "key": "eod_time", "raw": "stay on",
             "time": "20:00",
         }]},
-        {"outcome": "keep", "confidence": 0.97},
+        context_verdict("keep", 0.97, evidence="stay on"),
     ])
 
     action = interpret(llm, c)[0]
 
     assert isinstance(action, NudgeDecision)
     assert action.decision == "keep"
-    assert "Reason by meaning" in llm.calls[1][0]
+    assert "Judge two separate things" in llm.calls[1][0]
+    assert '"type": "setting"' in llm.calls[1][0]
+
+
+def test_active_nudge_cannot_replace_named_completion_with_drop():
+    c = ctx(
+        "I finished emissions!!",
+        active=[
+            {"id": "a30", "label": "add two paths"},
+            {"id": "a33", "label": "do emissions"},
+        ],
+    )
+    c.nudge = {
+        "item_id": "a30",
+        "label": "add two paths",
+        "kind": "stale_task",
+        "sent_at": "2026-08-06T07:00:00-04:00",
+    }
+    llm = FakeLlm([
+        {"actions": [{
+            "type": "complete", "target": "a33", "confidence": 1.0,
+        }]},
+        context_verdict("drop", 0.95, evidence="finished"),
+    ])
+
+    action = interpret(llm, c)[0]
+
+    assert isinstance(action, Complete)
+    assert action.target == "a33"
+    assert '"target": "a33"' in llm.calls[1][0]
+
+
+def test_confirmation_rejection_cannot_swallow_unrelated_capture():
+    c = ctx("actually buy milk")
+    c.confirmation_pending = True
+    llm = FakeLlm([
+        {"actions": [{
+            "type": "capture", "task": "buy milk", "raw": "actually buy milk",
+        }]},
+        context_verdict("reject", evidence="actually"),
+    ])
+
+    action = interpret(llm, c)[0]
+
+    assert isinstance(action, Capture)
+    assert action.task == "buy milk"
+
+
+def test_onboarding_cancel_cannot_swallow_explicit_setting():
+    c = ctx("plan work from 9 to 5")
+    c.onboarding_stage = "work_hours"
+    llm = FakeLlm([
+        {"actions": [{
+            "type": "setting", "key": "work_hours", "raw": "9 to 5",
+            "start_time": "09:00", "end_time": "17:00",
+        }]},
+        context_verdict("cancel", evidence="plan"),
+    ])
+
+    action = interpret(llm, c)[0]
+
+    assert isinstance(action, Setting)
+    assert action.start_time == "09:00" and action.end_time == "17:00"
 
 
 def test_confirmation_approval_requires_independent_model_consensus():
@@ -418,7 +497,7 @@ def test_confirmation_approval_requires_independent_model_consensus():
     c.confirmation_pending = True
     llm = FakeLlm([
         {"actions": [{"type": "unknown", "note": "conditional revision"}]},
-        {"outcome": "approve", "confidence": 0.99},
+        context_verdict("approve", 0.99, evidence="yes"),
     ])
 
     action = interpret(llm, c)[0]
@@ -434,7 +513,7 @@ def test_confirmation_pure_approval_passes_two_model_votes():
             "type": "confirmation_decision", "decision": "approve",
             "confidence": 0.96,
         }]},
-        {"outcome": "approve", "confidence": 0.99},
+        context_verdict("approve", 0.99, evidence="yes"),
     ])
 
     action = interpret(llm, c)[0]
@@ -718,10 +797,11 @@ def test_eod_adjudication_preserves_actual_chitchat():
     llm = FakeLlm([
         {"actions": [{"type": "chitchat", "reply": "anytime"}]},
         {
-            "paraphrase": "a thank-you",
-            "reported_zero_completed": False,
-            "social_only": True,
-            "explicit_task_request": False,
+            "literal_paraphrase": "a thank-you",
+            "recap_answer": "unanswered",
+            "message_intent": "social_only",
+            "explicit_zero_evidence": "",
+            "task_request_evidence": "",
             "confidence": 0.99,
         },
     ])
@@ -739,10 +819,11 @@ def test_eod_adjudication_corrects_direct_recap_false_positive():
     llm = FakeLlm([
         {"actions": [{"type": "recap", "outcome": "none", "confidence": 1.0}]},
         {
-            "paraphrase": "a thank-you",
-            "reported_zero_completed": False,
-            "social_only": True,
-            "explicit_task_request": False,
+            "literal_paraphrase": "a thank-you",
+            "recap_answer": "unanswered",
+            "message_intent": "social_only",
+            "explicit_zero_evidence": "",
+            "task_request_evidence": "",
             "confidence": 0.99,
         },
     ])
@@ -760,10 +841,11 @@ def test_eod_adjudication_rejects_unconfirmed_direct_recap():
     llm = FakeLlm([
         {"actions": [{"type": "recap", "outcome": "none", "confidence": 1.0}]},
         {
-            "paraphrase": "a schedule question",
-            "reported_zero_completed": False,
-            "social_only": False,
-            "explicit_task_request": True,
+            "literal_paraphrase": "a schedule question",
+            "recap_answer": "unanswered",
+            "message_intent": "new_task_or_request",
+            "explicit_zero_evidence": "",
+            "task_request_evidence": "what is tomorrow's schedule?",
             "confidence": 0.99,
         },
     ])
@@ -788,10 +870,11 @@ def test_eod_adjudication_preserves_concrete_action_after_semantic_audit():
             }]
         },
         {
-            "paraphrase": "add a task",
-            "reported_zero_completed": False,
-            "social_only": False,
-            "explicit_task_request": True,
+            "literal_paraphrase": "add a task",
+            "recap_answer": "unanswered",
+            "message_intent": "new_task_or_request",
+            "explicit_zero_evidence": "",
+            "task_request_evidence": "buy milk",
             "confidence": 0.99,
         },
     ])
@@ -800,6 +883,72 @@ def test_eod_adjudication_preserves_concrete_action_after_semantic_audit():
 
     assert isinstance(action, Capture)
     assert len(llm.calls) == 2
+
+
+def test_eod_adjudication_does_not_swallow_new_dated_capture():
+    c = ctx("Emissions tomorrow")
+    c.presented_items = [
+        {"id": "a1", "label": "pay taxes Monday"},
+        {"id": "a2", "label": "add two paths"},
+    ]
+    c.presented_kind = "eod"
+    llm = FakeLlm([
+        {
+            "actions": [{
+                "type": "capture",
+                "task": "Emissions",
+                "raw": "Emissions tomorrow",
+                "when": {"kind": "tomorrow"},
+                "confidence": 0.99,
+            }]
+        },
+        {
+            "literal_paraphrase": "Add an emissions task for tomorrow",
+            "recap_answer": "unanswered",
+            "message_intent": "new_task_or_request",
+            "explicit_zero_evidence": "",
+            "task_request_evidence": "Emissions tomorrow",
+            "confidence": 0.99,
+        },
+    ])
+
+    action = interpret(llm, c)[0]
+
+    assert isinstance(action, Capture)
+    assert action.task == "Emissions"
+    assert action.when is not None and action.when.kind == "tomorrow"
+    assert "Emissions tomorrow" in llm.calls[1][0]
+    assert '"type": "capture"' in llm.calls[1][0]
+    assert "Silence about the recap leaves it" in llm.calls[1][0]
+
+
+def test_eod_adjudication_rejects_contradictory_zero_verdict():
+    c = ctx("Emissions tomorrow")
+    c.presented_items = [{"id": "a1", "label": "pay taxes Monday"}]
+    c.presented_kind = "eod"
+    llm = FakeLlm([
+        {
+            "actions": [{
+                "type": "capture",
+                "task": "Emissions",
+                "raw": "Emissions tomorrow",
+                "when": {"kind": "tomorrow"},
+            }]
+        },
+        {
+            "literal_paraphrase": "Add an emissions task for tomorrow",
+            "recap_answer": "zero_completed",
+            "message_intent": "new_task_or_request",
+            "explicit_zero_evidence": "nothing",
+            "task_request_evidence": "Emissions tomorrow",
+            "confidence": 0.99,
+        },
+    ])
+
+    action = interpret(llm, c)[0]
+
+    assert isinstance(action, Unknown)
+    assert action.note == MODEL_UNREACHABLE
 
 
 def test_eod_adjudication_corrects_destructive_zero_report_misclassification():
@@ -818,10 +967,11 @@ def test_eod_adjudication_corrects_destructive_zero_report_misclassification():
     llm = FakeLlm([
         {"actions": [{"type": "drop", "target": "a2", "confidence": 0.91}]},
         {
-            "paraphrase": "nothing was completed",
-            "reported_zero_completed": True,
-            "social_only": False,
-            "explicit_task_request": False,
+            "literal_paraphrase": "nothing was completed",
+            "recap_answer": "zero_completed",
+            "message_intent": "completion_or_progress_report",
+            "explicit_zero_evidence": "Jack shit",
+            "task_request_evidence": "",
             "confidence": 0.99,
         },
     ])
@@ -853,10 +1003,11 @@ def test_eod_adjudication_audits_multi_action_zero_report_misclassification():
             {"type": "drop", "target": "a2", "confidence": 0.91},
         ]},
         {
-            "paraphrase": "nothing was completed",
-            "reported_zero_completed": True,
-            "social_only": False,
-            "explicit_task_request": False,
+            "literal_paraphrase": "nothing was completed",
+            "recap_answer": "zero_completed",
+            "message_intent": "completion_or_progress_report",
+            "explicit_zero_evidence": "Whole lot of nothing",
+            "task_request_evidence": "",
             "confidence": 0.99,
         },
     ])
@@ -883,10 +1034,11 @@ def test_eod_adjudication_low_confidence_fails_closed():
     llm = FakeLlm([
         {"actions": [{"type": "drop", "target": "a2", "confidence": 0.91}]},
         {
-            "paraphrase": "possibly remove the second task",
-            "reported_zero_completed": False,
-            "social_only": False,
-            "explicit_task_request": True,
+            "literal_paraphrase": "possibly remove the second task",
+            "recap_answer": "unanswered",
+            "message_intent": "new_task_or_request",
+            "explicit_zero_evidence": "",
+            "task_request_evidence": "drop the second one maybe",
             "confidence": 0.4,
         },
     ])
@@ -913,10 +1065,11 @@ def test_eod_adjudication_preserves_explicit_drop_after_semantic_audit():
     llm = FakeLlm([
         {"actions": [{"type": "drop", "target": "a2", "confidence": 0.99}]},
         {
-            "paraphrase": "drop the second task",
-            "reported_zero_completed": False,
-            "social_only": False,
-            "explicit_task_request": True,
+            "literal_paraphrase": "drop the second task",
+            "recap_answer": "unanswered",
+            "message_intent": "new_task_or_request",
+            "explicit_zero_evidence": "",
+            "task_request_evidence": "drop the second one",
             "confidence": 0.99,
         },
     ])
