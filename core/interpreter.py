@@ -731,7 +731,7 @@ Fields: type "unknown", note (short).
 DATES: set "when" to a typed date intent - classify the phrase, never compute a date:
 - no date mentioned -> {{"kind":"none"}}
 - "today"/"tonight" -> {{"kind":"today"}}; "tomorrow" -> {{"kind":"tomorrow"}}; "yesterday" -> {{"kind":"yesterday"}}
-- a weekday BY NAME, even with "next" ("friday", "next friday", "this monday") -> {{"kind":"weekday","which":"this" or "next","day":"mon".."sun"}}
+- a weekday BY NAME ("friday", "next friday", "this monday") -> {{"kind":"weekday","which":"this" or "next","day":"mon".."sun"}}. Bare or "this" means the upcoming occurrence; "next" means that weekday in the following Monday-to-Sunday calendar week. Preserve this distinction exactly.
 - "in N days/weeks/months/years" ("a couple"=2, "a few"=3) -> {{"kind":"offset","n":N,"unit":"day"/"week"/"month"/"year"}}. "in 2 weeks" is offset, NOT week.
 - "this/next weekend" -> {{"kind":"weekend","which":"this" or "next"}}
 - "next week"/"this week", with NO weekday name and NO number (maybe early/mid/late) -> {{"kind":"week","which":"next","part":"early"/"mid"/"late"}}

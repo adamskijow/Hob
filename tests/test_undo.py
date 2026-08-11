@@ -87,7 +87,7 @@ def test_multi_action_batch_undo_restores_exact_state():
                 {"type": "complete", "target": "a1", "confidence": 0.95},
                 {"type": "drop", "target": "a2", "confidence": 0.95},
                 {"type": "reschedule", "target": "a3",
-                 "when": {"kind": "weekday", "which": "next", "day": "fri"},
+                 "when": {"kind": "weekday", "which": "this", "day": "fri"},
                  "confidence": 0.95},
             ]
         }

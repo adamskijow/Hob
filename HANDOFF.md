@@ -21,10 +21,10 @@ snapshot.
   deterministic plan/outlook results, a fail-closed semantic safety pass over
   every evening-recap reply, and a native Open Local menu-bar recovery surface
   with one-command durable installation. Schema remains 10.
-- **Green target:** `uv run pytest` (449 passing), 29 native App Store foundation
+- **Green target:** `uv run pytest` (450 passing), 29 native App Store foundation
   tests plus 11 Open Local service/health/branding tests, signed native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
-  evals.interpreter_eval`, 111/111), plus the end-to-end analysis eval. The release head must pass exact Ubuntu and
+  evals.interpreter_eval`, 112/112), plus the end-to-end analysis eval. The release head must pass exact Ubuntu and
   macOS CI before tagging.
 - **Live v0.9:** release commit `c656459` passed exact Ubuntu/macOS CI in run
   `29165341007`, was tagged and published as v0.9.0, backed up, and deployed by
@@ -127,7 +127,11 @@ snapshot.
   reschedule exposed overlapping morning/EOD contexts plus semantic uncertainty
   mislabeled as a model outage. Morning now supersedes EOD atomically, newer
   contexts suppress stale recap audits, and only real call exceptions retry;
-  the original durable message completed once after 12 safe attempts. See
+  the original durable message completed once after 12 safe attempts. Its
+  recovered date then exposed deterministic weekday resolution ignoring the
+  model's correct `this` versus `next` distinction. `Next Friday` now means the
+  Friday in the following calendar week, and the live haircut was corrected
+  through the ordinary mutation log from August 14 to August 21. See
   `docs/audits/v0.9.12.md`.
 - **New 1.0 operational finding:** Hearth's configured 20-second deep probe can
   queue behind direct 14B traffic, call the healthy server stuck, and restart
@@ -135,6 +139,12 @@ snapshot.
   Hearth's authenticated local control API yielded an uninterrupted 111/111
   run, and Hearth was returned to healthy managed ownership afterward. Durable
   setup must make in-flight work visible or validate a safe probe policy.
+- **New 1.0 model-consistency finding:** an audit run for next-weekday semantics
+  passed the new exact case but varied on two older contextual cases. A waiting
+  answer produced the right resume mutation without nudge-decision metadata,
+  and an onboarding postponement became skip instead of cancel. Keep the
+  112/112 full gate as a release requirement and make contextual action plus
+  prompt-lifecycle reconciliation robust before 1.0.
 - **Mac App Store track:** ADR 0001 establishes one behavior with Open Local
   and Store distribution editions. `native/HobAppFoundation` starts the native
   menu-bar/settings surface, typed setup readiness, bounded Apple Foundation

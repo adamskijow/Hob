@@ -91,7 +91,7 @@ def test_multi_action_correction_applies_all():
                 {"type": "complete", "target": "a1", "confidence": 0.95},
                 {"type": "drop", "target": "a2", "confidence": 0.95},
                 {"type": "reschedule", "target": "a3",
-                 "when": {"kind": "weekday", "which": "next", "day": "fri"},
+                 "when": {"kind": "weekday", "which": "this", "day": "fri"},
                  "confidence": 0.95},
             ]
         }
@@ -2134,13 +2134,13 @@ def test_eod_that_list_reschedule_cannot_move_unpresented_tasks():
                 "type": "bulk",
                 "op": "reschedule",
                 "scope": "presented",
-                "when": {"kind": "weekday", "which": "next", "day": "mon"},
+                "when": {"kind": "weekday", "which": "this", "day": "mon"},
                 "except": ["a3"],
             },
             {
                 "type": "reschedule",
                 "target": "a3",
-                "when": {"kind": "weekday", "which": "next", "day": "sun"},
+                "when": {"kind": "weekday", "which": "this", "day": "sun"},
             },
         ]
     }, {

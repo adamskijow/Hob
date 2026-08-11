@@ -99,6 +99,12 @@ CASES = [
     Case("push the audit to friday",
          lambda p: kinds(p) == ["reschedule"] and p.mutations[0].due_date == "2026-07-03",
          "reschedule by description"),
+    Case("Haircut got scheduled for next Friday",
+         lambda p: kinds(p) == ["reschedule"]
+         and p.mutations[0].target == "h1"
+         and p.mutations[0].due_date == "2026-07-10",
+         "next named weekday stays distinct from the upcoming weekday",
+         active=[{"id": "h1", "label": "do haircut for Willow", "due_date": None}]),
     Case("did the prez one",
          lambda p: kinds(p) == ["complete"] and p.mutations[0].target == "a1",
          "complete by description"),

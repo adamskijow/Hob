@@ -150,7 +150,7 @@
             {
               "type": "reschedule",
               "target": "a3",
-              "when": {"kind": "weekday", "which": "next", "day": "fri"},
+              "when": {"kind": "weekday", "which": "this", "day": "fri"},
               "confidence": 0.95
             }
           ],

@@ -400,7 +400,7 @@ def test_reschedule_resolves_date():
         ctx(ACTIVE),
     )
     assert plan.mutations[0].kind == "reschedule"
-    assert plan.mutations[0].due_date == "2026-07-03"
+    assert plan.mutations[0].due_date == "2026-07-10"
 
 
 def test_reschedule_without_date_asks():
@@ -534,7 +534,7 @@ def test_bulk_date_resolves_day_from_message():
         {"id": "a5", "label": "thing friday", "due_date": "2026-07-03"},
     ]
     plan = reconcile(
-        [Bulk(op="drop", scope="date", when=When(kind="weekday", which="next", day="fri"))],
+        [Bulk(op="drop", scope="date", when=When(kind="weekday", which="this", day="fri"))],
         ctx(active),
     )
     assert {m.target for m in plan.mutations} == {"a5"}  # friday = 2026-07-03
@@ -1352,7 +1352,7 @@ def test_capture_relate_case_insensitive():
 def test_capture_own_date_beats_relate():
     plan = reconcile(
         [Capture(task="bring soda", raw="bring soda Friday",
-                 when=When(kind="weekday", which="next", day="fri"), relate="a3")],
+                 when=When(kind="weekday", which="this", day="fri"), relate="a3")],
         ctx(ACTIVE),
     )
     assert plan.mutations[0].due_date == "2026-07-03"  # its own Friday, not a3's
