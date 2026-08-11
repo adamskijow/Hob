@@ -1561,7 +1561,10 @@ def _adjudicate_context(
             CONTEXT_DECISION_SCHEMA,
         )
     except Exception:
-        return actions
+        # A first-pass context decision needs its independent safety vote. A
+        # real model outage remains retryable; unrelated concrete work can keep
+        # its first-pass interpretation without letting the prompt own it.
+        return [Unknown(note=MODEL_UNREACHABLE)] if _context_action(actions) else actions
     if not isinstance(verdict, dict):
         return actions
     outcome = verdict.get("outcome")
@@ -1588,7 +1591,11 @@ def _adjudicate_context(
     if valid_nonanswer:
         return actions
     if not valid_answer:
-        return [Unknown(note=MODEL_UNREACHABLE)] if _context_action(actions) else actions
+        return (
+            [Unknown(note="context answer not confirmed")]
+            if _context_action(actions)
+            else actions
+        )
     if ctx.nudge and outcome in {"keep", "tomorrow", "drop", "resume"}:
         if _nudge_candidate_conflicts(actions, ctx, outcome):
             return actions
@@ -2254,6 +2261,9 @@ def _needs_recap_adjudication(actions: list, ctx: InterpreterContext) -> bool:
         and bool(ctx.presented_items)
         and not ctx.forwarded_from
         and not ctx.pending
+        and not ctx.nudge
+        and not ctx.confirmation_pending
+        and not ctx.onboarding_stage
     )
 
 
@@ -2279,13 +2289,11 @@ def interpret(llm: Llm, ctx: InterpreterContext) -> list:
         # A failed independent pass must never let a first-pass mutation through
         # in recap context. The durable inbox will retry when the model recovers.
         return [Unknown(note=MODEL_UNREACHABLE)]
-    confidence = (
-        _float(verdict.get("confidence"), 0.0)
-        if isinstance(verdict, dict)
-        else 0.0
-    )
+    if not isinstance(verdict, dict):
+        return [Unknown(note="recap outcome not confirmed")]
+    confidence = _float(verdict.get("confidence"), 0.0)
     if confidence < 0.6:
-        return [Unknown(note=MODEL_UNREACHABLE)]
+        return [Unknown(note="recap outcome not confirmed")]
     recap_answer = verdict.get("recap_answer")
     message_intent = verdict.get("message_intent")
     zero_evidence = (
@@ -2296,16 +2304,16 @@ def interpret(llm: Llm, ctx: InterpreterContext) -> list:
             message_intent == "new_task_or_request"
             or not zero_evidence
         ):
-            return [Unknown(note=MODEL_UNREACHABLE)]
+            return [Unknown(note="recap outcome not confirmed")]
         return [Recap(outcome="none", confidence=confidence)]
     if recap_answer == "some_completed_or_progress":
         if message_intent != "completion_or_progress_report":
-            return [Unknown(note=MODEL_UNREACHABLE)]
+            return [Unknown(note="recap outcome not confirmed")]
         if any(isinstance(action, Recap) for action in actions):
             return [Unknown(note="recap outcome not confirmed")]
         return actions
     if recap_answer != "unanswered":
-        return [Unknown(note=MODEL_UNREACHABLE)]
+        return [Unknown(note="recap outcome not confirmed")]
     if any(isinstance(action, Recap) for action in actions):
         if message_intent == "social_only":
             return [Chitchat()]

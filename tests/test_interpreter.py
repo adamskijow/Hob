@@ -948,7 +948,7 @@ def test_eod_adjudication_rejects_contradictory_zero_verdict():
     action = interpret(llm, c)[0]
 
     assert isinstance(action, Unknown)
-    assert action.note == MODEL_UNREACHABLE
+    assert action.note == "recap outcome not confirmed"
 
 
 def test_eod_adjudication_corrects_destructive_zero_report_misclassification():
@@ -1046,7 +1046,7 @@ def test_eod_adjudication_low_confidence_fails_closed():
     action = interpret(llm, c)[0]
 
     assert isinstance(action, Unknown)
-    assert action.note == MODEL_UNREACHABLE
+    assert action.note == "recap outcome not confirmed"
 
 
 def test_eod_adjudication_preserves_explicit_drop_after_semantic_audit():
@@ -1093,6 +1093,18 @@ def test_eod_adjudication_requires_uncontested_machine_context():
                 "task": "call mom",
             }],
         ),
+        lambda c: setattr(
+            c,
+            "nudge",
+            {
+                "item_id": "a1",
+                "label": "call pool",
+                "kind": "stale_task",
+                "sent_at": "2026-06-29T07:00:00",
+            },
+        ),
+        lambda c: setattr(c, "confirmation_pending", True),
+        lambda c: setattr(c, "onboarding_stage", "work_hours"),
     ):
         c = ctx("nada")
         c.presented_items = [{"id": "a1", "label": "call pool"}]
@@ -1109,6 +1121,51 @@ def test_eod_adjudication_requires_uncontested_machine_context():
             "most recently asked the user an evening recap" in prompt
             for prompt, _, _ in llm.calls[1:]
         )
+
+
+def test_newer_morning_nudge_suppresses_stale_eod_audit_for_task_update():
+    c = ctx(
+        "Haircut got scheduled for next Friday",
+        active=[
+            {"id": "a30", "label": "add two paths"},
+            {"id": "a34", "label": "do haircut for Willow"},
+        ],
+    )
+    c.presented_kind = "eod"
+    c.presented_items = [
+        {"id": "a30", "label": "add two paths"},
+        {"id": "a34", "label": "do haircut for Willow"},
+    ]
+    c.nudge = {
+        "item_id": "a30",
+        "label": "add two paths",
+        "kind": "stale_task",
+        "sent_at": "2026-06-30T07:00:00",
+    }
+    llm = FakeLlm([
+        {"actions": [{
+            "type": "reschedule",
+            "target": "a34",
+            "when": {"kind": "weekday", "which": "next", "day": "fri"},
+            "confidence": 1.0,
+        }]},
+        context_verdict(
+            "other",
+            confidence=0.0,
+            intent="task_or_work_update",
+        ),
+    ])
+
+    action = interpret(llm, c)[0]
+
+    assert isinstance(action, Reschedule)
+    assert action.target == "a34"
+    assert action.when is not None and action.when.day == "fri"
+    assert len(llm.calls) == 2
+    assert not any(
+        "most recently asked the user an evening recap" in prompt
+        for prompt, _, _ in llm.calls
+    )
 
 
 def test_eod_adjudication_outage_fails_closed():

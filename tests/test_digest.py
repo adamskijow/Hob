@@ -356,6 +356,11 @@ def test_digest_decision_state_rolls_back_as_one_unit(monkeypatch):
 def test_digest_service_sends_and_persists_order():
     store = SqliteStore(":memory:")
     store.set_meta("chat_id", "42")
+    store.set_meta(
+        "last_presented_list",
+        '{"ts":"2026-06-28T20:30:00-04:00","kind":"eod",'
+        '"items":[{"id":"a1","label":"review audit"}]}',
+    )
     for it in [
         item("a1", "review audit", due="2026-06-27", created="2026-06-27T08:00:00"),
         item("a2", "org prez", due="2026-06-29", created="2026-06-29T07:00:00"),
@@ -375,6 +380,16 @@ def test_digest_service_sends_and_persists_order():
     assert "future thing" not in text
     # persisted in presented order, so ordinals resolve later
     assert [d.id for d in store.last_digest().items] == ["a1", "a2", "a3"]
+    presented = json.loads(store.get_meta("last_presented_list"))
+    assert presented == {
+        "ts": "2026-06-29T07:00:00-04:00",
+        "kind": "morning",
+        "items": [
+            {"id": "a1", "label": "review audit"},
+            {"id": "a2", "label": "org prez"},
+            {"id": "a3", "label": "call pool"},
+        ],
+    }
 
 
 def test_digest_service_no_chat_id_does_not_send_or_persist():
