@@ -3069,8 +3069,8 @@ class DigestService:
         )
         if release_notice:
             text += (
-                f"\n\nnew in hob {__version__}: on mac, the flame in your menu "
-                "bar now shows whether hob is running. open it to turn hob on, "
+                f"\n\nnew in hob {__version__}: on mac, hob now uses its teapot "
+                "in the menu bar so hearth keeps the flame. open it to turn hob on, "
                 "restart it, check database/queue/telegram/model health, or "
                 "open the log—no launchctl commands or database path required. "
                 "hob and the menu return automatically when you log in. "
@@ -3097,6 +3097,22 @@ class DigestService:
             if release_notice:
                 self._store.set_meta(RELEASE_NOTICE_KEY, __version__)
             self._store.save_digest(digest)
+            # The morning digest is now the newest proactive list. Supersede
+            # last night's EOD context so an ordinary morning update cannot be
+            # audited as an answer to two different machine-owned questions.
+            self._store.set_meta(
+                PRESENTED_LIST_KEY,
+                json.dumps(
+                    {
+                        "ts": digest.sent_at,
+                        "kind": "morning",
+                        "items": [
+                            {"id": item.id, "label": item.task}
+                            for item in ordered
+                        ],
+                    }
+                ),
+            )
             self._store.set_meta(
                 DIGEST_DECISION_KEY,
                 json.dumps(

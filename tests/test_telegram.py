@@ -6,15 +6,17 @@ offset persistence. Async coroutines are driven with asyncio.run so no
 pytest-asyncio dependency is needed.
 """
 import asyncio
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import telegram
 
-from app import MessageService
+from app import MessageService, PRESENTED_LIST_KEY
 from adapters.store_sqlite import SqliteStore
 from adapters.telegram_bot import OFFSET_KEY, TelegramAdapter, present
+from core.models import Item
 from tests.fakes import FakeClock, FakeLlm
 
 
@@ -241,6 +243,16 @@ def test_present_capitalizes_for_display():
     )
 
 
+def test_confirmation_button_names_the_action():
+    markup = TelegramAdapter._confirm_markup(
+        json.dumps({"id": "turn-1", "mutations": []})
+    )
+    buttons = markup.inline_keyboard[0]
+
+    assert [button.text for button in buttons] == ["Confirm", "Cancel"]
+    assert buttons[0].callback_data == "hob:confirm:yes:turn-1"
+
+
 def test_long_messages_split_without_losing_text():
     text = "a" * 5000
     chunks = TelegramAdapter._chunks(text)
@@ -303,6 +315,55 @@ def test_model_outage_keeps_inbound_message_until_automatic_retry():
     assert store.queue_counts() == (0, 0, 0)
     assert [item.task for item in store.open_items()] == ["buy milk"]
     assert bot.sent == [(42, 'Got it: "Buy milk"')]
+
+
+def test_semantic_disagreement_replies_once_instead_of_retrying_forever():
+    store = SqliteStore(":memory:")
+    store.add_item(Item(
+        id="a1",
+        raw_text="do haircut for Willow",
+        task="do haircut for Willow",
+        due_date=None,
+        due_time=None,
+        status="open",
+        source="capture",
+        created_at="2026-07-10T08:00:00-04:00",
+        updated_at="2026-07-10T08:00:00-04:00",
+    ))
+    store.set_meta(
+        PRESENTED_LIST_KEY,
+        json.dumps({
+            "ts": "2026-07-10T08:30:00-04:00",
+            "kind": "eod",
+            "items": [{"id": "a1", "label": "do haircut for Willow"}],
+        }),
+    )
+    llm = FakeLlm([
+        {"actions": [{
+            "type": "reschedule",
+            "target": "a1",
+            "when": {"kind": "weekday", "which": "next", "day": "fri"},
+            "confidence": 1.0,
+        }]},
+        {
+            "literal_paraphrase": "the haircut is scheduled for next Friday",
+            "recap_answer": "some_completed_or_progress",
+            "message_intent": "new_task_or_request",
+            "explicit_zero_evidence": "",
+            "task_request_evidence": "scheduled for next Friday",
+            "confidence": 1.0,
+        },
+    ])
+    service = _capture_service(store, llm, retry=True)
+    bot = FakeBot([[update(21, "Haircut got scheduled for next Friday")]])
+    adapter = TelegramAdapter(store, service.handle, bot=bot)
+
+    asyncio.run(adapter.poll_once())
+
+    assert store.queue_counts() == (0, 0, 0)
+    assert store.get_item("a1").due_date is None
+    assert len(bot.sent) == 1
+    assert "not the action" in bot.sent[0][1]
 
 
 def test_outbox_retries_reply_without_reapplying_state():

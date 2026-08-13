@@ -76,6 +76,11 @@ def _resolve_kind(when, today: date) -> date | None:
         wd = _DOW.get((when.day or "")[:3].lower())
         if wd is None:
             return None
+        if when.which == "next":
+            # "Next Friday" means Friday in the next Monday-to-Sunday week,
+            # not merely the next occurrence of Friday. This keeps it distinct
+            # from bare "Friday" and "this Friday" while remaining future-only.
+            return today + timedelta(days=7 - today.weekday() + wd)
         return today + timedelta(days=((wd - today.weekday()) % 7) or 7)
     if kind == "offset":
         n = int(when.n or 0)

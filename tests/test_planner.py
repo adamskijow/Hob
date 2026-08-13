@@ -400,7 +400,7 @@ def test_reschedule_resolves_date():
         ctx(ACTIVE),
     )
     assert plan.mutations[0].kind == "reschedule"
-    assert plan.mutations[0].due_date == "2026-07-03"
+    assert plan.mutations[0].due_date == "2026-07-10"
 
 
 def test_reschedule_without_date_asks():
@@ -534,7 +534,7 @@ def test_bulk_date_resolves_day_from_message():
         {"id": "a5", "label": "thing friday", "due_date": "2026-07-03"},
     ]
     plan = reconcile(
-        [Bulk(op="drop", scope="date", when=When(kind="weekday", which="next", day="fri"))],
+        [Bulk(op="drop", scope="date", when=When(kind="weekday", which="this", day="fri"))],
         ctx(active),
     )
     assert {m.target for m in plan.mutations} == {"a5"}  # friday = 2026-07-03
@@ -676,6 +676,24 @@ def test_note_wait_resume_reconcile():
     waiting_active = [dict(a, waiting=(a["id"] == "a2")) for a in ACTIVE]
     plan = reconcile([Resume(target="a2")], ctx(waiting_active))
     assert plan.mutations[0].kind == "resume"
+
+
+def test_exact_waiting_nudge_resume_consumes_prompt_context():
+    from core.models import Resume
+
+    active = [
+        {"id": "w1", "label": "send the contract", "waiting": True},
+        {"id": "a2", "label": "another task", "waiting": False},
+    ]
+    c = ctx(
+        active,
+        nudge={"item_id": "w1", "kind": "waiting", "label": "send the contract"},
+    )
+
+    plan = reconcile([Resume(target="w1", confidence=1.0)], c)
+
+    assert plan.nudge_decision == "resume"
+    assert [(m.kind, m.target) for m in plan.mutations] == [("resume", "w1")]
 
 
 def test_capture_carries_waiting_and_note():
@@ -1312,7 +1330,10 @@ def test_capture_far_future_confirms():
     assert not plan.mutations
     assert plan.confirm is not None
     assert plan.confirm.mutations[0].kind == "capture"
-    assert "years out" in plan.confirm.question
+    assert plan.confirm.question == (
+        '"take out the trash" is set for 2226-06-29. '
+        "that is about 200 years away. are you sure?"
+    )
 
 
 def test_capture_near_future_applies():
@@ -1332,6 +1353,29 @@ def test_reschedule_far_future_confirms():
     )
     assert not plan.mutations
     assert plan.confirm is not None and plan.confirm.mutations[0].kind == "reschedule"
+    assert plan.confirm.question.startswith(
+        '"review SR audit" is set for 2126-06-29. '
+        "that is about 100 years away."
+    )
+    assert plan.confirm.question.endswith("are you sure?")
+
+
+def test_far_future_deadline_explains_the_safety_check():
+    plan = reconcile(
+        [Schedule(
+            target="a3",
+            deadline=When(kind="offset", n=10, unit="year"),
+            confidence=0.9,
+        )],
+        ctx(ACTIVE),
+    )
+
+    assert not plan.mutations
+    assert plan.confirm is not None
+    assert plan.confirm.question == (
+        'the deadline for "review SR audit" is set for 2036-06-29. '
+        "that is about 10 years away. are you sure?"
+    )
 
 
 def test_capture_relate_inherits_date():
@@ -1352,7 +1396,7 @@ def test_capture_relate_case_insensitive():
 def test_capture_own_date_beats_relate():
     plan = reconcile(
         [Capture(task="bring soda", raw="bring soda Friday",
-                 when=When(kind="weekday", which="next", day="fri"), relate="a3")],
+                 when=When(kind="weekday", which="this", day="fri"), relate="a3")],
         ctx(ACTIVE),
     )
     assert plan.mutations[0].due_date == "2026-07-03"  # its own Friday, not a3's

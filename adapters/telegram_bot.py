@@ -259,7 +259,7 @@ class TelegramAdapter:
         return telegram.InlineKeyboardMarkup(
             [[
                 telegram.InlineKeyboardButton(
-                    "Yes", callback_data=f"hob:confirm:yes{suffix}"
+                    "Confirm", callback_data=f"hob:confirm:yes{suffix}"
                 ),
                 telegram.InlineKeyboardButton(
                     "Cancel", callback_data=f"hob:confirm:no{suffix}"

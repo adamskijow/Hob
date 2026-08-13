@@ -42,7 +42,7 @@ def test_capture_distinguishes_plan_from_deadline_and_keeps_effort_constraints()
     service, store, _ = setup(
         {"actions": [{
             "type": "capture", "task": "finish board deck", "raw": "finish board deck",
-            "when": {"kind": "weekday", "which": "next", "day": "fri"},
+            "when": {"kind": "weekday", "which": "this", "day": "fri"},
             "deadline": {"kind": "absolute", "date": "2026-07-06"},
             "duration_minutes": 180, "duration_confidence": 1,
             "schedule_kind": "flexible", "splittable": True,

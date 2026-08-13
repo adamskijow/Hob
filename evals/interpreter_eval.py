@@ -94,11 +94,19 @@ CASES = [
          lambda p: not p.mutations and bool(p.questions),
          "ambiguous date asks"),
     Case("in 200 years take out the trash",
-         lambda p: p.confirm is not None and "years out" in p.confirm.question,
+         lambda p: p.confirm is not None
+         and "about 200 years away" in p.confirm.question
+         and "are you sure" in p.confirm.question,
          "implausibly far date confirms"),
     Case("push the audit to friday",
          lambda p: kinds(p) == ["reschedule"] and p.mutations[0].due_date == "2026-07-03",
          "reschedule by description"),
+    Case("Haircut got scheduled for next Friday",
+         lambda p: kinds(p) == ["reschedule"]
+         and p.mutations[0].target == "h1"
+         and p.mutations[0].due_date == "2026-07-10",
+         "next named weekday stays distinct from the upcoming weekday",
+         active=[{"id": "h1", "label": "do haircut for Willow", "due_date": None}]),
     Case("did the prez one",
          lambda p: kinds(p) == ["complete"] and p.mutations[0].target == "a1",
          "complete by description"),

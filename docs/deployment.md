@@ -97,7 +97,7 @@ Create `~/Library/Application Support/Hob` before loading the agent. Hob does
 not manage its own log files.
 
 **Restart behavior and recovery.** Hob is safe to kill at any moment. Use
-**Restart Hob** under the menu-bar flame. In a remote or non-graphical session,
+**Restart Hob** under the menu-bar teapot. In a remote or non-graphical session,
 use `scripts/hobctl restart`. The equivalent raw command remains
 `launchctl kickstart -k gui/$(id -u)/com.local.hob`.
 

@@ -245,7 +245,7 @@ verified without printing task labels, constraints, or message bodies. Verified
 `restore` and `import` commands safety-backup current data
 before an atomic replacement.
 
-On macOS, the Open Local installer adds a native menu-bar flame. It distinguishes
+On macOS, the Open Local installer adds a native menu-bar teapot. It distinguishes
 running from healthy, can turn the fixed Hob service on or restart it, runs the
 same privacy-safe aggregate health check, and opens logs without requiring a
 service label or database path. It returns at login. `scripts/hobctl` mirrors

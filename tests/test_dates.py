@@ -22,7 +22,18 @@ def test_simple_kinds():
 def test_weekday():
     assert r(kind="weekday", day="mon").date == "2026-07-06"  # next monday
     assert r(kind="weekday", day="wed").date == "2026-07-01"
-    assert r(kind="weekday", which="next", day="fri").date == "2026-07-03"
+    assert r(kind="weekday", which="this", day="fri").date == "2026-07-03"
+    assert r(kind="weekday", which="next", day="fri").date == "2026-07-10"
+
+
+def test_next_weekday_uses_the_following_calendar_week():
+    tuesday = date(2026, 8, 11)
+    assert resolve_intent(
+        When(kind="weekday", which="next", day="fri"), tuesday
+    ).date == "2026-08-21"
+    assert resolve_intent(
+        When(kind="weekday", which="this", day="fri"), tuesday
+    ).date == "2026-08-14"
 
 
 def test_offset():

@@ -291,6 +291,14 @@ def _hold(plan: Plan, mutation: Mutation, question: str) -> None:
     plan.confirm.question = question
 
 
+def _far_future_question(subject: str, due_iso: str, years: int) -> str:
+    """Briefly make the unusual distance behind the safety check explicit."""
+    return (
+        f'{subject} is set for {due_iso}. that is about {years} years away. '
+        "are you sure?"
+    )
+
+
 _NUM_WORDS = {
     "one": "1", "first": "1", "two": "2", "second": "2", "three": "3",
     "third": "3", "four": "4", "fourth": "4", "five": "5", "fifth": "5",
@@ -715,7 +723,11 @@ def _reconcile_capture(
     )
     years = _too_far(due_date, today) if due_date else None
     if years is not None:
-        _hold(plan, mutation, f"that is {due_date}, about {years} years out. confirm or cancel it.")
+        _hold(
+            plan,
+            mutation,
+            _far_future_question(f'"{action.task}"', due_date, years),
+        )
         return
     plan.mutations.append(mutation)
 
@@ -981,7 +993,9 @@ def _reconcile_schedule(
         _hold(
             plan,
             mutation,
-            f'that deadline is {deadline.date}, about {years} years out. confirm or cancel it.',
+            _far_future_question(
+                f'the deadline for "{active[target]}"', deadline.date, years
+            ),
         )
         return
     plan.mutations.append(mutation)
@@ -1065,7 +1079,11 @@ def _reconcile_reschedule(
     if resolution.date is not None:
         years = _too_far(resolution.date, today)
         if years is not None:
-            _hold(plan, mutation, f'move "{label}" to {resolution.date}, about {years} years out. confirm or cancel it.')
+            _hold(
+                plan,
+                mutation,
+                _far_future_question(f'"{label}"', resolution.date, years),
+            )
             return
     if action.confidence < CONFIDENCE_THRESHOLD:
         _hold(
@@ -1671,6 +1689,20 @@ def reconcile(actions: list, ctx) -> Plan:
             else:
                 _reconcile_unknown(ctx, plan)
     _apply_reference_guards(plan, ctx)
+    nudge = ctx.nudge if isinstance(ctx.nudge, dict) else None
+    if (
+        nudge
+        and nudge.get("kind") == "waiting"
+        and len(plan.mutations) == 1
+        and plan.mutations[0].kind == "resume"
+        and plan.mutations[0].target == nudge.get("item_id")
+        and not plan.questions
+        and plan.confirm is None
+    ):
+        # A model-proposed Resume may use "id: label" rather than the bare id.
+        # Once ordinary reference reconciliation proves it is the exact
+        # machine-owned waiting target, consume that prompt with the mutation.
+        plan.nudge_decision = "resume"
     return plan
 
 

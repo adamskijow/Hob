@@ -11,7 +11,7 @@ snapshot.
 - **Live and in daily use.** Runs as a `launchd` daemon on macOS, with
   [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive. Model:
   `qwen2.5:14b-instruct` (7b works; 14b is more reliable on dense messages).
-- **Release target:** v0.9.11. v0.9 adds a deterministic weekly capacity outlook,
+- **Release target:** v0.9.12. v0.9 adds a deterministic weekly capacity outlook,
   explicit working days, plan-aware EOD, first-adoption coaching, accessible
   media fallback, privacy-safe activation metrics, and correct silent handling
   of Telegram-generated service events, and guarded shared-tense completion
@@ -21,10 +21,10 @@ snapshot.
   deterministic plan/outlook results, a fail-closed semantic safety pass over
   every evening-recap reply, and a native Open Local menu-bar recovery surface
   with one-command durable installation. Schema remains 10.
-- **Green target:** `uv run pytest` (436 passing), 29 native App Store foundation
-  tests plus 9 Open Local service/health tests, signed native bridge build, and the
+- **Green target:** `uv run pytest` (454 passing), 29 native App Store foundation
+  tests plus 11 Open Local service/health/branding tests, signed native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
-  evals.interpreter_eval`, 111/111), plus the end-to-end analysis eval. The release head must pass exact Ubuntu and
+  evals.interpreter_eval`, 112/112), plus the end-to-end analysis eval. The release head must pass exact Ubuntu and
   macOS CI before tagging.
 - **Live v0.9:** release commit `c656459` passed exact Ubuntu/macOS CI in run
   `29165341007`, was tagged and published as v0.9.0, backed up, and deployed by
@@ -110,12 +110,46 @@ snapshot.
   provides the same text-only recovery vocabulary. The App Store shell remains
   sandboxed and separate. ADR 0002 records the shared future Windows tray
   contract without claiming Windows support. See `docs/audits/v0.9.11.md`.
+- **v0.9.12 teapot identity increment:** Hob now uses a custom vector teapot in
+  the macOS menu bar instead of Hearth's flame. Filled, outlined, checking,
+  paused, and warning presentations keep the product identity stable while
+  communicating status, with explicit text remaining the accessibility source
+  of truth. Setup and recovery language consistently point to the teapot.
+  Daily-use follow-up also split evening-recap adjudication into independent
+  recap-answer and message-intent judgments, so unrelated dated captures are
+  preserved while open-ended slang and multilingual zero reports remain
+  model-owned. A later morning-digest collision extended the same non-modal
+  contract to stale nudges, confirmations, and onboarding: independent passes
+  see the first typed proposal, require explicit answer evidence, and cannot
+  replace a different concrete task, work update, setting, or request. The live
+  business-case drop was reversed, emissions completed, and the later haircut
+  capture preserved from a verified backup. A subsequent hanging haircut
+  reschedule exposed overlapping morning/EOD contexts plus semantic uncertainty
+  mislabeled as a model outage. Morning now supersedes EOD atomically, newer
+  contexts suppress stale recap audits, and only real call exceptions retry;
+  the original durable message completed once after 12 safe attempts. Its
+  recovered date then exposed deterministic weekday resolution ignoring the
+  model's correct `this` versus `next` distinction. `Next Friday` now means the
+  Friday in the following calendar week, and the live haircut was corrected
+  through the ordinary mutation log from August 14 to August 21. See
+  `docs/audits/v0.9.12.md`.
+- **v0.9.12 confirmation-explanation follow-up:** a live 10-year capture showed
+  that the far-future safeguard stated the date but not why Hob suddenly asked.
+  Capture, reschedule, and deadline holds now name the affected work, date, and
+  unusual distance, ask `are you sure?`, and use a `Confirm` button instead of
+  `Yes`. The exact real-model far-future case passes.
 - **New 1.0 operational finding:** Hearth's configured 20-second deep probe can
   queue behind direct 14B traffic, call the healthy server stuck, and restart
   it. It interrupted three long-corpus attempts. Pausing supervision through
   Hearth's authenticated local control API yielded an uninterrupted 111/111
   run, and Hearth was returned to healthy managed ownership afterward. Durable
   setup must make in-flight work visible or validate a safe probe policy.
+- **Resolved v0.9.12 model-consistency finding:** the release gate found two
+  semantically correct actions with incorrect prompt lifecycle metadata. An
+  exact waiting-item resume now consumes its machine-owned nudge after normal
+  reference resolution, and onboarding uses distinct `continue now` versus
+  `pause setup` outcomes. Both actual 14B cases and deterministic regressions
+  pass; 112/112 remains a release requirement.
 - **Mac App Store track:** ADR 0001 establishes one behavior with Open Local
   and Store distribution editions. `native/HobAppFoundation` starts the native
   menu-bar/settings surface, typed setup readiness, bounded Apple Foundation
