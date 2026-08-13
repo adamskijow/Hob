@@ -20,6 +20,7 @@ from core.models import (
     Setting,
     Undo,
     Unknown,
+    Wait,
 )
 from tests.fakes import FakeLlm
 
@@ -710,6 +711,71 @@ def test_candidate_review_corrects_model_route_and_preserves_typed_contract():
     assert action.kind == "plan" and action.earliest_time == "12:00"
     assert len(llm.calls) == 3
     assert llm.calls[1][0].startswith("Independently audit a first-pass")
+
+
+def test_candidate_review_corrects_waiting_existing_task_capture():
+    c = ctx(
+        "the prez deck is waiting on sam's slides",
+        active=[{"id": "a1", "label": "prep the prez deck", "due_date": None}],
+    )
+    llm = FakeLlm(
+        {
+            "actions": [{
+                "type": "capture",
+                "task": "waiting on sam's slides for the prez deck",
+                "raw": "the prez deck is waiting on sam's slides",
+                "when": {"kind": "none"},
+                "waiting": True,
+                "confidence": 0.92,
+            }]
+        },
+        review_responses=[
+            {"type": "wait", "target": "a1", "confidence": 0.99},
+            {
+                "relation": "existing_task", "target": "a1",
+                "subject_evidence": "the prez deck",
+                "new_task_evidence": "", "confidence": 0.98,
+            },
+        ],
+    )
+
+    action = interpret(llm, c)[0]
+
+    assert isinstance(action, Wait)
+    assert action.target == "a1"
+    assert len(llm.calls) == 3
+
+
+def test_candidate_review_cannot_turn_a_new_waiting_task_into_an_existing_edit():
+    c = ctx(
+        "new report is waiting on Sam",
+        active=[{"id": "a1", "label": "draft quarterly report", "due_date": None}],
+    )
+    llm = FakeLlm(
+        {
+            "actions": [{
+                "type": "capture",
+                "task": "new report from Sam",
+                "raw": "new report is waiting on Sam",
+                "when": {"kind": "none"},
+                "waiting": True,
+                "confidence": 0.95,
+            }]
+        },
+        review_responses=[
+            {"type": "wait", "target": "a1", "confidence": 0.7},
+            {
+                "relation": "new_task", "target": None,
+                "subject_evidence": "new report",
+                "new_task_evidence": "new", "confidence": 0.99,
+            },
+        ],
+    )
+
+    action = interpret(llm, c)[0]
+
+    assert isinstance(action, Capture)
+    assert action.task == "new report from Sam"
 
 
 def test_candidate_review_cannot_erase_a_complete_typed_weekday():

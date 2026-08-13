@@ -21,10 +21,10 @@ snapshot.
   deterministic plan/outlook results, a fail-closed semantic safety pass over
   every evening-recap reply, and a native Open Local menu-bar recovery surface
   with one-command durable installation. Schema remains 10.
-- **Green target:** `uv run pytest` (454 passing), 29 native App Store foundation
+- **Green target:** `uv run pytest` (456 passing), 29 native App Store foundation
   tests plus 11 Open Local service/health/branding tests, signed native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
-  evals.interpreter_eval`, 112/112), plus the end-to-end analysis eval. The release head must pass exact Ubuntu and
+  evals.interpreter_eval`, 113/113), plus the end-to-end analysis eval. The release head must pass exact Ubuntu and
   macOS CI before tagging.
 - **Live v0.9:** release commit `c656459` passed exact Ubuntu/macOS CI in run
   `29165341007`, was tagged and published as v0.9.0, backed up, and deployed by
@@ -149,7 +149,13 @@ snapshot.
   exact waiting-item resume now consumes its machine-owned nudge after normal
   reference resolution, and onboarding uses distinct `continue now` versus
   `pause setup` outcomes. Both actual 14B cases and deterministic regressions
-  pass; 112/112 remains a release requirement.
+  pass.
+- **Resolved v0.9.12 waiting-identity finding:** the full release gate found
+  that one model pass could capture an existing task's blocker as separate new
+  work. Capture review now includes `wait`, and an independent task-identity
+  pass distinguishes an existing task becoming blocked from genuinely new work
+  that starts blocked. Both sides pass deterministic and actual 14B
+  regressions; 113/113 remains a release requirement.
 - **Mac App Store track:** ADR 0001 establishes one behavior with Open Local
   and Store distribution editions. `native/HobAppFoundation` starts the native
   menu-bar/settings surface, typed setup readiness, bounded Apple Foundation

@@ -79,6 +79,8 @@ class FakeLlm:
             "Independently audit a proposed scheduling-metadata edit"
         ) or prompt.startswith(
             "Independently classify the communicative goal"
+        ) or prompt.startswith(
+            "Decide whether the grammatical subject"
         ):
             if self._review_responses:
                 response = self._review_responses[min(

@@ -467,6 +467,14 @@ CAPTURE_AUDIT_SCHEMA = {
             ["type", "op", "confidence"],
         ),
         _variant(
+            "wait",
+            {
+                "target": _STR,
+                "confidence": {"type": "number"},
+            },
+            ["type", "target", "confidence"],
+        ),
+        _variant(
             "undo", {"confidence": {"type": "number"}},
             ["type", "confidence"],
         ),
@@ -499,11 +507,29 @@ ROUTE_TIEBREAK_SCHEMA = {
     "properties": {
         "outcome": {"type": "string", "enum": [
             "capture", "plan", "outlook", "explain", "what_if",
-            "plan_action", "undo", "other",
+            "plan_action", "wait", "undo", "other",
         ]},
         "confidence": {"type": "number"},
     },
     "required": ["outcome", "confidence"],
+}
+
+WAIT_IDENTITY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "relation": {
+            "type": "string",
+            "enum": ["existing_task", "new_task", "unclear"],
+        },
+        "target": _STR,
+        "subject_evidence": {"type": "string"},
+        "new_task_evidence": {"type": "string"},
+        "confidence": {"type": "number"},
+    },
+    "required": [
+        "relation", "target", "subject_evidence", "new_task_evidence",
+        "confidence",
+    ],
 }
 
 SCHEDULE_AUDIT_SCHEMA = {
@@ -1911,6 +1937,7 @@ communicative goal as exactly one type:
 - what_if: rerun that latest analysis with an explicitly hypothetical time,
   energy, estimate, or split assumption, without making it durable;
 - plan_action: explicitly adopt, replace, or cancel a proposed/adopted plan;
+- wait: report that an already-open task is blocked on another person;
 - undo: retract the recent change shown in context;
 - other: none of those.
 
@@ -1951,6 +1978,13 @@ completion uses repeat_anchor "completion"; preserve an explicit total in
 repeat_count. Never move a date from the user's words to a different kind.
 "Remind me to pay my taxes Monday" is capture task "pay my taxes" with when
 weekday mon; strip the reminder-request prefix but never drop its weekday.
+When the message instead says that an open task in the supplied list is now
+blocked on another person, return wait with that exact task id. Distinguish
+that from a genuinely new task which starts in a waiting state. The presence
+of a blocker alone does not make the work new. Conversely, when the user
+explicitly identifies the message's subject as new, that is decisive evidence
+for capture and it must not be mapped onto an open item just because their
+labels share a generic noun.
 For every capture, explicitly return kind none for absent deadline/repeat-end
 dates and null for absent scalar fields rather than omitting them. A sentence
 with a do date and a separate due date must return both.
@@ -2027,14 +2061,21 @@ User message:
 
 Two earlier passes disagreed between {first_route} and {audit_route}.
 
+{_audit_context(ctx)}
+
 Meanings:
 - capture: remember a concrete new task, including a standalone task phrase or
-  "I need to" statement with a date;
+  "I need to" statement with a date. A message explicitly calling its subject
+  new must remain capture even if an open item shares a generic word. Explicit
+  new identity is decisive and cannot be overridden by noun overlap;
 - plan: ask the assistant to choose or replan work;
 - outlook: ask read-only what fits or whether capacity is overloaded;
 - explain: ask why the latest deterministic analysis produced its result;
 - what_if: test a temporary assumption against the latest analysis;
 - plan_action: explicitly adopt, replace, or cancel a plan;
+- wait: report that an already-open task is blocked on another person. Use it
+  only when the message's grammatical subject refers to that open task, not
+  merely because both labels contain a word such as report, deck, or call;
 - undo: retract a recent change;
 - other: none of these.
 
@@ -2045,11 +2086,41 @@ including idiom and paraphrase. Include confidence.
 """
 
 
+def _wait_identity_prompt(
+    ctx: InterpreterContext, candidate_payload: object, proposed_target: object
+) -> str:
+    return f"""\
+Decide whether the grammatical subject of one message denotes an already-open
+task or a distinct new task. This is task identity, not keyword similarity.
+
+{_audit_context(ctx)}
+
+User message:
+{ctx.message}
+
+First-pass JSON:
+{json.dumps(candidate_payload, ensure_ascii=False, sort_keys=True)}
+
+A second pass proposed changing this open task to waiting:
+{proposed_target}
+
+Return existing_task only when the message's subject semantically denotes that
+same open piece of work. Shared generic nouns are insufficient. Return new_task
+when the user introduces a distinct subject, especially when they explicitly
+call it new. A new task may itself start blocked on another person. Return
+unclear rather than guessing when identity is ambiguous. Quote the subject
+words and any evidence that it is new. For existing_task, return the exact open
+task id; otherwise target must be null. Include confidence.
+"""
+
+
 def _route_name(action: object) -> str | None:
     if isinstance(action, Capture):
         return "capture"
     if isinstance(action, PlanAction):
         return "plan_action"
+    if isinstance(action, Wait):
+        return "wait"
     if isinstance(action, Query) and action.kind in {
         "plan", "outlook", "explain", "what_if"
     }:
@@ -2116,7 +2187,7 @@ def _review_candidate(
         audit_kind == "capture"
         and outcome in {
             "capture", "plan", "outlook", "explain", "what_if",
-            "plan_action", "undo",
+            "plan_action", "wait", "undo",
         }
         and first_route is not None
         and outcome != first_route
@@ -2127,17 +2198,33 @@ def _review_candidate(
         )
     ):
         try:
-            tiebreak = llm.complete_json(
-                _route_tiebreak_prompt(ctx, first_route, outcome),
-                ROUTE_TIEBREAK_SCHEMA,
-            )
+            if first_route == "capture" and outcome == "wait":
+                tiebreak = llm.complete_json(
+                    _wait_identity_prompt(ctx, payload, verdict.get("target")),
+                    WAIT_IDENTITY_SCHEMA,
+                )
+            else:
+                tiebreak = llm.complete_json(
+                    _route_tiebreak_prompt(ctx, first_route, outcome),
+                    ROUTE_TIEBREAK_SCHEMA,
+                )
         except Exception:
             return actions
-        if (
-            not isinstance(tiebreak, dict)
-            or tiebreak.get("outcome") != outcome
-            or _float(tiebreak.get("confidence"), 0.0) < 0.6
-        ):
+        wait_confirmed = (
+            first_route == "capture"
+            and outcome == "wait"
+            and isinstance(tiebreak, dict)
+            and tiebreak.get("relation") == "existing_task"
+            and tiebreak.get("target") == verdict.get("target")
+            and _float(tiebreak.get("confidence"), 0.0) >= 0.6
+        )
+        route_confirmed = (
+            not (first_route == "capture" and outcome == "wait")
+            and isinstance(tiebreak, dict)
+            and tiebreak.get("outcome") == outcome
+            and _float(tiebreak.get("confidence"), 0.0) >= 0.6
+        )
+        if not wait_confirmed and not route_confirmed:
             return actions
     if outcome == "capture" and isinstance(actions[0], Capture):
         first = (
@@ -2178,7 +2265,7 @@ def _review_candidate(
                 verdict["when"] = first["when"]
             if not verdict.get("splittable") and first.get("splittable"):
                 verdict["splittable"] = True
-    if outcome in {"capture", "schedule", "setting", "plan_action"}:
+    if outcome in {"capture", "schedule", "setting", "plan_action", "wait"}:
         return [_parse_one(verdict)]
     if outcome == "undo" and ctx.last_change_at:
         return [Undo()]
