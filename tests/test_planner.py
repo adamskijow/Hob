@@ -1313,9 +1313,8 @@ def test_capture_far_future_confirms():
     assert plan.confirm is not None
     assert plan.confirm.mutations[0].kind == "capture"
     assert plan.confirm.question == (
-        '"take out the trash" is set for 2226-06-29, about 200 years away. '
-        "i double-check dates more than 5 years away in case there was a typo. "
-        "confirm to save it, or cancel."
+        '"take out the trash" is set for 2226-06-29. '
+        "that is about 200 years away. are you sure?"
     )
 
 
@@ -1337,9 +1336,10 @@ def test_reschedule_far_future_confirms():
     assert not plan.mutations
     assert plan.confirm is not None and plan.confirm.mutations[0].kind == "reschedule"
     assert plan.confirm.question.startswith(
-        '"review SR audit" is set for 2126-06-29, about 100 years away.'
+        '"review SR audit" is set for 2126-06-29. '
+        "that is about 100 years away."
     )
-    assert "more than 5 years away" in plan.confirm.question
+    assert plan.confirm.question.endswith("are you sure?")
 
 
 def test_far_future_deadline_explains_the_safety_check():
@@ -1355,9 +1355,8 @@ def test_far_future_deadline_explains_the_safety_check():
     assert not plan.mutations
     assert plan.confirm is not None
     assert plan.confirm.question == (
-        'the deadline for "review SR audit" is set for 2036-06-29, '
-        "about 10 years away. i double-check dates more than 5 years away "
-        "in case there was a typo. confirm to save it, or cancel."
+        'the deadline for "review SR audit" is set for 2036-06-29. '
+        "that is about 10 years away. are you sure?"
     )
 
 

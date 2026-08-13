@@ -135,9 +135,9 @@ snapshot.
   `docs/audits/v0.9.12.md`.
 - **v0.9.12 confirmation-explanation follow-up:** a live 10-year capture showed
   that the far-future safeguard stated the date but not why Hob suddenly asked.
-  Capture, reschedule, and deadline holds now explain the five-year typo-check
-  threshold, name the affected work and effect, and use a `Confirm` button
-  instead of `Yes`. The exact real-model far-future case passes.
+  Capture, reschedule, and deadline holds now name the affected work, date, and
+  unusual distance, ask `are you sure?`, and use a `Confirm` button instead of
+  `Yes`. The exact real-model far-future case passes.
 - **New 1.0 operational finding:** Hearth's configured 20-second deep probe can
   queue behind direct 14B traffic, call the healthy server stuck, and restart
   it. It interrupted three long-corpus attempts. Pausing supervision through

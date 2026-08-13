@@ -292,11 +292,10 @@ def _hold(plan: Plan, mutation: Mutation, question: str) -> None:
 
 
 def _far_future_question(subject: str, due_iso: str, years: int) -> str:
-    """Explain the safety check instead of exposing an unexplained prompt."""
+    """Briefly make the unusual distance behind the safety check explicit."""
     return (
-        f'{subject} is set for {due_iso}, about {years} years away. '
-        "i double-check dates more than 5 years away in case there was a typo. "
-        "confirm to save it, or cancel."
+        f'{subject} is set for {due_iso}. that is about {years} years away. '
+        "are you sure?"
     )
 
 
