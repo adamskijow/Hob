@@ -11,6 +11,7 @@ from core.models import (
     Drop,
     InterpreterContext,
     NudgeDecision,
+    OnboardingDecision,
     PlanAction,
     Query,
     Recap,
@@ -490,6 +491,32 @@ def test_onboarding_cancel_cannot_swallow_explicit_setting():
 
     assert isinstance(action, Setting)
     assert action.start_time == "09:00" and action.end_time == "17:00"
+
+
+def test_onboarding_pause_uses_distinct_semantic_outcomes():
+    c = ctx("let's finish setup later")
+    c.onboarding_stage = "work_hours"
+    llm = FakeLlm([
+        {"actions": [{
+            "type": "onboarding_decision", "decision": "skip", "confidence": 1.0,
+        }]},
+        {
+            "literal_paraphrase": "pause setup until later",
+            # Some models read "answer" narrowly as supplying the requested
+            # value even while correctly identifying a request to pause setup.
+            "answers_active_question": False,
+            "outcome": "pause_setup",
+            "message_intent": "context_answer",
+            "explicit_answer_evidence": "finish setup later",
+            "confidence": 1.0,
+        },
+    ])
+
+    action = interpret(llm, c)[0]
+
+    assert isinstance(action, OnboardingDecision)
+    assert action.decision == "cancel"
+    assert "pause_setup" in llm.calls[1][0]
 
 
 def test_confirmation_approval_requires_independent_model_consensus():

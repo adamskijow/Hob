@@ -335,6 +335,36 @@ CONTEXT_DECISION_SCHEMA = {
     ],
 }
 
+ONBOARDING_DECISION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "literal_paraphrase": {"type": "string"},
+        "answers_active_question": {"type": "boolean"},
+        "outcome": {
+            "type": "string",
+            "enum": ["keep_current_and_continue", "pause_setup", "other"],
+        },
+        "message_intent": {
+            "type": "string",
+            "enum": [
+                "context_answer",
+                "new_value_or_request",
+                "social_or_other",
+            ],
+        },
+        "explicit_answer_evidence": {"type": "string"},
+        "confidence": {"type": "number"},
+    },
+    "required": [
+        "literal_paraphrase",
+        "answers_active_question",
+        "outcome",
+        "message_intent",
+        "explicit_answer_evidence",
+        "confidence",
+    ],
+}
+
 BULK_SCOPE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -1489,6 +1519,36 @@ Include confidence from 0 to 1.
 """
 
 
+def _onboarding_decision_prompt(
+    ctx: InterpreterContext, candidate_payload: object
+) -> str:
+    candidate = json.dumps(candidate_payload, ensure_ascii=False, sort_keys=True)
+    return f"""\
+The assistant is in a multi-step setup and is currently asking for the
+{ctx.onboarding_stage} preference.
+
+User message:
+{ctx.message}
+
+An independent first pass proposed this typed interpretation:
+{candidate}
+
+Classify the immediate effect of the user's message:
+- keep_current_and_continue: accept the displayed value for this step and
+  continue setup now.
+- pause_setup: stop setup now so the user can return to it later. Any request to
+  postpone, defer, finish later, or come back later belongs here.
+- other: give a new value or instruction, ask for something else, or say
+  something unrelated.
+
+The first-pass candidate is evidence, not authority. Do not treat pausing the
+whole setup as accepting the current step and continuing now. Set
+answers_active_question true only for the first two outcomes, and use
+message_intent context_answer only for those outcomes. Quote the user's words
+that support the answer and include confidence from 0 to 1.
+"""
+
+
 def _context_action(actions: list) -> bool:
     return any(
         isinstance(
@@ -1556,9 +1616,19 @@ def _adjudicate_context(
     if not (ctx.nudge or ctx.confirmation_pending or ctx.onboarding_stage):
         return actions
     try:
+        prompt = (
+            _onboarding_decision_prompt(ctx, candidate_payload)
+            if ctx.onboarding_stage
+            else _context_decision_prompt(ctx, candidate_payload)
+        )
+        schema = (
+            ONBOARDING_DECISION_SCHEMA
+            if ctx.onboarding_stage
+            else CONTEXT_DECISION_SCHEMA
+        )
         verdict = llm.complete_json(
-            _context_decision_prompt(ctx, candidate_payload),
-            CONTEXT_DECISION_SCHEMA,
+            prompt,
+            schema,
         )
     except Exception:
         # A first-pass context decision needs its independent safety vote. A
@@ -1568,6 +1638,14 @@ def _adjudicate_context(
     if not isinstance(verdict, dict):
         return actions
     outcome = verdict.get("outcome")
+    if ctx.onboarding_stage:
+        outcome = {
+            "keep_current_and_continue": "skip",
+            "pause_setup": "cancel",
+            # Retain compatibility with deterministic fakes and older adapters.
+            "skip": "skip",
+            "cancel": "cancel",
+        }.get(outcome, outcome)
     answers = verdict.get("answers_active_question") is True
     message_intent = verdict.get("message_intent")
     evidence = (
@@ -1575,7 +1653,7 @@ def _adjudicate_context(
     ).strip()
     confidence = _float(verdict.get("confidence"), 0.0)
     valid_answer = (
-        answers
+        (answers or bool(ctx.onboarding_stage))
         and message_intent == "context_answer"
         and outcome != "other"
         and bool(evidence)

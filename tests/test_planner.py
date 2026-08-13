@@ -678,6 +678,24 @@ def test_note_wait_resume_reconcile():
     assert plan.mutations[0].kind == "resume"
 
 
+def test_exact_waiting_nudge_resume_consumes_prompt_context():
+    from core.models import Resume
+
+    active = [
+        {"id": "w1", "label": "send the contract", "waiting": True},
+        {"id": "a2", "label": "another task", "waiting": False},
+    ]
+    c = ctx(
+        active,
+        nudge={"item_id": "w1", "kind": "waiting", "label": "send the contract"},
+    )
+
+    plan = reconcile([Resume(target="w1", confidence=1.0)], c)
+
+    assert plan.nudge_decision == "resume"
+    assert [(m.kind, m.target) for m in plan.mutations] == [("resume", "w1")]
+
+
 def test_capture_carries_waiting_and_note():
     plan = reconcile(
         [Capture(task="wait for plumber", raw="waiting on the plumber",

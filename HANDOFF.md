@@ -21,7 +21,7 @@ snapshot.
   deterministic plan/outlook results, a fail-closed semantic safety pass over
   every evening-recap reply, and a native Open Local menu-bar recovery surface
   with one-command durable installation. Schema remains 10.
-- **Green target:** `uv run pytest` (452 passing), 29 native App Store foundation
+- **Green target:** `uv run pytest` (454 passing), 29 native App Store foundation
   tests plus 11 Open Local service/health/branding tests, signed native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
   evals.interpreter_eval`, 112/112), plus the end-to-end analysis eval. The release head must pass exact Ubuntu and
@@ -144,12 +144,12 @@ snapshot.
   Hearth's authenticated local control API yielded an uninterrupted 111/111
   run, and Hearth was returned to healthy managed ownership afterward. Durable
   setup must make in-flight work visible or validate a safe probe policy.
-- **New 1.0 model-consistency finding:** an audit run for next-weekday semantics
-  passed the new exact case but varied on two older contextual cases. A waiting
-  answer produced the right resume mutation without nudge-decision metadata,
-  and an onboarding postponement became skip instead of cancel. Keep the
-  112/112 full gate as a release requirement and make contextual action plus
-  prompt-lifecycle reconciliation robust before 1.0.
+- **Resolved v0.9.12 model-consistency finding:** the release gate found two
+  semantically correct actions with incorrect prompt lifecycle metadata. An
+  exact waiting-item resume now consumes its machine-owned nudge after normal
+  reference resolution, and onboarding uses distinct `continue now` versus
+  `pause setup` outcomes. Both actual 14B cases and deterministic regressions
+  pass; 112/112 remains a release requirement.
 - **Mac App Store track:** ADR 0001 establishes one behavior with Open Local
   and Store distribution editions. `native/HobAppFoundation` starts the native
   menu-bar/settings surface, typed setup readiness, bounded Apple Foundation

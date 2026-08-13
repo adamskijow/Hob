@@ -1689,6 +1689,20 @@ def reconcile(actions: list, ctx) -> Plan:
             else:
                 _reconcile_unknown(ctx, plan)
     _apply_reference_guards(plan, ctx)
+    nudge = ctx.nudge if isinstance(ctx.nudge, dict) else None
+    if (
+        nudge
+        and nudge.get("kind") == "waiting"
+        and len(plan.mutations) == 1
+        and plan.mutations[0].kind == "resume"
+        and plan.mutations[0].target == nudge.get("item_id")
+        and not plan.questions
+        and plan.confirm is None
+    ):
+        # A model-proposed Resume may use "id: label" rather than the bare id.
+        # Once ordinary reference reconciliation proves it is the exact
+        # machine-owned waiting target, consume that prompt with the mutation.
+        plan.nudge_decision = "resume"
     return plan
 
 
