@@ -291,6 +291,15 @@ def _hold(plan: Plan, mutation: Mutation, question: str) -> None:
     plan.confirm.question = question
 
 
+def _far_future_question(subject: str, due_iso: str, years: int) -> str:
+    """Explain the safety check instead of exposing an unexplained prompt."""
+    return (
+        f'{subject} is set for {due_iso}, about {years} years away. '
+        "i double-check dates more than 5 years away in case there was a typo. "
+        "confirm to save it, or cancel."
+    )
+
+
 _NUM_WORDS = {
     "one": "1", "first": "1", "two": "2", "second": "2", "three": "3",
     "third": "3", "four": "4", "fourth": "4", "five": "5", "fifth": "5",
@@ -715,7 +724,11 @@ def _reconcile_capture(
     )
     years = _too_far(due_date, today) if due_date else None
     if years is not None:
-        _hold(plan, mutation, f"that is {due_date}, about {years} years out. confirm or cancel it.")
+        _hold(
+            plan,
+            mutation,
+            _far_future_question(f'"{action.task}"', due_date, years),
+        )
         return
     plan.mutations.append(mutation)
 
@@ -981,7 +994,9 @@ def _reconcile_schedule(
         _hold(
             plan,
             mutation,
-            f'that deadline is {deadline.date}, about {years} years out. confirm or cancel it.',
+            _far_future_question(
+                f'the deadline for "{active[target]}"', deadline.date, years
+            ),
         )
         return
     plan.mutations.append(mutation)
@@ -1065,7 +1080,11 @@ def _reconcile_reschedule(
     if resolution.date is not None:
         years = _too_far(resolution.date, today)
         if years is not None:
-            _hold(plan, mutation, f'move "{label}" to {resolution.date}, about {years} years out. confirm or cancel it.')
+            _hold(
+                plan,
+                mutation,
+                _far_future_question(f'"{label}"', resolution.date, years),
+            )
             return
     if action.confidence < CONFIDENCE_THRESHOLD:
         _hold(

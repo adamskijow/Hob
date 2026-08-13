@@ -2081,7 +2081,7 @@ def test_far_future_capture_confirms_then_applies():
     svc, store = service(llm)
 
     out = svc.handle(msg("in 200 years I need to take out the trash"))
-    assert "years out" in out and "confirm" in out.lower()
+    assert "more than 5 years away" in out and "typo" in out.lower()
     assert not any(i.task == "take out the trash" for i in store.open_items())
 
     out2 = svc.handle(msg("yes", message_id=2))

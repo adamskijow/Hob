@@ -21,7 +21,7 @@ snapshot.
   deterministic plan/outlook results, a fail-closed semantic safety pass over
   every evening-recap reply, and a native Open Local menu-bar recovery surface
   with one-command durable installation. Schema remains 10.
-- **Green target:** `uv run pytest` (450 passing), 29 native App Store foundation
+- **Green target:** `uv run pytest` (452 passing), 29 native App Store foundation
   tests plus 11 Open Local service/health/branding tests, signed native bridge build, and the
   real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
   evals.interpreter_eval`, 112/112), plus the end-to-end analysis eval. The release head must pass exact Ubuntu and
@@ -133,6 +133,11 @@ snapshot.
   Friday in the following calendar week, and the live haircut was corrected
   through the ordinary mutation log from August 14 to August 21. See
   `docs/audits/v0.9.12.md`.
+- **v0.9.12 confirmation-explanation follow-up:** a live 10-year capture showed
+  that the far-future safeguard stated the date but not why Hob suddenly asked.
+  Capture, reschedule, and deadline holds now explain the five-year typo-check
+  threshold, name the affected work and effect, and use a `Confirm` button
+  instead of `Yes`. The exact real-model far-future case passes.
 - **New 1.0 operational finding:** Hearth's configured 20-second deep probe can
   queue behind direct 14B traffic, call the healthy server stuck, and restart
   it. It interrupted three long-corpus attempts. Pausing supervision through

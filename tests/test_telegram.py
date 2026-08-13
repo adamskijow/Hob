@@ -243,6 +243,16 @@ def test_present_capitalizes_for_display():
     )
 
 
+def test_confirmation_button_names_the_action():
+    markup = TelegramAdapter._confirm_markup(
+        json.dumps({"id": "turn-1", "mutations": []})
+    )
+    buttons = markup.inline_keyboard[0]
+
+    assert [button.text for button in buttons] == ["Confirm", "Cancel"]
+    assert buttons[0].callback_data == "hob:confirm:yes:turn-1"
+
+
 def test_long_messages_split_without_losing_text():
     text = "a" * 5000
     chunks = TelegramAdapter._chunks(text)

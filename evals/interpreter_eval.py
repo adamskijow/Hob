@@ -94,7 +94,9 @@ CASES = [
          lambda p: not p.mutations and bool(p.questions),
          "ambiguous date asks"),
     Case("in 200 years take out the trash",
-         lambda p: p.confirm is not None and "years out" in p.confirm.question,
+         lambda p: p.confirm is not None
+         and "more than 5 years away" in p.confirm.question
+         and "typo" in p.confirm.question,
          "implausibly far date confirms"),
     Case("push the audit to friday",
          lambda p: kinds(p) == ["reschedule"] and p.mutations[0].due_date == "2026-07-03",
