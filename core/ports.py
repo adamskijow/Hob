@@ -157,6 +157,18 @@ class Store(Protocol):
     def last_digest(self) -> Digest | None:
         ...
 
+    def record_sent_ref(
+        self,
+        chat_id: int,
+        tg_message_id: int,
+        item_id: str,
+        created_at: str | None = None,
+    ) -> None:
+        ...
+
+    def ref_for(self, chat_id: int, tg_message_id: int) -> str | None:
+        ...
+
     # meta (key/value)
     def get_meta(self, key: str) -> str | None:
         ...
@@ -210,4 +222,14 @@ class Store(Protocol):
     def mark_outbound_sent(
         self, entry_id: int, sent_at: str, telegram_message_id: int | None
     ) -> None:
+        ...
+
+    def prune_delivery_history(
+        self,
+        before_iso: str,
+        *,
+        keep_inbound: int = 1000,
+        keep_outbound: int = 1000,
+        keep_refs: int = 1000,
+    ) -> tuple[int, int, int]:
         ...

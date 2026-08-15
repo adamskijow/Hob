@@ -207,4 +207,4 @@ def test_v8_release_fixture_migrates_to_structured_recurrence(tmp_path):
         assert store.schema_version == SCHEMA_VERSION
         assert item.recurrence.frequency == "week" and item.recurrence.interval == 2
         assert item.duration_minutes is None and item.depends_on == []
-    assert len(list(tmp_path.glob("hob.db.pre-v8-to-v10-*.bak"))) == 1
+    assert len(list(tmp_path.glob("hob.db.pre-v8-to-v11-*.bak"))) == 1

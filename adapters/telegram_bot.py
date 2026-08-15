@@ -19,7 +19,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable
 
 from core.errors import RetryableMessageError
@@ -29,6 +29,11 @@ from core.ports import Store
 log = logging.getLogger("hob.telegram")
 
 TELEGRAM_TEXT_LIMIT = 4096
+DELIVERY_RETENTION_DAYS = 30
+DELIVERY_HISTORY_LIMIT = 1000
+OWNER_USER_KEY = "telegram_owner_user_id"
+OWNER_CHAT_KEY = "chat_id"
+PAIRING_PENDING_KEY = "telegram_pairing_pending"
 
 # python-telegram-bot's StatusUpdate filter is authoritative for real Update
 # objects. This list is a compatibility fallback for injected test doubles and
@@ -184,8 +189,9 @@ class TelegramAdapter:
         bot: object | None = None,
         poll_timeout: int = 30,
         error_backoff: float = 3.0,
-        reaction_handler=None,  # callable(message_id, [emoji]) -> reply str
-        callback_handler=None,  # callable(callback_id, data, user_id, chat_id) -> reply
+        allowed_user_id: int | None = None,
+        reaction_handler=None,
+        callback_handler=None,
     ) -> None:
         if bot is None and token is None:
             raise ValueError("TelegramAdapter needs either a bot or a token")
@@ -197,7 +203,20 @@ class TelegramAdapter:
         self._bot = bot
         self._poll_timeout = poll_timeout
         self._error_backoff = error_backoff
+        self._allowed_user_id = allowed_user_id
         self._stop = asyncio.Event()
+        if allowed_user_id is not None:
+            raw_owner = self._store.get_meta(OWNER_USER_KEY)
+            try:
+                stored_owner = int(raw_owner) if raw_owner else None
+            except ValueError:
+                stored_owner = None
+            if stored_owner != allowed_user_id:
+                with self._store.transaction():
+                    self._store.set_meta(OWNER_USER_KEY, str(allowed_user_id))
+                    self._store.delete_meta(OWNER_CHAT_KEY)
+                    if raw_owner is None:
+                        self._store.set_meta(PAIRING_PENDING_KEY, "1")
 
     def _ensure_bot(self) -> object:
         if self._bot is None:
@@ -215,6 +234,72 @@ class TelegramAdapter:
 
     def stop(self) -> None:
         self._stop.set()
+
+    def _owner_user_id(self) -> int | None:
+        raw = self._store.get_meta(OWNER_USER_KEY)
+        try:
+            stored = int(raw) if raw else None
+        except ValueError:
+            stored = None
+        return self._allowed_user_id or stored
+
+    def _authorized(self, payload: dict) -> bool:
+        """Require one owner in one private chat for every interactive update."""
+        owner = self._owner_user_id()
+        user_id = payload.get("user_id")
+        chat_id = payload.get("chat_id")
+        try:
+            numeric_user = int(user_id) if user_id is not None else None
+            numeric_chat = int(chat_id) if chat_id is not None else None
+        except (TypeError, ValueError):
+            return False
+        if (
+            owner is None
+            or numeric_user != owner
+            or payload.get("chat_type") != "private"
+            or numeric_chat is None
+        ):
+            return False
+        owner_chat = self._store.get_meta(OWNER_CHAT_KEY)
+        if owner_chat:
+            try:
+                return numeric_chat == int(owner_chat)
+            except ValueError:
+                return False
+        return True
+
+    def _is_pairing_request(self, kind: str, payload: dict) -> bool:
+        return (
+            self._owner_user_id() is None
+            and kind == "message"
+            and payload.get("chat_type") == "private"
+            and isinstance(payload.get("user_id"), int)
+            and str(payload.get("text", "")).strip().lower() == "/start"
+        )
+
+    @staticmethod
+    def _pairing_reply(user_id: int) -> str:
+        return (
+            "hob is not paired yet. on the mac that runs hob, open terminal in "
+            f"hob's folder and run scripts/hobctl pair {user_id}. then send "
+            "/start again."
+        )
+
+    def _prune_delivery_history(self) -> None:
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=DELIVERY_RETENTION_DAYS)
+        ).isoformat()
+        removed = self._store.prune_delivery_history(
+            cutoff,
+            keep_inbound=DELIVERY_HISTORY_LIMIT,
+            keep_outbound=DELIVERY_HISTORY_LIMIT,
+            keep_refs=DELIVERY_HISTORY_LIMIT,
+        )
+        if any(removed):
+            log.info(
+                "telegram: pruned delivery history inbox=%d outbox=%d refs=%d",
+                *removed,
+            )
 
     async def _dispatch(self, msg: InboundMessage, inbox_key: str) -> None:
         """Process a normalized message and commit its reply to the outbox."""
@@ -343,8 +428,7 @@ class TelegramAdapter:
         payload: dict = {}
         if message is not None and _is_service_update(update, message):
             # Pin/unpin and other Telegram status events are not owner input.
-            # Keep the durable no-op so the polling offset advances exactly as
-            # it does for every other normalized update.
+            # Advance the offset without retaining a content-free inbox row.
             pass
         elif message is not None and text is not None:
             replied = getattr(message, "reply_to_message", None)
@@ -389,6 +473,7 @@ class TelegramAdapter:
                         "emojis": added,
                         "user_id": getattr(getattr(reaction, "user", None), "id", None),
                         "chat_id": reaction.chat.id,
+                        "chat_type": getattr(reaction.chat, "type", None),
                     }
             callback = getattr(update, "callback_query", None)
             if callback is not None:
@@ -406,13 +491,30 @@ class TelegramAdapter:
                     "data": str(getattr(callback, "data", "")),
                     "user_id": getattr(getattr(callback, "from_user", None), "id", None),
                     "chat_id": getattr(chat, "id", None),
+                    "chat_type": getattr(chat, "type", None),
                 }
 
         key = f"telegram:{update.update_id}"
         with self._store.transaction():
-            self._store.enqueue_inbound(
-                key, update.update_id, kind, payload, _utc_now()
-            )
+            if kind != "noop" and self._authorized(payload):
+                self._store.enqueue_inbound(
+                    key, update.update_id, kind, payload, _utc_now()
+                )
+            elif self._is_pairing_request(kind, payload):
+                user_id = int(payload["user_id"])
+                self._store.enqueue_outbound(
+                    f"pairing:{user_id}:{_utc_now()[:10]}",
+                    int(payload["chat_id"]),
+                    "pairing",
+                    self._pairing_reply(user_id),
+                    _utc_now(),
+                )
+            elif kind != "noop":
+                log.warning(
+                    "telegram: dropped unauthorized %s update %s",
+                    kind,
+                    update.update_id,
+                )
             # Once the normalized update is durable, Telegram may safely forget it.
             self._save_offset(update.update_id + 1)
 
@@ -420,6 +522,9 @@ class TelegramAdapter:
         payload = entry.payload
         reply = None
         chat_id = payload.get("chat_id")
+        if not self._authorized(payload):
+            log.warning("telegram: discarded unauthorized durable update %s", entry.key)
+            return
         if entry.kind == "message":
             await self._dispatch(InboundMessage(**payload), entry.key)
             return
@@ -435,6 +540,8 @@ class TelegramAdapter:
                 int(payload["message_id"]),
                 list(payload.get("emojis", [])),
                 payload.get("user_id"),
+                chat_id,
+                payload.get("chat_type"),
             )
         elif entry.kind == "callback" and self._callback_handler is not None:
             reply = self._callback_handler(
@@ -442,6 +549,7 @@ class TelegramAdapter:
                 str(payload.get("data", "")),
                 payload.get("user_id"),
                 chat_id,
+                payload.get("chat_type"),
             )
         if inspect.isawaitable(reply):
             reply = await reply
@@ -490,7 +598,9 @@ class TelegramAdapter:
             with self._store.transaction():
                 self._store.mark_outbound_sent(entry.id, _utc_now(), sent_id)
                 if entry.item_id and isinstance(sent_id, int):
-                    self._store.record_sent_ref(sent_id, entry.item_id)
+                    self._store.record_sent_ref(
+                        entry.chat_id, sent_id, entry.item_id
+                    )
             delivered += 1
         return delivered
 
@@ -508,6 +618,7 @@ class TelegramAdapter:
             await self._ingest_update(update)
         await self.process_pending()
         await self.flush_outbox()
+        self._prune_delivery_history()
         return len(updates)
 
     async def run(self) -> None:

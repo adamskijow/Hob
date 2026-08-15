@@ -13,6 +13,8 @@ import logging
 
 import ollama
 
+from adapters.ollama_safety import validate_ollama_host
+
 log = logging.getLogger("hob.llm")
 
 
@@ -28,7 +30,13 @@ def _parse_keep_alive(value: str):
 
 class OllamaLlm:
     def __init__(
-        self, model: str, host: str, timeout: float = 120.0, keep_alive: str = "-1"
+        self,
+        model: str,
+        host: str,
+        timeout: float = 120.0,
+        keep_alive: str = "-1",
+        *,
+        allow_remote: bool = False,
     ) -> None:
         self._model = model
         # Keep the model resident by default so a quiet stretch does not cost a
@@ -36,7 +44,10 @@ class OllamaLlm:
         self._keep_alive = _parse_keep_alive(keep_alive)
         # A bounded timeout means a hung model raises rather than blocking
         # forever; the core then degrades to Unknown and asks.
-        self._client = ollama.Client(host=host, timeout=timeout)
+        self._client = ollama.Client(
+            host=validate_ollama_host(host, allow_remote=allow_remote),
+            timeout=timeout,
+        )
 
     def installed_models(self) -> list[str]:
         """Names of locally pulled models. Raises if ollama is unreachable; used

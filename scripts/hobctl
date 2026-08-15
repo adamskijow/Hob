@@ -25,13 +25,15 @@ MODEL_NAME="${HOB_MODEL:-$(plist_value EnvironmentVariables.HOB_MODEL)}"
 MODEL_NAME="${MODEL_NAME:-qwen2.5:7b-instruct}"
 OLLAMA_ENDPOINT="${HOB_OLLAMA_HOST:-$(plist_value EnvironmentVariables.HOB_OLLAMA_HOST)}"
 OLLAMA_ENDPOINT="${OLLAMA_ENDPOINT:-http://localhost:11434}"
+ALLOW_REMOTE_OLLAMA="${HOB_ALLOW_REMOTE_OLLAMA:-$(plist_value EnvironmentVariables.HOB_ALLOW_REMOTE_OLLAMA)}"
+ALLOW_REMOTE_OLLAMA="${ALLOW_REMOTE_OLLAMA:-0}"
 TIMEZONE_NAME="${HOB_TIMEZONE:-$(plist_value EnvironmentVariables.HOB_TIMEZONE)}"
 TIMEZONE_NAME="${TIMEZONE_NAME:-UTC}"
 UV_PATH="${HOB_UV_PATH:-$(command -v uv || true)}"
 UV_PATH="${UV_PATH:-$USER_HOME/.local/bin/uv}"
 
 usage() {
-  printf 'usage: scripts/hobctl [status|on|restart|logs|install]\n'
+  printf 'usage: scripts/hobctl [status|on|restart|logs|install|pair TELEGRAM_USER_ID]\n'
 }
 
 bootstrap_agent() {
@@ -111,6 +113,7 @@ case "${1:-status}" in
     HOB_DB_PATH="$DATABASE_PATH" \
       HOB_MODEL="$MODEL_NAME" \
       HOB_OLLAMA_HOST="$OLLAMA_ENDPOINT" \
+      HOB_ALLOW_REMOTE_OLLAMA="$ALLOW_REMOTE_OLLAMA" \
       HOB_TIMEZONE="$TIMEZONE_NAME" \
       "$UV_PATH" run --directory "$PROJECT_ROOT" python app.py status
     ;;
@@ -136,6 +139,35 @@ case "${1:-status}" in
     ;;
   install)
     exec "$PROJECT_ROOT/scripts/install_macos.sh"
+    ;;
+  pair)
+    OWNER_ID="${2:-}"
+    case "$OWNER_ID" in
+      ''|*[!0-9]*)
+        printf 'usage: scripts/hobctl pair TELEGRAM_USER_ID\n' >&2
+        exit 2
+        ;;
+    esac
+    WAS_LOADED=0
+    if launchctl print "$SERVICE_TARGET" >/dev/null 2>&1; then
+      WAS_LOADED=1
+      launchctl bootout "$SERVICE_TARGET"
+    fi
+    if ! HOB_DB_PATH="$DATABASE_PATH" \
+      HOB_MODEL="$MODEL_NAME" \
+      HOB_OLLAMA_HOST="$OLLAMA_ENDPOINT" \
+      HOB_ALLOW_REMOTE_OLLAMA="$ALLOW_REMOTE_OLLAMA" \
+      HOB_TIMEZONE="$TIMEZONE_NAME" \
+      "$UV_PATH" run --directory "$PROJECT_ROOT" python app.py pair "$OWNER_ID"; then
+      if [ "$WAS_LOADED" -eq 1 ]; then
+        bootstrap_agent || true
+      fi
+      exit 1
+    fi
+    if [ -f "$SERVICE_PLIST" ]; then
+      bootstrap_agent
+      wait_for_running_service
+    fi
     ;;
   -h|--help|help)
     usage

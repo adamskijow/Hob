@@ -305,6 +305,9 @@ def test_released_v7_fixture_migrates_with_backup_and_data(tmp_path):
     fixture = Path(__file__).parent / "fixtures" / "schema_v7.sql"
     conn = sqlite3.connect(db)
     conn.executescript(fixture.read_text(encoding="utf-8"))
+    conn.execute("INSERT INTO meta VALUES ('chat_id', '42')")
+    conn.execute("INSERT INTO sent_refs VALUES (777, 'a1')")
+    conn.commit()
     conn.close()
 
     with SqliteStore(str(db)) as migrated:
@@ -312,8 +315,10 @@ def test_released_v7_fixture_migrates_with_backup_and_data(tmp_path):
         assert migrated.get_item("a1").note == "ask about trip"
         migrated.enqueue_inbound("telegram:1", 1, "noop", {}, "now")
         assert len(migrated.pending_inbound()) == 1
+        assert migrated.ref_for(42, 777) == "a1"
+        assert migrated.ref_for(99, 777) is None
 
-    backups = list(tmp_path.glob("hob.db.pre-v7-to-v10-*.bak"))
+    backups = list(tmp_path.glob("hob.db.pre-v7-to-v11-*.bak"))
     assert len(backups) == 1
     old = sqlite3.connect(backups[0])
     assert old.execute("PRAGMA user_version").fetchone()[0] == 7
@@ -333,7 +338,7 @@ def test_released_v9_fixture_adds_plan_tables_without_losing_data(tmp_path):
 
     with SqliteStore(str(db)) as migrated:
         item = migrated.get_item("a1")
-        assert migrated.schema_version == 10
+        assert migrated.schema_version == 11
         assert item.task == "draft release notes" and item.duration_minutes == 45
         run = PlanRun(
             "p1", "2026-07-11", "proposed", "plan", "2026-07-11T08:00:00"
@@ -341,7 +346,7 @@ def test_released_v9_fixture_adds_plan_tables_without_losing_data(tmp_path):
         migrated.save_plan_run(run, [])
         assert migrated.latest_proposed_plan().id == "p1"
 
-    assert len(list(tmp_path.glob("hob.db.pre-v9-to-v10-*.bak"))) == 1
+    assert len(list(tmp_path.glob("hob.db.pre-v9-to-v11-*.bak"))) == 1
 
 
 def test_outbox_dedupe_and_delivery_state():
@@ -356,6 +361,39 @@ def test_outbox_dedupe_and_delivery_state():
     sent = s.outbound_for_key("digest:today")
     assert sent.status == "sent"
     assert sent.telegram_message_id == 99
+
+
+def test_delivery_history_retention_keeps_pending_and_bounds_completed_rows():
+    s = mem()
+    for update_id, completed in ((1, "2026-01-01T00:00:00+00:00"),
+                                 (2, "2026-08-14T00:00:00+00:00")):
+        key = f"telegram:{update_id}"
+        s.enqueue_inbound(key, update_id, "message", {"text": "private"}, completed)
+        s.mark_inbound_done(key, completed)
+    s.enqueue_inbound(
+        "telegram:3", 3, "message", {"text": "must retry"},
+        "2026-01-01T00:00:00+00:00",
+    )
+    for key, sent_at in (("old", "2026-01-01T00:00:00+00:00"),
+                         ("new", "2026-08-14T00:00:00+00:00")):
+        entry = s.enqueue_outbound(key, 42, "reply", "private", sent_at)
+        s.mark_outbound_sent(entry.id, sent_at, entry.id)
+    s.record_sent_ref(42, 10, "a1", "2026-01-01T00:00:00+00:00")
+    s.record_sent_ref(42, 11, "a1", "2026-08-14T00:00:00+00:00")
+
+    removed = s.prune_delivery_history(
+        "2026-07-15T00:00:00+00:00",
+        keep_inbound=1,
+        keep_outbound=1,
+        keep_refs=1,
+    )
+
+    assert removed == (1, 1, 1)
+    assert [entry.key for entry in s.pending_inbound()] == ["telegram:3"]
+    assert s.outbound_for_key("old") is None
+    assert s.outbound_for_key("new") is not None
+    assert s.ref_for(42, 10) is None
+    assert s.ref_for(42, 11) == "a1"
 
 
 def test_execution_metrics_are_privacy_safe_and_track_adoption_and_nudges():

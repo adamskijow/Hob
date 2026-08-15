@@ -20,11 +20,20 @@ from core.models import Item
 from tests.fakes import FakeClock, FakeLlm
 
 
-def update(update_id, text, chat_id=42, message_id=None):
+def update(
+    update_id,
+    text,
+    chat_id=42,
+    message_id=None,
+    *,
+    user_id=7,
+    chat_type="private",
+):
     message = SimpleNamespace(
         text=text,
         message_id=message_id if message_id is not None else update_id,
-        chat=SimpleNamespace(id=chat_id),
+        chat=SimpleNamespace(id=chat_id, type=chat_type),
+        from_user=SimpleNamespace(id=user_id),
     )
     return SimpleNamespace(update_id=update_id, message=message)
 
@@ -54,7 +63,7 @@ def echo_handler(msg):
 def test_echo_and_offset_advance():
     store = SqliteStore(":memory:")
     bot = FakeBot([[update(10, "hello"), update(11, "world")]])
-    adapter = TelegramAdapter(store, echo_handler, bot=bot)
+    adapter = TelegramAdapter(store, echo_handler, bot=bot, allowed_user_id=7)
 
     handled = asyncio.run(adapter.poll_once())
 
@@ -71,13 +80,89 @@ def test_resume_from_saved_offset():
     store = SqliteStore(":memory:")
     store.set_meta(OFFSET_KEY, "12")  # as if a prior run confirmed through 11
     bot = FakeBot([[update(12, "new one")]])
-    adapter = TelegramAdapter(store, echo_handler, bot=bot)
+    adapter = TelegramAdapter(store, echo_handler, bot=bot, allowed_user_id=7)
 
     asyncio.run(adapter.poll_once())
 
     # resumed at 12, did not re-request the old backlog
     assert bot.offsets_requested == [12]
     assert store.get_meta(OFFSET_KEY) == "13"
+
+
+def test_unpaired_start_requires_local_pairing_and_is_rate_limited():
+    store = SqliteStore(":memory:")
+    bot = FakeBot([[update(1, "/start")], [update(2, "/start")]])
+    adapter = TelegramAdapter(store, echo_handler, bot=bot)
+
+    asyncio.run(adapter.poll_once())
+    asyncio.run(adapter.poll_once())
+
+    assert len(bot.sent) == 1
+    assert "scripts/hobctl pair 7" in bot.sent[0][1]
+    assert store.get_meta("telegram_owner_user_id") is None
+    assert store._conn.execute("SELECT COUNT(*) FROM inbox").fetchone()[0] == 0
+    assert store._conn.execute("SELECT COUNT(*) FROM outbox").fetchone()[0] == 1
+
+
+def test_unauthorized_updates_are_silent_not_persisted_and_advance_offset():
+    store = SqliteStore(":memory:")
+    store.set_meta("telegram_owner_user_id", "7")
+    store.set_meta("chat_id", "42")
+    bot = FakeBot([[
+        update(3, "steal tasks", user_id=8),
+        update(4, "owner in group", chat_id=99, chat_type="group"),
+    ]])
+    adapter = TelegramAdapter(store, echo_handler, bot=bot)
+
+    asyncio.run(adapter.poll_once())
+
+    assert bot.sent == []
+    assert store.get_meta(OFFSET_KEY) == "5"
+    assert store._conn.execute("SELECT COUNT(*) FROM inbox").fetchone()[0] == 0
+    assert store._conn.execute("SELECT COUNT(*) FROM outbox").fetchone()[0] == 0
+
+
+def test_cross_chat_or_anonymous_reactions_never_reach_the_handler():
+    store = SqliteStore(":memory:")
+    store.set_meta("telegram_owner_user_id", "7")
+    store.set_meta("chat_id", "42")
+    seen = []
+
+    def reaction_handler(*args):
+        seen.append(args)
+        return "changed"
+
+    def reaction(update_id, chat_id, chat_type, user_id):
+        return SimpleNamespace(
+            update_id=update_id,
+            message=None,
+            edited_message=None,
+            callback_query=None,
+            message_reaction=SimpleNamespace(
+                message_id=777,
+                old_reaction=[],
+                new_reaction=[SimpleNamespace(emoji="👍")],
+                user=(SimpleNamespace(id=user_id) if user_id is not None else None),
+                chat=SimpleNamespace(id=chat_id, type=chat_type),
+            ),
+        )
+
+    bot = FakeBot([[
+        reaction(10, 99, "group", 7),
+        reaction(11, 42, "private", None),
+    ]])
+    adapter = TelegramAdapter(
+        store,
+        echo_handler,
+        bot=bot,
+        reaction_handler=reaction_handler,
+    )
+
+    asyncio.run(adapter.poll_once())
+
+    assert seen == []
+    assert bot.sent == []
+    assert store._conn.execute("SELECT COUNT(*) FROM inbox").fetchone()[0] == 0
 
 
 def test_non_text_update_gets_accessible_fallback_and_advances():
@@ -90,11 +175,12 @@ def test_non_text_update_gets_accessible_fallback_and_advances():
             caption=None,
             effective_attachment=object(),
             message_id=5,
-            chat=SimpleNamespace(id=1),
+            chat=SimpleNamespace(id=1, type="private"),
+            from_user=SimpleNamespace(id=7),
         ),
     )
     bot = FakeBot([[no_text]])
-    adapter = TelegramAdapter(store, echo_handler, bot=bot)
+    adapter = TelegramAdapter(store, echo_handler, bot=bot, allowed_user_id=7)
 
     asyncio.run(adapter.poll_once())
 
@@ -125,6 +211,7 @@ def test_digest_pin_service_update_is_silent_and_advances():
         store,
         lambda message: seen.append(message) or "got it",
         bot=bot,
+        allowed_user_id=7,
     )
 
     handled = asyncio.run(adapter.poll_once())
@@ -199,6 +286,7 @@ def test_media_caption_uses_the_normal_message_path():
         store,
         lambda message: seen.append(message) or "got it",
         bot=bot,
+        allowed_user_id=7,
     )
 
     asyncio.run(adapter.poll_once())
@@ -211,7 +299,9 @@ def test_media_caption_uses_the_normal_message_path():
 def test_handler_returning_none_sends_nothing():
     store = SqliteStore(":memory:")
     bot = FakeBot([[update(1, "x")]])
-    adapter = TelegramAdapter(store, lambda msg: None, bot=bot)
+    adapter = TelegramAdapter(
+        store, lambda msg: None, bot=bot, allowed_user_id=7
+    )
 
     asyncio.run(adapter.poll_once())
 
@@ -288,6 +378,7 @@ def _capture_service(store, llm, *, retry=True):
         FakeClock(datetime(2026, 7, 10, 9, 0, tzinfo=ZoneInfo("America/New_York"))),
         llm,
         "America/New_York",
+        allowed_user_id=7,
         retry_model_outages=retry,
     )
 
@@ -300,7 +391,9 @@ def test_model_outage_keeps_inbound_message_until_automatic_retry():
     store = SqliteStore(":memory:")
     service = _capture_service(store, Down())
     bot = FakeBot([[update(20, "buy milk")], []])
-    adapter = TelegramAdapter(store, service.handle, bot=bot)
+    adapter = TelegramAdapter(
+        store, service.handle, bot=bot, allowed_user_id=7
+    )
 
     asyncio.run(adapter.poll_once())
     assert store.get_meta(OFFSET_KEY) == "21"
@@ -356,7 +449,9 @@ def test_semantic_disagreement_replies_once_instead_of_retrying_forever():
     ])
     service = _capture_service(store, llm, retry=True)
     bot = FakeBot([[update(21, "Haircut got scheduled for next Friday")]])
-    adapter = TelegramAdapter(store, service.handle, bot=bot)
+    adapter = TelegramAdapter(
+        store, service.handle, bot=bot, allowed_user_id=7
+    )
 
     asyncio.run(adapter.poll_once())
 
@@ -373,7 +468,9 @@ def test_outbox_retries_reply_without_reapplying_state():
         FakeLlm({"actions": [{"type": "capture", "task": "call vet", "raw": "call vet"}]}),
     )
     bot = FailOnceBot([[update(30, "call vet")], []])
-    adapter = TelegramAdapter(store, service.handle, bot=bot)
+    adapter = TelegramAdapter(
+        store, service.handle, bot=bot, allowed_user_id=7
+    )
 
     asyncio.run(adapter.poll_once())
     assert len(store.open_items()) == 1

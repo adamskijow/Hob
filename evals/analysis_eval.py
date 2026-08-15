@@ -68,7 +68,10 @@ def main() -> int:
                 duration_minutes=60,
             )
         )
-    llm = OllamaLlm(model, host)
+    allow_remote = os.environ.get("HOB_ALLOW_REMOTE_OLLAMA", "").lower() in {
+        "1", "true", "yes", "on",
+    }
+    llm = OllamaLlm(model, host, allow_remote=allow_remote)
     if os.environ.get("HOB_EVAL_TRACE"):
         llm = TracingLlm(llm)
     service = MessageService(

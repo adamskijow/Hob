@@ -26,6 +26,8 @@ def test_daemon_renderer_replaces_arrays_atomically(tmp_path):
         timezone="America/New_York",
         database_path="/Users/test user/Library/Application Support/Hob/hob.db",
         log_path="/Users/test user/Library/Application Support/Hob/hob.log",
+        ollama_host="http://localhost:11434",
+        allow_remote_ollama="0",
         allowed_telegram_user_id=None,
     )
 
@@ -35,6 +37,9 @@ def test_daemon_renderer_replaces_arrays_atomically(tmp_path):
         "app.py",
     ]
     assert payload["WorkingDirectory"] == "/Users/test user/Git/Hob"
+    assert payload["StandardOutPath"] == "/dev/null"
+    assert payload["StandardErrorPath"] == "/dev/null"
+    assert payload["EnvironmentVariables"]["HOB_LOG_PATH"].endswith("hob.log")
     assert "HOB_ALLOWED_TELEGRAM_USER_ID" not in payload["EnvironmentVariables"]
     assert "/Users/you" not in output.read_text()
 
@@ -51,6 +56,8 @@ def test_daemon_renderer_keeps_explicit_owner(tmp_path):
         timezone="UTC",
         database_path="/data/hob.db",
         log_path="/logs/hob.log",
+        ollama_host="https://ollama.example.test",
+        allow_remote_ollama="1",
         allowed_telegram_user_id="8761124835",
     )
 
@@ -58,6 +65,9 @@ def test_daemon_renderer_keeps_explicit_owner(tmp_path):
         read_plist(output)["EnvironmentVariables"]["HOB_ALLOWED_TELEGRAM_USER_ID"]
         == "8761124835"
     )
+    environment = read_plist(output)["EnvironmentVariables"]
+    assert environment["HOB_OLLAMA_HOST"] == "https://ollama.example.test"
+    assert environment["HOB_ALLOW_REMOTE_OLLAMA"] == "1"
 
 
 def test_daemon_renderer_preserves_existing_schedule_and_preferences(tmp_path):
@@ -80,6 +90,8 @@ def test_daemon_renderer_preserves_existing_schedule_and_preferences(tmp_path):
         timezone="UTC",
         database_path="/data/hob.db",
         log_path="/logs/hob.log",
+        ollama_host="http://localhost:11434",
+        allow_remote_ollama="0",
         allowed_telegram_user_id="8761124835",
     )
 
@@ -104,12 +116,14 @@ def test_menu_renderer_has_exactly_one_executable(tmp_path):
         log_path="/Users/test user/Library/Application Support/Hob/hob.log",
         model="test-model",
         ollama_host="http://localhost:11434",
+        allow_remote_ollama="0",
         timezone="America/New_York",
-        menu_log_path="/Users/test user/Library/Logs/Hob/menu.log",
     )
 
     payload = read_plist(output)
     assert payload["ProgramArguments"] == [executable]
+    assert payload["StandardOutPath"] == "/dev/null"
+    assert payload["StandardErrorPath"] == "/dev/null"
     assert payload["EnvironmentVariables"]["HOB_PROJECT_PATH"] == (
         "/Users/test user/Git/Hob"
     )

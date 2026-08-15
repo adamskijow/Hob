@@ -35,7 +35,7 @@ public struct OperationalHealth: Equatable, Sendable {
         if lines.contains(where: { $0.contains("owner=unpaired") }) {
             return OperationalHealth(
                 isReady: false,
-                summary: "Telegram is not paired yet. Send the bot /start."
+                summary: "Send /start for your ID, then run scripts/hobctl pair ID."
             )
         }
         if lines.contains(where: { $0.contains("WARN queues:") }) {

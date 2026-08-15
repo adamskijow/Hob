@@ -13,6 +13,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from adapters.keychain import get_telegram_token
+from adapters.ollama_safety import validate_ollama_host
 
 _WAKE_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _RANGE_RE = re.compile(
@@ -32,12 +33,13 @@ class ConfigError(Exception):
 class Config:
     telegram_token: str
     telegram_token_source: str  # environment | keychain | none
-    allowed_telegram_user_id: int | None  # explicit owner; first /start pairs if unset
+    allowed_telegram_user_id: int | None  # optional explicit owner; local pairing is stored
     model: str
     wake_time: str  # HH:MM 24h, interpreted in timezone
     timezone: str  # IANA tz key
     db_path: str
     ollama_host: str
+    allow_remote_ollama: bool
     keep_alive: str  # how long ollama keeps the model loaded; "-1" = resident
     reminder_lead: int  # minutes before a timed item's due moment to ping
     eod_time: str  # HH:MM for the evening "what got done?" recap; "" = off
@@ -91,10 +93,16 @@ class Config:
             timezone=src.get("HOB_TIMEZONE", "UTC").strip(),
             db_path=_db_path(src, preserve_legacy=env is None),
             ollama_host=src.get("HOB_OLLAMA_HOST", "http://localhost:11434").strip(),
+            allow_remote_ollama=_boolean(
+                src.get("HOB_ALLOW_REMOTE_OLLAMA", "0"),
+                "HOB_ALLOW_REMOTE_OLLAMA",
+            ),
             keep_alive=src.get("HOB_KEEP_ALIVE", "-1").strip(),
             reminder_lead=reminder_lead,
             eod_time=src.get("HOB_EOD_TIME", "20:30").strip(),
-            calendar_enabled=_boolean(src.get("HOB_CALENDAR_ENABLED", "1")),
+            calendar_enabled=_boolean(
+                src.get("HOB_CALENDAR_ENABLED", "1"), "HOB_CALENDAR_ENABLED"
+            ),
             calendar_bridge=src.get("HOB_CALENDAR_BRIDGE", "").strip(),
             work_start=_range(src.get("HOB_WORK_HOURS", "09:00-17:30"))[0],
             work_end=_range(src.get("HOB_WORK_HOURS", "09:00-17:30"))[1],
@@ -129,6 +137,12 @@ class Config:
             raise ConfigError("HOB_MODEL must not be empty")
         if not self.db_path:
             raise ConfigError("HOB_DB_PATH must not be empty")
+        try:
+            validate_ollama_host(
+                self.ollama_host, allow_remote=self.allow_remote_ollama
+            )
+        except ValueError as exc:
+            raise ConfigError(f"HOB_OLLAMA_HOST {exc}") from exc
         if not _KEEP_ALIVE_RE.match(self.keep_alive):
             raise ConfigError(
                 f"HOB_KEEP_ALIVE must be -1, seconds, or a duration like 30m, "
@@ -151,13 +165,13 @@ class Config:
             raise ConfigError("HOB_TRANSITION_BUFFER must be between 0 and 120 minutes")
 
 
-def _boolean(value: str) -> bool:
+def _boolean(value: str, name: str) -> bool:
     low = value.strip().lower()
     if low in {"1", "true", "yes", "on"}:
         return True
     if low in {"0", "false", "no", "off"}:
         return False
-    raise ConfigError("HOB_CALENDAR_ENABLED must be true or false")
+    raise ConfigError(f"{name} must be true or false")
 
 
 def _integer(value: str, name: str) -> int:

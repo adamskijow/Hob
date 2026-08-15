@@ -13,6 +13,7 @@ import asyncio
 import getpass
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import signal
 import sqlite3
@@ -81,6 +82,12 @@ from adapters.keychain import (
     set_telegram_token,
 )
 from adapters.llm_ollama import OllamaLlm
+from adapters.ollama_safety import is_loopback_ollama_host
+from adapters.private_files import (
+    prepare_private_file,
+    protect_private_file,
+    write_private_text,
+)
 from adapters.scheduler import DigestScheduler
 from adapters.store_sqlite import SqliteStore
 from adapters.telegram_bot import InboundMessage, TelegramAdapter
@@ -134,8 +141,10 @@ HELP = (
 # meta key for the single user's chat id, learned from inbound messages.
 CHAT_ID_KEY = "chat_id"
 # Telegram user id paired to this single-user Hob. Unlike a chat id, this is the
-# authorization boundary; the first /start pairs when no configured owner exists.
+# authorization boundary; it is established locally, never by first contact.
 OWNER_USER_KEY = "telegram_owner_user_id"
+# Local pairing marks one owner as awaiting the first-run onboarding journey.
+PAIRING_PENDING_KEY = "telegram_pairing_pending"
 # meta key holding the JSON of clarifications awaiting an answer (see core.planner
 # Pending). One inbound message replaces it: resolved -> cleared, still unclear ->
 # re-set.
@@ -245,6 +254,36 @@ Open tasks: {items}
 """
 
 LOG_FORMAT = "%(asctime)s %(name)s %(levelname)s %(message)s"
+LOG_MAX_BYTES = 5 * 1024 * 1024
+LOG_BACKUP_COUNT = 3
+
+
+class _PrivateRotatingFileHandler(RotatingFileHandler):
+    """Bound local logs while keeping every generation owner-only."""
+
+    def _open(self):
+        prepare_private_file(self.baseFilename)
+        return super()._open()
+
+    def doRollover(self) -> None:
+        super().doRollover()
+        for index in range(self.backupCount + 1):
+            suffix = f".{index}" if index else ""
+            protect_private_file(f"{self.baseFilename}{suffix}")
+
+
+def _configure_logging() -> None:
+    log_path = os.environ.get("HOB_LOG_PATH", "").strip()
+    if not log_path:
+        logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+        return
+    handler = _PrivateRotatingFileHandler(
+        str(Path(log_path).expanduser()),
+        maxBytes=LOG_MAX_BYTES,
+        backupCount=LOG_BACKUP_COUNT,
+        encoding="utf-8",
+    )
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, handlers=[handler])
 
 
 class _RedactingFormatter(logging.Formatter):
@@ -540,10 +579,10 @@ class MessageService:
             elif owner is None:
                 self._store.set_meta(OWNER_USER_KEY, str(msg.user_id))
             return True, None
-        if low != "/start":
-            return False, "send /start to pair this hob before adding tasks."
-        self._store.set_meta(OWNER_USER_KEY, str(msg.user_id))
-        return True, None
+        return False, (
+            "this hob is not paired yet. send /start to get the secure local "
+            "pairing instructions."
+        )
 
     @staticmethod
     def _message_key(msg: InboundMessage) -> str:
@@ -571,12 +610,13 @@ class MessageService:
         if low == "/start":
             if self._store.get_meta(ONBOARDING_STAGE_KEY) in ONBOARDING_STEPS:
                 return self._begin_onboarding(include_welcome=True)
-            fresh = (
+            fresh = bool(self._store.get_meta(PAIRING_PENDING_KEY)) or (
                 not was_paired
                 and not self._store.get_meta(ONBOARDING_DONE_KEY)
                 and not self._store.open_items()
             )
             if fresh:
+                self._store.delete_meta(PAIRING_PENDING_KEY)
                 self._store.set_meta(INSTALL_VERSION_KEY, __version__)
                 self._store.set_meta(RELEASE_NOTICE_KEY, __version__)
                 return self._begin_onboarding(include_welcome=True)
@@ -611,12 +651,12 @@ class MessageService:
             forwarded_from=msg.forwarded_from,
         )
 
-    def _replied_item(self, reply_to: int | None) -> dict | None:
+    def _replied_item(self, chat_id: int, reply_to: int | None) -> dict | None:
         """The item a replied-to Hob message (e.g. a reminder) was about, so bare
         words in the reply ('done', 'snooze 20') anchor to it deterministically."""
         if reply_to is None:
             return None
-        item_id = self._store.ref_for(reply_to)
+        item_id = self._store.ref_for(chat_id, reply_to)
         if item_id is None:
             return None
         item = self._store.get_item(item_id)
@@ -664,7 +704,8 @@ class MessageService:
             if digest is None or not pinned:
                 return None
             try:
-                item_id = self._store.ref_for(int(pinned))
+                chat_id = int(self._store.get_meta(CHAT_ID_KEY) or "0")
+                item_id = self._store.ref_for(chat_id, int(pinned))
             except ValueError:
                 return None
             sent_at = digest.sent_at
@@ -746,7 +787,9 @@ class MessageService:
             presented_kind=presented_kind,
             pending=json.loads(raw_pending) if raw_pending else [],
             focus=self._load_focus(),
-            replied=self._replied_item(reply_to),
+            replied=self._replied_item(
+                int(self._store.get_meta(CHAT_ID_KEY) or "0"), reply_to
+            ),
             forwarded_from=forwarded_from,
             last_change_at=last_batch[0].ts if last_batch else None,
             nudge=self._digest_decision_context(),
@@ -908,25 +951,33 @@ class MessageService:
             self._store.set_meta(FOCUS_KEY, "")
 
     def handle_reaction(
-        self, message_id: int, emojis: list[str], user_id: int | None = None
+        self,
+        message_id: int,
+        emojis: list[str],
+        user_id: int | None = None,
+        chat_id: int | None = None,
+        chat_type: str | None = None,
     ) -> str:
         with self._store.transaction():
-            return self._handle_reaction(message_id, emojis, user_id)
+            return self._handle_reaction(
+                message_id, emojis, user_id, chat_id, chat_type
+            )
 
     def _handle_reaction(
-        self, message_id: int, emojis: list[str], user_id: int | None = None
+        self,
+        message_id: int,
+        emojis: list[str],
+        user_id: int | None = None,
+        chat_id: int | None = None,
+        chat_type: str | None = None,
     ) -> str:
         """A reaction on a Hob message that maps to an item: a thumbs-up family
         emoji completes it, a thumbs-down drops it. Reactions on anything else
         (hearts on chit-chat) are appreciation, not instructions: ignored."""
-        if user_id is not None:
-            owner = self._allowed_user_id or int(
-                self._store.get_meta(OWNER_USER_KEY) or "0"
-            )
-            if owner and user_id != owner:
-                log.warning("rejected reaction from Telegram user %s", user_id)
-                return ""
-        item_id = self._store.ref_for(message_id)
+        if not self._authorized_interaction(user_id, chat_id, chat_type):
+            log.warning("rejected reaction outside the owner private chat")
+            return ""
+        item_id = self._store.ref_for(int(chat_id), message_id)
         if item_id is None:
             return ""
         item = self._store.get_item(item_id)
@@ -941,7 +992,7 @@ class MessageService:
             return ""
         # One reaction is one undoable batch; re-reacting the same message is
         # idempotent via the message guard.
-        inbound = f"reaction:{message_id}"
+        inbound = f"reaction:{chat_id}:{message_id}"
         if self._store.has_actions_for_message(inbound):
             return ""
         applied = self._apply([Mutation(kind=kind, target=item_id)], inbound)
@@ -953,9 +1004,12 @@ class MessageService:
         data: str,
         user_id: int | None,
         chat_id: int | None,
+        chat_type: str | None = None,
     ) -> str:
         with self._store.transaction():
-            return self._handle_callback(callback_id, data, user_id, chat_id)
+            return self._handle_callback(
+                callback_id, data, user_id, chat_id, chat_type
+            )
 
     def _handle_callback(
         self,
@@ -963,13 +1017,11 @@ class MessageService:
         data: str,
         user_id: int | None,
         chat_id: int | None,
+        chat_type: str | None = None,
     ) -> str:
         """Apply only whitelisted inline-button actions; never interpret callback text."""
-        owner = self._allowed_user_id or int(
-            self._store.get_meta(OWNER_USER_KEY) or "0"
-        )
-        if owner and user_id is not None and user_id != owner:
-            log.warning("rejected callback from Telegram user %s", user_id)
+        if not self._authorized_interaction(user_id, chat_id, chat_type):
+            log.warning("rejected callback outside the owner private chat")
             return ""
         inbound = f"callback:{callback_id}"
         if self._store.has_actions_for_message(inbound):
@@ -1004,11 +1056,32 @@ class MessageService:
         }.get(action)
         if mutation is None:
             return ""
-        if chat_id is not None:
-            self._store.set_meta(CHAT_ID_KEY, str(chat_id))
         applied = self._apply([mutation], inbound)
         self._save_focus(applied)
         return self._reply(applied, [], [])
+
+    def _authorized_interaction(
+        self,
+        user_id: int | None,
+        chat_id: int | None,
+        chat_type: str | None,
+    ) -> bool:
+        """Defense in depth behind the adapter's common trust boundary."""
+        owner_chat = self._store.get_meta(CHAT_ID_KEY)
+        try:
+            owner = self._allowed_user_id or int(
+                self._store.get_meta(OWNER_USER_KEY) or "0"
+            )
+            trusted_chat = int(owner_chat) if owner_chat else None
+        except ValueError:
+            return False
+        return bool(
+            owner
+            and trusted_chat is not None
+            and user_id == owner
+            and chat_id == trusted_chat
+            and chat_type == "private"
+        )
 
     def _interpret_and_apply(
         self,
@@ -3069,11 +3142,11 @@ class DigestService:
         )
         if release_notice:
             text += (
-                f"\n\nnew in hob {__version__}: on mac, hob now uses its teapot "
-                "in the menu bar so hearth keeps the flame. open it to turn hob on, "
-                "restart it, check database/queue/telegram/model health, or "
-                "open the log—no launchctl commands or database path required. "
-                "hob and the menu return automatically when you log in. "
+                f"\n\nnew in hob {__version__}: new installs pair telegram ownership "
+                "with one local command instead of trusting first contact; existing "
+                "owners do nothing. local task files and rotating logs are owner-only, "
+                "delivery history is bounded, and remote model servers require explicit "
+                "https approval. "
                 "this note appears once."
             )
         digest = Digest(
@@ -3128,7 +3201,7 @@ class DigestService:
                 else "",
             )
             if nudge is not None and isinstance(sent_id, int):
-                self._store.record_sent_ref(sent_id, nudge.id)
+                self._store.record_sent_ref(int(chat), sent_id, nudge.id)
         if self._pin is not None and isinstance(sent_id, int):
             old = self._store.get_meta(PINNED_KEY)
             await self._pin(int(chat), sent_id, int(old) if old else None)
@@ -3315,7 +3388,7 @@ class ReminderService:
             # Remember which item this ping was about, so a Telegram reply to it
             # ("done", "snooze 20") anchors to the item with no guessing.
             if isinstance(sent_id, int):
-                self._store.record_sent_ref(sent_id, item.id)
+                self._store.record_sent_ref(int(chat), sent_id, item.id)
 
         # An explicitly adopted plan authorizes one start nudge per session.
         # Keep the catch-up window short so waking the Mac does not dump stale
@@ -3342,7 +3415,7 @@ class ReminderService:
                 sent_id = await self._send(int(chat), text)
             self._store.mark_plan_session_notified(session.id, current_iso)
             if isinstance(sent_id, int):
-                self._store.record_sent_ref(sent_id, session.item_id)
+                self._store.record_sent_ref(int(chat), sent_id, session.item_id)
 
         # Tasks with explicit offsets own their reminder cadence instead of using
         # the global lead. If sleep caused several offsets to pass, send only the
@@ -3402,7 +3475,7 @@ class ReminderService:
                 for offset in due_offsets:
                     self._store.mark_reminded(item.id, offset)
             if isinstance(sent_id, int):
-                self._store.record_sent_ref(sent_id, item.id)
+                self._store.record_sent_ref(int(chat), sent_id, item.id)
 
 
 # The bot's kettle avatar: set once (a version bump re-applies), tracked in meta.
@@ -3429,7 +3502,12 @@ def _model_ready(llm: OllamaLlm, model: str) -> bool:
 
 async def _run_daemon(cfg: Config, store: SqliteStore) -> None:
     clock = SystemClock(cfg.timezone)
-    llm = OllamaLlm(cfg.model, cfg.ollama_host, keep_alive=cfg.keep_alive)
+    llm = OllamaLlm(
+        cfg.model,
+        cfg.ollama_host,
+        keep_alive=cfg.keep_alive,
+        allow_remote=cfg.allow_remote_ollama,
+    )
     log = logging.getLogger("hob")
     try:
         if not _model_ready(llm, cfg.model):
@@ -3461,6 +3539,7 @@ async def _run_daemon(cfg: Config, store: SqliteStore) -> None:
     )
     telegram = TelegramAdapter(
         store, service.handle, token=cfg.telegram_token,
+        allowed_user_id=cfg.allowed_telegram_user_id,
         reaction_handler=service.handle_reaction,
         callback_handler=service.handle_callback,
     )
@@ -3525,7 +3604,11 @@ def _doctor() -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"  FAIL database not writable: {cfg.db_path}: {exc}")
         ok = False
-    llm = OllamaLlm(cfg.model, cfg.ollama_host)
+    if not is_loopback_ollama_host(cfg.ollama_host):
+        print("  WARN ollama is remote: task text is sent to the configured server")
+    llm = OllamaLlm(
+        cfg.model, cfg.ollama_host, allow_remote=cfg.allow_remote_ollama
+    )
     try:
         if _model_ready(llm, cfg.model):
             print(f"  OK   ollama reachable; model present: {cfg.model}")
@@ -3640,7 +3723,11 @@ def _status(cfg: Config) -> int:
         print(f"  FAIL database: {exc}")
         ok = False
 
-    llm = OllamaLlm(cfg.model, cfg.ollama_host)
+    if not is_loopback_ollama_host(cfg.ollama_host):
+        print("  WARN model endpoint is remote; task text leaves this Mac")
+    llm = OllamaLlm(
+        cfg.model, cfg.ollama_host, allow_remote=cfg.allow_remote_ollama
+    )
     try:
         ready = _model_ready(llm, cfg.model)
         print(
@@ -3711,6 +3798,64 @@ def _token_command(argv: list[str]) -> int:
     return 2
 
 
+def _pair_command(cfg: Config, argv: list[str]) -> int:
+    """Establish Telegram ownership from the local machine, never first contact."""
+    if len(argv) != 2:
+        print("usage: python app.py pair TELEGRAM_USER_ID", file=sys.stderr)
+        return 2
+    try:
+        user_id = int(argv[1])
+    except ValueError:
+        user_id = 0
+    if user_id <= 0:
+        print("hob: Telegram user id must be a positive integer", file=sys.stderr)
+        return 2
+    ambiguity = _database_choice_error(cfg)
+    if ambiguity:
+        print(f"hob: pair refused: {ambiguity}", file=sys.stderr)
+        return 2
+    if (
+        cfg.allowed_telegram_user_id is not None
+        and cfg.allowed_telegram_user_id != user_id
+    ):
+        print(
+            "hob: pair refused: HOB_ALLOWED_TELEGRAM_USER_ID names a different "
+            "owner",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        with database_lease(cfg.db_path):
+            with SqliteStore(cfg.db_path) as store:
+                existing = store.get_meta(OWNER_USER_KEY)
+                try:
+                    existing_id = int(existing) if existing else None
+                except ValueError:
+                    print(
+                        "hob: pair refused: stored owner state is invalid; restore "
+                        "a verified backup",
+                        file=sys.stderr,
+                    )
+                    return 2
+                if existing_id is not None and existing_id != user_id:
+                    print(
+                        "hob: pair refused: this hob already has a different owner",
+                        file=sys.stderr,
+                    )
+                    return 2
+                if existing_id is None:
+                    store.set_meta(OWNER_USER_KEY, str(user_id))
+                    store.set_meta(PAIRING_PENDING_KEY, "1")
+                    store.delete_meta(CHAT_ID_KEY)
+    except DatabaseBusyError as exc:
+        print(f"hob: pair failed: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"hob: paired Telegram user {user_id}; send the bot /start in private"
+    )
+    return 0
+
+
 def _export_or_backup(cfg: Config, argv: list[str]) -> int:
     ambiguity = _database_choice_error(cfg)
     if ambiguity:
@@ -3731,9 +3876,9 @@ def _export_or_backup(cfg: Config, argv: list[str]) -> int:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with SqliteStore(cfg.db_path) as store:
         if command == "export":
-            destination.write_text(
+            write_private_text(
+                destination,
                 json.dumps(store.export_data(), indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
             )
         else:
             store.backup(str(destination))
@@ -3786,9 +3931,7 @@ def _restore_or_import(cfg: Config, argv: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    logging.basicConfig(
-        level=logging.INFO, format=LOG_FORMAT
-    )
+    _configure_logging()
     # python-telegram-bot's httpx logs every getUpdates at INFO with the bot
     # token in the URL. Quiet it so the token never lands in the log file.
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -3796,12 +3939,13 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] in {"-h", "--help"}:
         print(
             "usage: python app.py [doctor|status|calendar [status|authorize]|"
-            "token [status|set|delete]|export [FILE]|backup [FILE]|"
+            "token [status|set|delete]|pair TELEGRAM_USER_ID|"
+            "export [FILE]|backup [FILE]|"
             "restore FILE|import FILE]"
         )
         return 0
     commands = {
-        "token", "doctor", "status", "calendar", "export", "backup",
+        "token", "doctor", "status", "calendar", "pair", "export", "backup",
         "restore", "import",
     }
     if argv and argv[0] not in commands:
@@ -3820,6 +3964,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"hob: config error: {exc}", file=sys.stderr)
         return 2
     _redact_logging(cfg.telegram_token)
+
+    if argv and argv[0] == "pair":
+        return _pair_command(cfg, argv)
 
     if argv and argv[0] in ("export", "backup"):
         return _export_or_backup(cfg, argv)

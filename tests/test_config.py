@@ -35,6 +35,54 @@ def test_defaults_applied():
     assert c.breaks == (("12:00", "13:00"),)
     assert c.default_duration_minutes == 30
     assert c.transition_buffer_minutes == 0
+    assert not c.allow_remote_ollama
+
+
+def test_remote_ollama_requires_explicit_https_privacy_opt_in():
+    with pytest.raises(ConfigError, match="is remote"):
+        Config.from_env({**BASE, "HOB_OLLAMA_HOST": "https://ollama.example.test"})
+    with pytest.raises(ConfigError, match="require https"):
+        Config.from_env({
+            **BASE,
+            "HOB_OLLAMA_HOST": "http://192.0.2.4:11434",
+            "HOB_ALLOW_REMOTE_OLLAMA": "1",
+        })
+    cfg = Config.from_env({
+        **BASE,
+        "HOB_OLLAMA_HOST": "https://ollama.example.test",
+        "HOB_ALLOW_REMOTE_OLLAMA": "yes",
+    })
+    assert cfg.allow_remote_ollama
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "http://localhost:11434",
+        "http://127.0.0.1:11434",
+        "http://[::1]:11434",
+        "https://hob.localhost:11434",
+    ],
+)
+def test_loopback_ollama_needs_no_remote_opt_in(host):
+    assert Config.from_env({**BASE, "HOB_OLLAMA_HOST": host}).ollama_host == host
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "ollama.example.test",
+        "https://user:secret@ollama.example.test",
+        "https://ollama.example.test/api",
+    ],
+)
+def test_malformed_or_credentialed_ollama_endpoints_are_rejected(host):
+    with pytest.raises(ConfigError):
+        Config.from_env({
+            **BASE,
+            "HOB_OLLAMA_HOST": host,
+            "HOB_ALLOW_REMOTE_OLLAMA": "1",
+        })
 
 
 def test_allowed_telegram_user_id():

@@ -16,6 +16,12 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+from adapters.private_files import (
+    prepare_private_file,
+    protect_default_app_directory,
+    protect_private_file,
+    protect_sqlite_family,
+)
 from core import recurrence
 from core.models import (
     STATUS_DONE,
@@ -31,7 +37,7 @@ from core.models import (
     RecurrenceRule,
 )
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS items (
@@ -145,21 +151,25 @@ ON plan_sessions(status, notified_at, start);
 
 class SqliteStore:
     def __init__(self, path: str) -> None:
-        self._path = path
+        self._path = str(Path(path).expanduser()) if path != ":memory:" else path
         self._lock = threading.RLock()
         self._transaction_depth = 0
-        if path != ":memory:":
-            Path(path).expanduser().parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(path, check_same_thread=False)
+        if self._path != ":memory:":
+            protect_default_app_directory(self._path)
+            prepare_private_file(self._path)
+        self._conn = sqlite3.connect(self._path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
-        if path != ":memory:":
+        if self._path != ":memory:":
             # WAL survives a crash mid-write and keeps reads non-blocking.
             self._conn.execute("PRAGMA journal_mode = WAL")
+            protect_sqlite_family(self._path)
         self._migrate()
 
     def close(self) -> None:
         self._conn.close()
+        if self._path != ":memory:":
+            protect_sqlite_family(self._path)
 
     def __enter__(self) -> "SqliteStore":
         return self
@@ -240,6 +250,35 @@ class SqliteStore:
             # Proposed and explicitly adopted day-plan blocks. These are local
             # execution state, not task dates and never Calendar events.
             self._conn.executescript(_PLAN_DDL)
+        if version < 11:
+            # Telegram message ids are unique only within a chat. Preserve
+            # legacy references under the paired private chat, then require the
+            # compound identity for every new lookup. A creation timestamp lets
+            # delivery-history retention bound this otherwise unending table.
+            owner_chat = self._conn.execute(
+                "SELECT value FROM meta WHERE key = 'chat_id'"
+            ).fetchone()
+            try:
+                legacy_chat_id = int(owner_chat["value"]) if owner_chat else 0
+            except (TypeError, ValueError):
+                legacy_chat_id = 0
+            migrated_at = datetime.now(timezone.utc).isoformat()
+            self._conn.execute("ALTER TABLE sent_refs RENAME TO sent_refs_v10")
+            self._conn.execute(
+                "CREATE TABLE sent_refs ("
+                "chat_id INTEGER NOT NULL, "
+                "tg_message_id INTEGER NOT NULL, "
+                "item_id TEXT NOT NULL, "
+                "created_at TEXT NOT NULL, "
+                "PRIMARY KEY (chat_id, tg_message_id))"
+            )
+            self._conn.execute(
+                "INSERT INTO sent_refs "
+                "(chat_id, tg_message_id, item_id, created_at) "
+                "SELECT ?, tg_message_id, item_id, ? FROM sent_refs_v10",
+                (legacy_chat_id, migrated_at),
+            )
+            self._conn.execute("DROP TABLE sent_refs_v10")
         self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self._conn.commit()
 
@@ -250,11 +289,13 @@ class SqliteStore:
         destination = source.with_name(
             f"{source.name}.pre-v{old_version}-to-v{SCHEMA_VERSION}-{stamp}.bak"
         )
+        prepare_private_file(destination)
         target = sqlite3.connect(destination)
         try:
             self._conn.backup(target)
         finally:
             target.close()
+            protect_private_file(destination)
         return str(destination)
 
     @contextmanager
@@ -362,20 +403,32 @@ class SqliteStore:
         ).fetchall()
         return [self._row_to_item(r) for r in rows]
 
-    def record_sent_ref(self, tg_message_id: int, item_id: str) -> None:
+    def record_sent_ref(
+        self,
+        chat_id: int,
+        tg_message_id: int,
+        item_id: str,
+        created_at: str | None = None,
+    ) -> None:
         """Remember which item an outbound message (a reminder) was about, so a
         Telegram reply to it can be anchored to that item."""
         with self._lock:
             self._conn.execute(
-                "INSERT OR REPLACE INTO sent_refs (tg_message_id, item_id) VALUES (?, ?)",
-                (tg_message_id, item_id),
+                "INSERT OR REPLACE INTO sent_refs "
+                "(chat_id, tg_message_id, item_id, created_at) VALUES (?, ?, ?, ?)",
+                (
+                    chat_id,
+                    tg_message_id,
+                    item_id,
+                    created_at or datetime.now(timezone.utc).isoformat(),
+                ),
             )
             self._commit()
 
-    def ref_for(self, tg_message_id: int) -> str | None:
+    def ref_for(self, chat_id: int, tg_message_id: int) -> str | None:
         row = self._conn.execute(
-            "SELECT item_id FROM sent_refs WHERE tg_message_id = ?",
-            (tg_message_id,),
+            "SELECT item_id FROM sent_refs WHERE chat_id = ? AND tg_message_id = ?",
+            (chat_id, tg_message_id),
         ).fetchone()
         return row["item_id"] if row else None
 
@@ -965,6 +1018,44 @@ class SqliteStore:
             )
             self._commit()
 
+    def prune_delivery_history(
+        self,
+        before_iso: str,
+        *,
+        keep_inbound: int = 1000,
+        keep_outbound: int = 1000,
+        keep_refs: int = 1000,
+    ) -> tuple[int, int, int]:
+        """Bound completed delivery metadata without touching pending work.
+
+        Age and count limits work together: normal installations retain recent
+        diagnostics, while a burst cannot force unbounded local growth inside
+        the retention window.
+        """
+        with self._lock:
+            inbound = self._conn.execute(
+                "DELETE FROM inbox WHERE status = 'done' AND "
+                "(completed_at < ? OR key NOT IN ("
+                "SELECT key FROM inbox WHERE status = 'done' "
+                "ORDER BY update_id DESC, key DESC LIMIT ?))",
+                (before_iso, keep_inbound),
+            ).rowcount
+            outbound = self._conn.execute(
+                "DELETE FROM outbox WHERE status = 'sent' AND "
+                "(sent_at < ? OR id NOT IN ("
+                "SELECT id FROM outbox WHERE status = 'sent' ORDER BY id DESC LIMIT ?))",
+                (before_iso, keep_outbound),
+            ).rowcount
+            refs = self._conn.execute(
+                "DELETE FROM sent_refs WHERE created_at < ? OR "
+                "(chat_id, tg_message_id) NOT IN ("
+                "SELECT chat_id, tg_message_id FROM sent_refs "
+                "ORDER BY created_at DESC, chat_id DESC, tg_message_id DESC LIMIT ?)",
+                (before_iso, keep_refs),
+            ).rowcount
+            self._commit()
+        return inbound, outbound, refs
+
     def queue_counts(self) -> tuple[int, int, int]:
         pending_in = self._conn.execute(
             "SELECT COUNT(*) FROM inbox WHERE status = 'pending'"
@@ -1179,13 +1270,15 @@ class SqliteStore:
 
     def backup(self, destination: str) -> None:
         """Create a consistent SQLite backup, including any live WAL changes."""
-        target = sqlite3.connect(destination)
+        private_destination = prepare_private_file(destination)
+        target = sqlite3.connect(private_destination)
         try:
             with target:
                 self._conn.backup(target)
         finally:
             target.close()
-        check = sqlite3.connect(destination)
+            protect_private_file(private_destination)
+        check = sqlite3.connect(private_destination)
         try:
             result = check.execute("PRAGMA integrity_check").fetchone()[0]
         finally:

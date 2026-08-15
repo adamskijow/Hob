@@ -286,7 +286,7 @@ def test_digest_records_one_actionable_reply_anchor():
     store.add_item(item("a1", "old task", created="2026-06-25T08:00:00"))
     send = SendWithId()
     asyncio.run(DigestService(store, FakeClock(at(7, 0)), send).fire())
-    assert store.ref_for(777) == "a1"
+    assert store.ref_for(42, 777) == "a1"
     assert json.loads(store.get_meta(DIGEST_DECISION_KEY)) == {
         "item_id": "a1",
         "sent_at": "2026-06-29T07:00:00-04:00",
@@ -350,7 +350,7 @@ def test_digest_decision_state_rolls_back_as_one_unit(monkeypatch):
         )
 
     assert store.last_digest() is None
-    assert store.ref_for(777) is None
+    assert store.ref_for(42, 777) is None
 
 
 def test_digest_service_sends_and_persists_order():
@@ -415,12 +415,11 @@ def test_upgraded_owner_gets_one_digest_discovery_note_but_fresh_install_does_no
     asyncio.run(service.fire())
 
     assert "new in hob" in sent.calls[0][1]
-    assert "uses its teapot" in sent.calls[0][1]
-    assert "hearth keeps the flame" in sent.calls[0][1]
-    assert "turn hob on" in sent.calls[0][1]
-    assert "check database/queue/telegram/model health" in sent.calls[0][1]
-    assert "no launchctl commands" in sent.calls[0][1]
-    assert "return automatically when you log in" in sent.calls[0][1]
+    assert "one local command" in sent.calls[0][1]
+    assert "existing owners do nothing" in sent.calls[0][1]
+    assert "owner-only" in sent.calls[0][1]
+    assert "delivery history is bounded" in sent.calls[0][1]
+    assert "explicit https approval" in sent.calls[0][1]
     assert "new in hob" not in sent.calls[1][1]
     assert upgraded.get_meta(RELEASE_NOTICE_KEY) == __version__
 
