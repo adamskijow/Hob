@@ -54,22 +54,26 @@ and `HOB_KEEP_ALIVE`:
   <dict>
     <key>HOB_ALLOWED_TELEGRAM_USER_ID</key> <string>123456789</string>
     <key>HOB_MODEL</key>          <string>qwen2.5:7b-instruct</string>
+    <key>HOB_OLLAMA_HOST</key>    <string>http://localhost:11434</string>
+    <key>HOB_ALLOW_REMOTE_OLLAMA</key> <string>0</string>
     <key>HOB_WAKE_TIME</key>      <string>07:00</string>
     <key>HOB_TIMEZONE</key>       <string>America/New_York</string>
     <key>HOB_DB_PATH</key>        <string>/Users/you/Library/Application Support/Hob/hob.db</string>
+    <key>HOB_LOG_PATH</key>       <string>/Users/you/Library/Application Support/Hob/hob.log</string>
     <key>HOB_WORK_DAYS</key>      <string>mon,tue,wed,thu,fri</string>
   </dict>
   <key>KeepAlive</key>          <true/>
-  <key>StandardOutPath</key>    <string>/Users/you/Library/Application Support/Hob/hob.log</string>
-  <key>StandardErrorPath</key>  <string>/Users/you/Library/Application Support/Hob/hob.log</string>
+  <key>StandardOutPath</key>    <string>/dev/null</string>
+  <key>StandardErrorPath</key>  <string>/dev/null</string>
 </dict>
 </plist>
 ```
 
 The Telegram token lives in the user's macOS Keychain, not in the plist. The
-explicit owner id is recommended for unattended installs. If omitted, the first private
-`/start` pairs the database to that Telegram user. Group chats are always
-rejected.
+explicit owner id is recommended for unattended installs. Otherwise, send the
+bot `/start` to learn your ID, run `scripts/hobctl pair ID` locally, and send
+`/start` again. First contact never establishes ownership. Group chats and
+non-owner updates are silently rejected before their content is persisted.
 
 Build the local Calendar bridge once from the checkout, then explicitly grant
 access while logged into the same macOS user account that owns the LaunchAgent:
@@ -91,22 +95,32 @@ works, but the `LaunchAgent` survives logout and restarts on crash. Hob degrades
 gracefully when the model is briefly unreachable; Hearth keeps those windows
 short.
 
+Hob accepts loopback Ollama endpoints by default. Sending task prompts to any
+other host requires both HTTPS and `HOB_ALLOW_REMOTE_OLLAMA=1`; health output
+keeps that privacy boundary visible. Endpoint URLs containing credentials are
+rejected. The supported setup path skips local Ollama installation for an
+explicitly trusted remote endpoint instead of silently changing model hosts.
+
 **Logging.** Hob logs to stderr (and stdout). Under `launchd`, point
 `StandardErrorPath` at a file as above. The bot token is kept out of the log.
-Create `~/Library/Application Support/Hob` before loading the agent. Hob does
-not manage its own log files.
+The installer creates the app-data directory and log with owner-only
+permissions. Hob rotates `hob.log` at 5 MiB and retains three older generations
+(20 MiB maximum plus a small record-boundary overrun). Manual deployments must
+set `HOB_LOG_PATH`; launchd stdout/stderr go to `/dev/null` so two writers never
+race the rotating log.
 
 **Restart behavior and recovery.** Hob is safe to kill at any moment. Use
 **Restart Hob** under the menu-bar teapot. In a remote or non-graphical session,
 use `scripts/hobctl restart`. The equivalent raw command remains
 `launchctl kickstart -k gui/$(id -u)/com.local.hob`.
 
-- Telegram updates are normalized into a durable inbox before the polling
-  offset advances. Model outages and processing failures leave the message
-  pending for automatic retry instead of asking the user to resend it.
+- Authorized owner updates are normalized into a durable inbox before the
+  polling offset advances. Model outages and processing failures leave the
+  message pending for automatic retry instead of asking the user to resend it.
+  Unauthorized updates advance the offset silently without retaining content.
 - Telegram-generated service events such as pin, membership, and chat-setting
-  changes are committed as no-ops. They advance the offset without entering the
-  user-message handler or creating an outbound reply.
+  changes advance the offset without entering the inbox, user-message handler,
+  or outbox.
 - Each message's mutations, settings, undo log, conversational state, and reply
   outbox row commit as one transaction. Delivery failures retry the outbox
   without reapplying state. Stable keys deduplicate proactive messages too.
@@ -121,6 +135,8 @@ use `scripts/hobctl restart`. The equivalent raw command remains
 **Backups and recovery.** Backups include committed WAL changes and are
 integrity-checked after writing. Restore/import verify a candidate in isolation,
 safety-backup current data, and replace the database atomically.
+All Hob-created database, lock, backup, export, and restore files are owner-only;
+opening an older database tightens its mode automatically.
 Schema 10 backups and portable exports include proposed and adopted plan runs
 and every split session.
 The daemon holds an advisory database lease: restore/import will refuse to run

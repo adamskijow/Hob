@@ -5,7 +5,9 @@ Every inbound message (captures, EOD reports, corrections, queries) takes the
 same path: interpret -> reconcile -> apply.
 """
 import json
+import os
 from datetime import datetime
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from app import (
@@ -764,7 +766,7 @@ def test_upgrade_uses_todays_pinned_digest_anchor_for_plain_keep():
             items=[DigestItem(id="a1", label="org prez")],
         )
     )
-    store.record_sent_ref(777, "a1")
+    store.record_sent_ref(1, 777, "a1")
     store.set_meta(PINNED_KEY, "777")
 
     out = svc.handle(msg("Keep"))
@@ -1143,6 +1145,8 @@ def test_fresh_start_runs_resumable_guided_setup_to_completion():
         context_verdict("other", intent="new_request_or_setting"),
     ])
     store = SqliteStore(":memory:")
+    store.set_meta("telegram_owner_user_id", "42")
+    store.set_meta("telegram_pairing_pending", "1")
     clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
     svc = MessageService(store, clock, llm, "America/New_York")
 
@@ -1259,8 +1263,6 @@ def test_returning_owner_start_does_not_force_setup():
 
 
 def test_recovery_commands_refuse_ambiguous_legacy_database(monkeypatch, tmp_path):
-    from types import SimpleNamespace
-
     from app import _database_choice_error, _export_or_backup
 
     checkout = tmp_path / "checkout"
@@ -1283,6 +1285,35 @@ def test_recovery_commands_refuse_ambiguous_legacy_database(monkeypatch, tmp_pat
     assert not destination.exists()
     monkeypatch.setenv("HOB_DB_PATH", "hob.db")
     assert _database_choice_error(cfg) is None
+
+
+def test_portable_export_is_owner_only(monkeypatch, tmp_path):
+    from app import _export_or_backup
+
+    database = tmp_path / "hob.db"
+    destination = tmp_path / "portable.json"
+    with SqliteStore(str(database)) as store:
+        store.add_item(Item(
+            id="a1",
+            raw_text="private export task",
+            task="private export task",
+            due_date=None,
+            due_time=None,
+            status="open",
+            source="test",
+            created_at="2026-06-29T09:00:00",
+            updated_at="2026-06-29T09:00:00",
+        ))
+    cfg = SimpleNamespace(db_path=str(database))
+    monkeypatch.setenv("HOB_DB_PATH", str(database))
+
+    original_umask = os.umask(0)
+    try:
+        assert _export_or_backup(cfg, ["export", str(destination)]) == 0
+    finally:
+        os.umask(original_umask)
+
+    assert destination.stat().st_mode & 0o777 == 0o600
 
 
 def test_plan_focus_positions_override_canonical_list_positions():
@@ -1355,7 +1386,7 @@ def test_reply_to_reminder_anchors_and_snoozes():
                         source="capture", created_at="2026-06-29T08:00:00",
                         updated_at="2026-06-29T08:00:00"))
     store.set_meta("item_seq", "1")
-    store.record_sent_ref(777, "a1")  # the reminder Hob sent
+    store.record_sent_ref(1, 777, "a1")  # the reminder Hob sent
     clock = FakeClock(datetime(2026, 6, 29, 14, 55, tzinfo=TZ))
     svc = MessageService(store, clock, llm, "America/New_York")
 
@@ -1469,36 +1500,56 @@ def test_reaction_completes_and_ignores_unmapped():
                         source="capture", created_at="2026-06-29T08:00:00",
                         updated_at="2026-06-29T08:00:00"))
     store.set_meta("item_seq", "1")
-    store.record_sent_ref(777, "a1")
+    store.record_sent_ref(1, 777, "a1")
+    store.set_meta("telegram_owner_user_id", "42")
+    store.set_meta("chat_id", "1")
     clock = FakeClock(datetime(2026, 6, 29, 15, 5, tzinfo=TZ))
     svc = MessageService(store, clock, llm, "America/New_York")
 
-    assert svc.handle_reaction(999, ["❤"]) == ""  # heart on chit-chat: ignored
-    out = svc.handle_reaction(777, ["\U0001F44D"])  # thumbs up the reminder
+    assert svc.handle_reaction(999, ["❤"], 42, 1, "private") == ""
+    assert svc.handle_reaction(777, ["\U0001F44D"], None, 1, "private") == ""
+    assert svc.handle_reaction(777, ["\U0001F44D"], 42, 99, "group") == ""
+    assert store.get_item("a1").status == "open"
+    out = svc.handle_reaction(777, ["\U0001F44D"], 42, 1, "private")
     assert 'done: "call bob"' in out
     assert store.get_item("a1").status == "done"
-    assert svc.handle_reaction(777, ["\U0001F44D"]) == ""  # idempotent
+    assert svc.handle_reaction(777, ["\U0001F44D"], 42, 1, "private") == ""
 
 
 def test_inline_item_and_confirmation_callbacks_are_deterministic():
     svc, store = service(FakeLlm({"actions": []}))
-    out = svc.handle_callback("cb1", "hob:item:a1:complete", None, 1)
+    store.set_meta("telegram_owner_user_id", "42")
+    store.set_meta("chat_id", "1")
+    assert svc.handle_callback(
+        "hostile", "hob:item:a1:complete", 42, 99, "group"
+    ) == ""
+    assert store.get_meta("chat_id") == "1"
+    assert store.get_item("a1").status == "open"
+    out = svc.handle_callback(
+        "cb1", "hob:item:a1:complete", 42, 1, "private"
+    )
     assert 'done: "org prez"' in out
     assert store.get_item("a1").status == "done"
-    assert svc.handle_callback("cb1", "hob:item:a1:complete", None, 1) == ""
+    assert svc.handle_callback(
+        "cb1", "hob:item:a1:complete", 42, 1, "private"
+    ) == ""
 
     store.set_meta(
         "pending_confirm",
         json.dumps([{"kind": "drop", "target": "a2"}]),
     )
-    canceled = svc.handle_callback("cb2", "hob:confirm:no", None, 1)
+    canceled = svc.handle_callback(
+        "cb2", "hob:confirm:no", 42, 1, "private"
+    )
     assert "canceled" in canceled and store.get_item("a2").status == "open"
 
     store.set_meta(
         "pending_confirm",
         json.dumps([{"kind": "drop", "target": "a2"}]),
     )
-    confirmed = svc.handle_callback("cb3", "hob:confirm:yes", None, 1)
+    confirmed = svc.handle_callback(
+        "cb3", "hob:confirm:yes", 42, 1, "private"
+    )
     assert 'dropped: "call the pool guy"' in confirmed
 
     store.set_meta(
@@ -1511,7 +1562,7 @@ def test_inline_item_and_confirmation_callbacks_are_deterministic():
         ),
     )
     stale = svc.handle_callback(
-        "cb4", "hob:confirm:yes:old-turn", None, 1
+        "cb4", "hob:confirm:yes:old-turn", 42, 1, "private"
     )
     assert "expired" in stale
     assert store.get_meta("pending_confirm")  # current confirmation remains live
@@ -1576,6 +1627,12 @@ def test_owner_pairing_rejects_other_users_without_rebinding_digest():
     clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
     svc = MessageService(store, clock, llm, "America/New_York")
 
+    unpaired = svc.handle(
+        InboundMessage("/start", 10, 1, 1, user_id=42)
+    )
+    assert "not paired" in unpaired
+    assert store.get_meta("telegram_owner_user_id") is None
+    store.set_meta("telegram_owner_user_id", "42")
     welcome = svc.handle(
         InboundMessage("/start", 10, 1, 1, user_id=42)
     )
@@ -2248,6 +2305,7 @@ def test_status_reports_execution_evidence_without_private_text(
         transition_buffer_minutes=0,
         model="test-model",
         ollama_host="http://localhost:11434",
+        allow_remote_ollama=False,
         calendar_bridge="",
         calendar_enabled=False,
     )

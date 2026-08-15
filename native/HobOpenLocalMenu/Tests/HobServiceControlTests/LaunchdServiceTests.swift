@@ -189,7 +189,7 @@ import Testing
             exitCode: 0,
             standardOutput: "INFO Telegram: token=keychain owner=unpaired\n",
             standardError: ""
-        ).summary == "Telegram is not paired yet. Send the bot /start."
+        ).summary == "Send /start for your ID, then run scripts/hobctl pair ID."
     )
 }
 

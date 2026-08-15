@@ -15,6 +15,7 @@ from typing import Iterator
 import fcntl
 
 from adapters.store_sqlite import SCHEMA_VERSION, SqliteStore
+from adapters.private_files import prepare_private_file, protect_private_file
 
 _REQUIRED_TABLES = {"items", "action_log", "digests", "meta"}
 
@@ -78,9 +79,11 @@ def telegram_lease(
 def database_lease(path: str) -> Iterator[None]:
     """Prevent two daemons or a live-data restore from owning one database."""
     database = Path(path).expanduser().resolve()
-    database.parent.mkdir(parents=True, exist_ok=True)
     lock_path = Path(str(database) + ".lock")
-    handle = lock_path.open("a+")
+    private_lock = prepare_private_file(lock_path)
+    descriptor = os.open(private_lock, os.O_RDWR)
+    os.fchmod(descriptor, 0o600)
+    handle = os.fdopen(descriptor, "a+")
     try:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -144,11 +147,12 @@ def restore_database(source: str, destination: str) -> Path | None:
     if source_path == destination_path:
         raise ValueError("restore source and destination must be different files")
     validate_database(str(source_path))
-    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    destination_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     safety = _safety_backup(destination_path)
     temporary = destination_path.with_name(
         f".{destination_path.name}.restore-{uuid.uuid4().hex}.tmp"
     )
+    prepare_private_file(temporary)
     source_conn = sqlite3.connect(f"file:{source_path}?mode=ro", uri=True)
     target_conn = sqlite3.connect(temporary)
     try:
@@ -164,6 +168,7 @@ def restore_database(source: str, destination: str) -> Path | None:
         for suffix in ("-wal", "-shm"):
             Path(str(destination_path) + suffix).unlink(missing_ok=True)
         os.replace(temporary, destination_path)
+        protect_private_file(destination_path)
         with SqliteStore(str(destination_path)) as restored:
             ok, detail = restored.integrity_check()
             if not ok:
@@ -181,10 +186,11 @@ def import_export(source: str, destination: str) -> Path | None:
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"could not read export {source_path}: {exc}") from exc
     destination_path = Path(destination).expanduser().resolve()
-    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    destination_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary = destination_path.with_name(
         f".{destination_path.name}.import-{uuid.uuid4().hex}.tmp"
     )
+    prepare_private_file(temporary)
     try:
         with SqliteStore(str(temporary)) as candidate:
             candidate.import_data(data)

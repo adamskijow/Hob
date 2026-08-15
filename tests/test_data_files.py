@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 import json
 import multiprocessing
+import os
 import tomllib
 from pathlib import Path
 
@@ -91,6 +92,48 @@ def test_database_lease_rejects_second_daemon_or_live_restore(tmp_path):
         with pytest.raises(DatabaseBusyError):
             with database_lease(db):
                 pass
+    assert (tmp_path / "hob.db.lock").stat().st_mode & 0o777 == 0o600
+
+
+def test_database_backup_and_restore_artifacts_are_owner_only(tmp_path):
+    original_umask = os.umask(0)
+    try:
+        current = tmp_path / "private" / "hob.db"
+        backup = tmp_path / "backups" / "hob.db"
+        with SqliteStore(str(current)) as store:
+            store.add_item(make_item("a1", "private task"))
+            store.backup(str(backup))
+            sqlite_files = [
+                path
+                for path in (
+                    current,
+                    Path(f"{current}-wal"),
+                    Path(f"{current}-shm"),
+                )
+                if path.exists()
+            ]
+            assert sqlite_files
+            assert all(path.stat().st_mode & 0o777 == 0o600 for path in sqlite_files)
+        assert current.stat().st_mode & 0o777 == 0o600
+        assert backup.stat().st_mode & 0o777 == 0o600
+
+        restored = tmp_path / "restored" / "hob.db"
+        restore_database(str(backup), str(restored))
+        assert restored.stat().st_mode & 0o777 == 0o600
+    finally:
+        os.umask(original_umask)
+
+
+def test_existing_default_app_data_directory_is_tightened(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    app_data = tmp_path / "Library" / "Application Support" / "Hob"
+    app_data.mkdir(parents=True, mode=0o755)
+    app_data.chmod(0o755)
+
+    with SqliteStore(str(app_data / "hob.db")):
+        pass
+
+    assert app_data.stat().st_mode & 0o777 == 0o700
 
 
 def test_telegram_lease_rejects_same_bot_across_different_databases(tmp_path):

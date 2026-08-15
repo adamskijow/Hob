@@ -586,7 +586,14 @@ CASES = [
 
 def main() -> int:
     model = os.environ.get("HOB_MODEL", "qwen2.5:14b-instruct")
-    llm = OllamaLlm(model, os.environ.get("HOB_OLLAMA_HOST", "http://localhost:11434"))
+    allow_remote = os.environ.get("HOB_ALLOW_REMOTE_OLLAMA", "").lower() in {
+        "1", "true", "yes", "on",
+    }
+    llm = OllamaLlm(
+        model,
+        os.environ.get("HOB_OLLAMA_HOST", "http://localhost:11434"),
+        allow_remote=allow_remote,
+    )
     filters = [
         value.strip().lower()
         for value in os.environ.get("HOB_EVAL_ONLY", "").split(",")

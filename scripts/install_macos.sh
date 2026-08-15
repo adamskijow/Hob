@@ -12,7 +12,6 @@ USER_NAME="$(id -un)"
 APP_SUPPORT_DIR="$USER_HOME/Library/Application Support/Hob"
 USER_APPS_DIR="$USER_HOME/Applications"
 USER_AGENTS_DIR="$USER_HOME/Library/LaunchAgents"
-USER_LOG_DIR="$USER_HOME/Library/Logs/Hob"
 INSTALL_APP="$USER_APPS_DIR/Hob Local.app"
 DAEMON_PLIST="$USER_AGENTS_DIR/com.local.hob.plist"
 MENU_PLIST="$USER_AGENTS_DIR/com.local.hob.menu.plist"
@@ -147,6 +146,35 @@ else
   OLLAMA_ENDPOINT="http://localhost:11434"
 fi
 
+if [ -n "${HOB_ALLOW_REMOTE_OLLAMA:-}" ]; then
+  ALLOW_REMOTE_OLLAMA="$HOB_ALLOW_REMOTE_OLLAMA"
+elif [ -f "$DAEMON_PLIST" ] &&
+  [ -n "$(plist_value EnvironmentVariables.HOB_ALLOW_REMOTE_OLLAMA "$DAEMON_PLIST")" ]; then
+  ALLOW_REMOTE_OLLAMA="$(
+    plist_value EnvironmentVariables.HOB_ALLOW_REMOTE_OLLAMA "$DAEMON_PLIST"
+  )"
+else
+  ALLOW_REMOTE_OLLAMA="0"
+fi
+
+if ! HOB_INSTALL_OLLAMA_HOST="$OLLAMA_ENDPOINT" \
+  HOB_INSTALL_ALLOW_REMOTE="$ALLOW_REMOTE_OLLAMA" \
+  PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
+  "$PYTHON_PATH" -c '
+import os
+from adapters.ollama_safety import validate_ollama_host
+raw = os.environ["HOB_INSTALL_ALLOW_REMOTE"].strip().lower()
+if raw not in {"0", "1", "false", "true", "no", "yes", "off", "on"}:
+    raise ValueError("HOB_ALLOW_REMOTE_OLLAMA must be true or false")
+validate_ollama_host(
+    os.environ["HOB_INSTALL_OLLAMA_HOST"],
+    allow_remote=raw in {"1", "true", "yes", "on"},
+)
+'; then
+  printf 'hob: Ollama endpoint failed privacy validation\n' >&2
+  exit 2
+fi
+
 TIMEZONE_NAME="${HOB_TIMEZONE:-}"
 if [ -z "$TIMEZONE_NAME" ] && [ -f "$DAEMON_PLIST" ]; then
   TIMEZONE_NAME="$(plist_value EnvironmentVariables.HOB_TIMEZONE "$DAEMON_PLIST")"
@@ -162,8 +190,10 @@ fi
 mkdir -p \
   "$APP_SUPPORT_DIR" \
   "$USER_APPS_DIR" \
-  "$USER_AGENTS_DIR" \
-  "$USER_LOG_DIR"
+  "$USER_AGENTS_DIR"
+chmod 700 "$APP_SUPPORT_DIR"
+touch "$APP_SUPPORT_DIR/hob.log"
+chmod 600 "$APP_SUPPORT_DIR/hob.log"
 
 say "Building Hob's native menu bar"
 "${SWIFT_COMMAND[@]}" build \
@@ -224,6 +254,8 @@ DAEMON_RENDER_ARGS=(
   --timezone "$TIMEZONE_NAME"
   --database-path "$DATABASE_PATH"
   --log-path "$APP_SUPPORT_DIR/hob.log"
+  --ollama-host "$OLLAMA_ENDPOINT"
+  --allow-remote-ollama "$ALLOW_REMOTE_OLLAMA"
 )
 if [ -n "$OWNER_ID" ]; then
   DAEMON_RENDER_ARGS+=(--allowed-telegram-user-id "$OWNER_ID")
@@ -250,14 +282,15 @@ MENU_TEMP="$STAGE_DIR/com.local.hob.menu.plist"
   --log-path "$APP_SUPPORT_DIR/hob.log" \
   --model "$MODEL_NAME" \
   --ollama-host "$OLLAMA_ENDPOINT" \
-  --timezone "$TIMEZONE_NAME" \
-  --menu-log-path "$USER_LOG_DIR/menu.log"
+  --allow-remote-ollama "$ALLOW_REMOTE_OLLAMA" \
+  --timezone "$TIMEZONE_NAME"
 plutil -lint "$MENU_TEMP"
 
 if [ -f "$MENU_PLIST" ]; then
   cp "$MENU_PLIST" "$MENU_PLIST.previous"
 fi
 mv "$MENU_TEMP" "$MENU_PLIST"
+chmod 600 "$DAEMON_PLIST" "$MENU_PLIST"
 
 launchctl bootout "$MENU_TARGET" >/dev/null 2>&1 || true
 bootstrap_agent "$MENU_PLIST"

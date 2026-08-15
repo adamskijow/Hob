@@ -144,9 +144,10 @@ def test_note_and_waiting_survive_round_trip():
 
 def test_sent_refs_round_trip():
     s = store_with([])
-    s.record_sent_ref(555, "a1")
-    assert s.ref_for(555) == "a1"
-    assert s.ref_for(556) is None
+    s.record_sent_ref(42, 555, "a1")
+    assert s.ref_for(42, 555) == "a1"
+    assert s.ref_for(42, 556) is None
+    assert s.ref_for(99, 555) is None
 
 
 def test_reminder_records_ref_for_reply_anchoring():
@@ -160,7 +161,7 @@ def test_reminder_records_ref_for_reply_anchoring():
     send = SendWithId()
     svc = ReminderService(s, FakeClock(datetime(2026, 6, 30, 15, 1, tzinfo=TZ)), send)
     asyncio.run(svc.check())
-    assert s.ref_for(777) == "a1"
+    assert s.ref_for(42, 777) == "a1"
 
 
 def test_done_since():
@@ -248,4 +249,4 @@ def test_adopted_session_start_nudge_is_durable_anchored_and_once_only():
     assert send.calls[0][2]["dedupe_key"].startswith("plan-session:p1:s1")
     assert "snooze" not in send.calls[0][1]
     assert s.plan_sessions("p1")[0].notified_at is not None
-    assert s.ref_for(77) == "a1"
+    assert s.ref_for(42, 77) == "a1"

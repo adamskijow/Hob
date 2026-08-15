@@ -38,8 +38,8 @@
   <key>ProcessType</key>
   <string>Interactive</string>
   <key>StandardOutPath</key>
-  <string>/Users/you/Library/Logs/Hob/menu.log</string>
+  <string>/dev/null</string>
   <key>StandardErrorPath</key>
-  <string>/Users/you/Library/Logs/Hob/menu.log</string>
+  <string>/dev/null</string>
 </dict>
 </plist>

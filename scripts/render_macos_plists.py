@@ -30,18 +30,23 @@ def render_daemon(
     timezone: str,
     database_path: str,
     log_path: str,
+    ollama_host: str,
+    allow_remote_ollama: str,
     allowed_telegram_user_id: str | None,
 ) -> None:
     payload = _load(template)
     payload["ProgramArguments"] = [python_path, "app.py"]
     payload["WorkingDirectory"] = project_root
-    payload["StandardOutPath"] = log_path
-    payload["StandardErrorPath"] = log_path
+    payload["StandardOutPath"] = "/dev/null"
+    payload["StandardErrorPath"] = "/dev/null"
 
     environment = payload["EnvironmentVariables"]
     environment["HOB_MODEL"] = model
     environment["HOB_TIMEZONE"] = timezone
     environment["HOB_DB_PATH"] = database_path
+    environment["HOB_LOG_PATH"] = log_path
+    environment["HOB_OLLAMA_HOST"] = ollama_host
+    environment["HOB_ALLOW_REMOTE_OLLAMA"] = allow_remote_ollama
     environment["PATH"] = (
         f"{Path(uv_path).parent}:"
         "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -65,13 +70,13 @@ def render_menu(
     log_path: str,
     model: str,
     ollama_host: str,
+    allow_remote_ollama: str,
     timezone: str,
-    menu_log_path: str,
 ) -> None:
     payload = _load(template)
     payload["ProgramArguments"] = [executable_path]
-    payload["StandardOutPath"] = menu_log_path
-    payload["StandardErrorPath"] = menu_log_path
+    payload["StandardOutPath"] = "/dev/null"
+    payload["StandardErrorPath"] = "/dev/null"
 
     environment = payload["EnvironmentVariables"]
     environment["HOB_PROJECT_PATH"] = project_root
@@ -80,6 +85,7 @@ def render_menu(
     environment["HOB_LOG_PATH"] = log_path
     environment["HOB_MODEL"] = model
     environment["HOB_OLLAMA_HOST"] = ollama_host
+    environment["HOB_ALLOW_REMOTE_OLLAMA"] = allow_remote_ollama
     environment["HOB_TIMEZONE"] = timezone
 
     _write(output, payload)
@@ -99,6 +105,8 @@ def _parser() -> argparse.ArgumentParser:
     daemon.add_argument("--timezone", required=True)
     daemon.add_argument("--database-path", required=True)
     daemon.add_argument("--log-path", required=True)
+    daemon.add_argument("--ollama-host", required=True)
+    daemon.add_argument("--allow-remote-ollama", required=True)
     daemon.add_argument("--allowed-telegram-user-id")
 
     menu = commands.add_parser("menu")
@@ -111,8 +119,8 @@ def _parser() -> argparse.ArgumentParser:
     menu.add_argument("--log-path", required=True)
     menu.add_argument("--model", required=True)
     menu.add_argument("--ollama-host", required=True)
+    menu.add_argument("--allow-remote-ollama", required=True)
     menu.add_argument("--timezone", required=True)
-    menu.add_argument("--menu-log-path", required=True)
     return parser
 
 

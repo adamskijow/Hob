@@ -24,7 +24,9 @@ interpreter is the load-bearing component; everything else is plumbing.
 
 ## Onboarding and explicit work style
 
-A fresh private `/start` pairs the owner and begins five short setup steps:
+A fresh private `/start` shows the sender's Telegram ID and a local pairing
+command. After `scripts/hobctl pair ID` runs on the Mac, `/start` begins five
+short setup steps:
 planning hours, planning days, protected daily time, the estimate for tasks
 without a duration, and transition minutes between commitments. Setup state and
 its pending question are transactional local metadata, so the flow resumes after
@@ -226,9 +228,13 @@ conversationally ("scratch that") as well as with `/undo`.
 
 ## Ownership and portability
 
-The first private `/start` pairs Hob to one Telegram user unless
-`HOB_ALLOWED_TELEGRAM_USER_ID` sets the owner explicitly. Other users and group
-chats cannot read or mutate the shared task store or redirect its digest.
+Ownership is established locally with `scripts/hobctl pair ID`, or explicitly
+with `HOB_ALLOWED_TELEGRAM_USER_ID`; first contact cannot claim Hob. Every
+interactive update—including captions, reactions, and buttons—must come from
+that owner in the same private chat. Other users and group chats are silently
+dropped before message content reaches durable storage. Completed delivery
+metadata and reply anchors are retained for 30 days and capped at 1,000 rows per
+queue, while pending work is never pruned.
 `python app.py backup` creates a consistent SQLite backup; `python app.py export`
 writes portable JSON containing tasks, history, digests, and settings. If a
 legacy checkout database and the app-data database both exist, daemon startup,

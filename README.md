@@ -123,8 +123,10 @@ uv run python app.py token set
 ```
 
 `HOB_TELEGRAM_TOKEN` remains an environment-variable override for development.
-The first `/start` pairs Hob to that Telegram user; every other user and all
-group chats are rejected. A fresh owner then gets a five-step, resumable setup
+On a fresh install, `/start` shows your Telegram user ID and the local
+`scripts/hobctl pair ID` command. Run it on the Mac, then send `/start` again.
+Telegram contact alone can never claim Hob; every other user and all group
+chats are silently rejected. A fresh owner then gets a five-step, resumable setup
 for planning hours, planning days, protected time, default effort, and
 transition space. Run
 `/setup` later to review it; every preference is visible in `/settings` and each
@@ -184,12 +186,13 @@ All configuration is environment variables:
 | Variable | Meaning | Default |
 | --- | --- | --- |
 | `HOB_TELEGRAM_TOKEN` | Development override for the Keychain token | (Keychain) |
-| `HOB_ALLOWED_TELEGRAM_USER_ID` | Optional explicit owner id; otherwise first private `/start` pairs | (pair on first start) |
+| `HOB_ALLOWED_TELEGRAM_USER_ID` | Optional explicit owner id; otherwise authorize locally with `scripts/hobctl pair ID` | (local pairing) |
 | `HOB_MODEL` | Ollama model name | `qwen2.5:7b-instruct` |
 | `HOB_WAKE_TIME` | Morning digest time, `HH:MM` 24h | `07:00` |
 | `HOB_TIMEZONE` | IANA timezone, e.g. `America/New_York` | `UTC` |
 | `HOB_DB_PATH` | SQLite file path | `~/Library/Application Support/Hob/hob.db`¹ |
 | `HOB_OLLAMA_HOST` | Ollama endpoint | `http://localhost:11434` |
+| `HOB_ALLOW_REMOTE_OLLAMA` | Explicitly allow task text to leave this Mac for a remote HTTPS Ollama server | `false` |
 | `HOB_KEEP_ALIVE` | How long Ollama keeps the model loaded | `-1` (resident) |
 | `HOB_REMINDER_LEAD` | Minutes of heads-up before a timed task | `10` |
 | `HOB_EOD_TIME` | Evening recap time (empty disables) | `20:30` |
@@ -218,13 +221,19 @@ uv run python app.py restore /safe/place/hob-backup.db
 uv run python app.py import /safe/place/hob-export.json
 ```
 
-Backup files are integrity-checked after writing. Restore and import validate a
+Databases, locks, backups, exports, restore candidates, and installed logs are
+created owner-only. Existing database files are tightened automatically when
+Hob opens them. Backup files are integrity-checked after writing. Restore and import validate a
 candidate in isolation, save the current database beside it, and only then swap
 the data file atomically. If both a legacy checkout database and the app-data
 database exist, daemon startup, status, and data commands refuse to guess; set
 `HOB_DB_PATH` explicitly. Hob also takes a content-free, token-scoped process
 lease so two local databases cannot poll or send through the same Telegram bot.
 Portable export and verified restore include proposal and adopted-plan sessions.
+
+Ollama stays loopback-only by default. A remote endpoint must use HTTPS and also
+set `HOB_ALLOW_REMOTE_OLLAMA=1`; `doctor` and `status` then warn plainly that
+task text leaves the Mac. Credentials are not accepted inside the endpoint URL.
 
 ### Mac menu bar and restart recovery
 
@@ -242,11 +251,12 @@ it does not control this Open Local LaunchAgent.
 
 ## Reliability
 
-Hob persists each Telegram update before advancing the polling offset. The
-task mutations, settings, undo history, conversational state, and reply for one
-message commit as a single transaction. If Ollama is temporarily unavailable,
-the original message stays in the inbox and is retried automatically; the user
-does not need to resend it. Replies, reminders, digests, and recaps use a
+Hob persists each authorized owner update before advancing the polling offset;
+unauthorized content is silently discarded. The task mutations, settings, undo
+history, conversational state, and reply for one message commit as a single
+transaction. If Ollama is temporarily unavailable, the original message stays
+in the inbox and is retried automatically; the user does not need to resend it.
+Replies, reminders, digests, and recaps use a
 deduplicated outbox, so a network failure after applying a task does not lose
 the acknowledgement or apply the task twice.
 

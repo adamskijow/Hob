@@ -144,11 +144,15 @@ path above.
 
 ## Transaction and delivery boundary
 
-Telegram updates first become normalized rows in `inbox`; only after that
-commit does Hob advance the polling offset. Processing a row nests the entire
-message service inside one SQLite transaction. Item mutations, setting changes,
-the action log, pending clarification/confirmation, focus, and the reply's
-`outbox` row therefore commit or roll back together.
+Interactive updates first cross a common owner/private-chat authorization gate.
+Unauthorized and Telegram-generated service updates advance the polling offset
+without retaining their content. Authorized updates become normalized rows in
+`inbox`; only after that commit does Hob advance the offset. Processing a row
+nests the entire message service inside one SQLite transaction. Item mutations,
+setting changes, the action log, pending clarification/confirmation, focus, and
+the reply's `outbox` row therefore commit or roll back together. Completed
+delivery rows and reply anchors are age- and count-bounded; pending work is never
+pruned.
 
 Outbox delivery happens after commit. A failed send remains pending and is
 retried in order. Stable keys deduplicate digests, recaps, reminders, and
