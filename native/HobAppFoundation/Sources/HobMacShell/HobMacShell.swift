@@ -371,10 +371,10 @@ private struct PrivacyView: View {
     var body: some View {
         Form {
             Section("What stays local") {
-                Text("Tasks, plans, model prompts, and Calendar busy-time calculations stay on this device.")
+                Text("Model prompts and Calendar details stay on this device.")
             }
             Section("Current native increment") {
-                Text("This build uses Apple's on-device model and local task storage. Device sync and Calendar writing arrive in later audited increments.")
+                Text("Local planning, Calendar adoption, reminders, and reviewed replans are built. iCloud sync is next.")
             }
         }
         .formStyle(.grouped)
