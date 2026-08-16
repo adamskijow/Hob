@@ -337,6 +337,35 @@ import Testing
     #expect(migrated.nextSequence == 1)
 }
 
+@Test func pureReplanRequestsDoNotInventTaskMutationsOrUndoHistory() {
+    var runtime = TaskRuntime(tasks: [RuntimeTask(
+        id: "a1",
+        rawText: "finish taxes",
+        task: "finish taxes",
+        dueDate: nil,
+        dueTime: nil,
+        status: "open",
+        createdAt: "2026-06-29T08:00:00-04:00",
+        updatedAt: "2026-06-29T08:00:00-04:00"
+    )])
+    let before = runtime.tasks
+    let replanned = runtime.process(request(
+        id: "replan-only",
+        message: "The meeting ran long; rebuild the plan",
+        actions: [RuntimeAction(type: "replan")]
+    ))
+
+    #expect(replanned.outcome.disposition == .applied)
+    #expect(replanned.outcome.appliedKinds == ["replan"])
+    #expect(runtime.tasks == before)
+    let undo = runtime.process(request(
+        id: "undo-after-replan",
+        message: "undo",
+        actions: [RuntimeAction(type: "undo")]
+    ))
+    #expect(undo.outcome.disposition == .noChange)
+}
+
 @Test func proposedAndAdoptedSchedulesSurviveRestart() async throws {
     let directory = temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -377,7 +406,7 @@ import Testing
     #expect(await afterAdoptionRestart.snapshot().adoptedSchedule == nil)
 }
 
-@Test func taskMutationInvalidatesAProposalBeforeAdoption() async throws {
+@Test func taskMutationKeepsAdoptedScheduleUntilReplacement() async throws {
     let directory = temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
     let runtime = try DurableTaskRuntime(
@@ -406,13 +435,27 @@ import Testing
         actions: [RuntimeAction(type: "capture", task: "second", raw: "second")]
     ))
 
-    await #expect(throws: RuntimeScheduleError.calendarCleanupPending) {
-        _ = try await runtime.adoptSchedule(
-            proposalID: "stale",
-            at: "2026-06-29T08:02:00-04:00"
-        )
-    }
-    #expect(await runtime.snapshot().adoptedSchedule == nil)
+    #expect(await runtime.snapshot().adoptedSchedule?.proposal.id == "stale")
+    #expect(await runtime.snapshot().latestProposal == nil)
+    #expect(await runtime.snapshot().calendarCleanupEventIDs.isEmpty)
+    #expect(await runtime.snapshot().notificationCleanupIDs.isEmpty)
+    let replacement = try await runtime.proposeSchedule(RuntimeScheduleRequest(
+        proposalID: "replacement",
+        generatedAt: "2026-06-29T08:02:00-04:00",
+        startDate: "2026-06-29",
+        timezone: "America/New_York"
+    ))
+    let current = try #require(await runtime.snapshot().adoptedSchedule?.proposal)
+    let diff = RuntimeScheduleDiff(current: current, proposed: replacement)
+    #expect(diff.changes.contains { $0.taskID == "a1" && $0.kind == .stays })
+    #expect(diff.changes.contains { $0.taskID == "a2" && $0.kind == .added })
+    _ = try await runtime.adoptSchedule(
+        proposalID: "replacement",
+        at: "2026-06-29T08:03:00-04:00",
+        calendarEventIDs: ["replacement-event"],
+        notificationIDs: ["replacement-notification-a", "replacement-notification-b"]
+    )
+    #expect(await runtime.snapshot().adoptedSchedule?.proposal.id == "replacement")
     #expect(await runtime.snapshot().calendarCleanupEventIDs == ["event-for-first-task"])
     #expect(await runtime.snapshot().notificationCleanupIDs == ["notification-for-first-task"])
     try await runtime.acknowledgeCalendarCleanup(
@@ -423,12 +466,8 @@ import Testing
         notificationIDs: ["notification-for-first-task"]
     )
     #expect(await runtime.snapshot().notificationCleanupIDs.isEmpty)
-    await #expect(throws: RuntimeScheduleError.noProposal) {
-        _ = try await runtime.adoptSchedule(
-            proposalID: "stale",
-            at: "2026-06-29T08:03:00-04:00"
-        )
-    }
+    try await runtime.discardScheduleProposal(proposalID: "replacement")
+    #expect(await runtime.snapshot().latestProposal == nil)
 }
 
 @Test func notificationResponsesSurviveRestartAndDeduplicate() async throws {

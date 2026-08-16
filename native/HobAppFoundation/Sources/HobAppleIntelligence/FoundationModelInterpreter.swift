@@ -49,10 +49,11 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         if #available(iOS 26.0, macOS 26.0, *) {
             guard isAvailable else { throw RuntimeInterpretationError.modelUnavailable }
             let session = LanguageModelSession(instructions: Self.instructions)
+            let open = tasks.filter { $0.status == "open" }.sorted { $0.id < $1.id }
             let prompt = """
             Current instant: \(now)
             Timezone: \(timezone)
-            Open task labels: \(tasks.filter { $0.status == "open" }.map(\.task))
+            Open tasks: \(open.enumerated().map { "\($0.offset + 1). \($0.element.task)" })
             User message: \(clean)
             """
             do {
@@ -61,7 +62,11 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                     generating: GeneratedCaptureTurn.self
                 )
                 let actions = try response.content.tasks.map {
-                    try Self.action(from: $0, originalMessage: clean)
+                    try Self.action(
+                        from: $0,
+                        originalMessage: clean,
+                        openTaskCount: open.count
+                    )
                 }
                 guard !actions.isEmpty, actions.count <= 16 else {
                     throw RuntimeInterpretationError.invalidOutput
@@ -78,19 +83,22 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     }
 
     private static let instructions = """
-    Extract new tasks from one natural-language message for a private planner.
-    Preserve what the person needs to do. Separate several tasks when present.
+    Convert one natural-language message into explicit planner actions. Capture
+    genuinely new tasks. Match completion, drop, move, or rename statements to
+    the numbered open task. Use replan when circumstances changed but no task
+    itself changed. Never turn an explanation about an open task into a new task.
+    Separate several explicit actions when present.
     A schedule day says when the person intends to do the task. A deadline is
     introduced by wording such as "by Friday" or "due Friday". Never convert a
     deadline into a schedule day. Return semantic date kinds; code owns date math.
     Use duration 0 when unstated. Use time "none" when unstated. Use priority
     normal unless the person clearly says high/urgent or low. Do not answer the
-    person and do not invent tasks or constraints.
+    person and do not invent tasks, changes, or constraints.
     """
 
     #if canImport(FoundationModels)
     @available(iOS 26.0, macOS 26.0, *)
-    @Generable(description: "All new tasks explicitly requested in one message")
+    @Generable(description: "All explicit task or planning actions in one message")
     struct GeneratedCaptureTurn {
         @Guide(description: "One entry per distinct task", .count(1...16))
         var tasks: [GeneratedCaptureTask]
@@ -99,6 +107,15 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     @available(iOS 26.0, macOS 26.0, *)
     @Generable(description: "One task and its explicitly stated planning constraints")
     struct GeneratedCaptureTask {
+        @Guide(
+            description: "Requested planner operation",
+            .anyOf(["capture", "complete", "drop", "reschedule", "amend", "replan"])
+        )
+        var operation: String
+
+        @Guide(description: "1-based numbered open task, or 0 for capture or general replan", .range(0...1000))
+        var targetIndex: Int
+
         @Guide(description: "Short actionable task label without date, priority, or duration words")
         var task: String
 
@@ -154,10 +171,44 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     @available(iOS 26.0, macOS 26.0, *)
     private static func action(
         from generated: GeneratedCaptureTask,
-        originalMessage: String
+        originalMessage: String,
+        openTaskCount: Int
     ) throws -> RuntimeAction {
         let task = generated.task.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !task.isEmpty, task.utf8.count <= 10_000 else {
+        if generated.operation == "replan" {
+            return RuntimeAction(type: "replan")
+        }
+        if generated.operation != "capture" {
+            guard (1...openTaskCount).contains(generated.targetIndex) else {
+                throw RuntimeInterpretationError.invalidOutput
+            }
+            let target = String(generated.targetIndex)
+            switch generated.operation {
+            case "complete", "drop":
+                return RuntimeAction(type: generated.operation, target: target)
+            case "amend":
+                guard !task.isEmpty, task.utf8.count <= 10_000 else {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
+                return RuntimeAction(type: "amend", task: task, target: target)
+            case "reschedule":
+                return RuntimeAction(
+                    type: "reschedule",
+                    target: target,
+                    when: try dateIntent(
+                        kind: generated.scheduleKind,
+                        weekday: generated.scheduleWeekday,
+                        which: generated.scheduleWhich
+                    ),
+                    time: generated.time == "none" ? nil : generated.time,
+                    confidence: 1
+                )
+            default:
+                throw RuntimeInterpretationError.invalidOutput
+            }
+        }
+        guard !task.isEmpty, task.utf8.count <= 10_000,
+              generated.targetIndex == 0 else {
             throw RuntimeInterpretationError.invalidOutput
         }
         let duration: Int?

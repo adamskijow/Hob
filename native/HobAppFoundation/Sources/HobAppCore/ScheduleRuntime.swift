@@ -163,6 +163,100 @@ public struct RuntimeAdoptedSchedule: Codable, Equatable, Sendable {
     }
 }
 
+public enum RuntimeScheduleChangeKind: String, Codable, Equatable, Sendable {
+    case stays
+    case moves
+    case added
+    case removed
+    case unscheduled
+}
+
+public struct RuntimeScheduleChange: Codable, Equatable, Identifiable, Sendable {
+    public var id: String { "\(kind.rawValue):\(taskID)" }
+    public let kind: RuntimeScheduleChangeKind
+    public let taskID: String
+    public let task: String
+    public let previousStartAt: String?
+    public let proposedStartAt: String?
+    public let reason: String?
+
+    public init(
+        kind: RuntimeScheduleChangeKind,
+        taskID: String,
+        task: String,
+        previousStartAt: String? = nil,
+        proposedStartAt: String? = nil,
+        reason: String? = nil
+    ) {
+        self.kind = kind
+        self.taskID = taskID
+        self.task = task
+        self.previousStartAt = previousStartAt
+        self.proposedStartAt = proposedStartAt
+        self.reason = reason
+    }
+}
+
+public struct RuntimeScheduleDiff: Codable, Equatable, Sendable {
+    public let currentProposalID: String
+    public let proposedProposalID: String
+    public let changes: [RuntimeScheduleChange]
+
+    public init(
+        current: RuntimeScheduleProposal,
+        proposed: RuntimeScheduleProposal
+    ) {
+        currentProposalID = current.id
+        proposedProposalID = proposed.id
+        let oldBlocks = Dictionary(
+            current.blocks.map { ($0.taskID, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let newBlocks = Dictionary(
+            proposed.blocks.map { ($0.taskID, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let newUnscheduled = Dictionary(
+            proposed.unscheduled.map { ($0.taskID, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let taskIDs = Set(oldBlocks.keys)
+            .union(newBlocks.keys)
+            .union(newUnscheduled.keys)
+        changes = taskIDs.sorted().compactMap { taskID in
+            let old = oldBlocks[taskID]
+            if let new = newBlocks[taskID] {
+                return RuntimeScheduleChange(
+                    kind: old.map {
+                        $0.startAt == new.startAt && $0.endAt == new.endAt
+                            ? .stays : .moves
+                    } ?? .added,
+                    taskID: taskID,
+                    task: new.task,
+                    previousStartAt: old?.startAt,
+                    proposedStartAt: new.startAt
+                )
+            }
+            if let unscheduled = newUnscheduled[taskID] {
+                return RuntimeScheduleChange(
+                    kind: .unscheduled,
+                    taskID: taskID,
+                    task: unscheduled.task,
+                    previousStartAt: old?.startAt,
+                    reason: unscheduled.reason
+                )
+            }
+            guard let old else { return nil }
+            return RuntimeScheduleChange(
+                kind: .removed,
+                taskID: taskID,
+                task: old.task,
+                previousStartAt: old.startAt
+            )
+        }
+    }
+}
+
 public enum RuntimeScheduleError: Error, Equatable, Sendable {
     case invalidRequest
     case noProposal

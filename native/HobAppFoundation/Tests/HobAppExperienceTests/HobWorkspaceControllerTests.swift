@@ -154,6 +154,8 @@ func naturalMessageBuildsAndAdoptsAPersistentSchedule() async throws {
     #expect(reopened.adoptedSchedule?.proposal.blocks.count == 2)
     #expect(reopened.adoptedSchedule?.notificationIDs == notifications.scheduledIDs)
 
+    let oldEventIDs = calendar.writtenEventIDs
+    let oldNotificationIDs = notifications.scheduledIDs
     let firstBlock = try #require(controller.adoptedSchedule?.proposal.blocks.first)
     let adoptedProposalID = try #require(controller.adoptedSchedule?.proposal.id)
     await notifications.send(notificationResponse(
@@ -188,10 +190,19 @@ func naturalMessageBuildsAndAdoptsAPersistentSchedule() async throws {
     ))
     try await waitUntilSettled(controller)
     #expect(controller.tasks.first?.status == "done")
-    #expect(controller.adoptedSchedule == nil)
+    #expect(controller.adoptedSchedule?.proposal.blocks.count == 2)
     #expect(controller.proposal?.blocks.map(\.task) == ["call Mom"])
-    #expect(Set(notifications.cancelledIDs) == Set(notifications.scheduledIDs))
-    #expect(Set(calendar.removedEventIDs) == Set(calendar.writtenEventIDs))
+    #expect(controller.scheduleDiff?.changes.contains {
+        $0.task == "finish taxes" && $0.kind == .removed
+    } == true)
+    #expect(notifications.cancelledIDs.isEmpty)
+    #expect(calendar.removedEventIDs.isEmpty)
+
+    controller.adoptProposal()
+    try await waitUntilIdle(controller)
+    #expect(controller.adoptedSchedule?.proposal.blocks.map(\.task) == ["call Mom"])
+    #expect(Set(notifications.cancelledIDs) == Set(oldNotificationIDs))
+    #expect(Set(calendar.removedEventIDs) == Set(oldEventIDs))
 
     let afterActions = try TaskStateStore(directoryURL: directory).load()
     #expect(afterActions.pendingNotificationResponses.isEmpty)

@@ -121,6 +121,13 @@ public final class HobWorkspaceController: ObservableObject {
             && runtime != nil
     }
 
+    public var scheduleDiff: RuntimeScheduleDiff? {
+        guard let current = adoptedSchedule?.proposal,
+              let proposal,
+              current.id != proposal.id else { return nil }
+        return RuntimeScheduleDiff(current: current, proposed: proposal)
+    }
+
     public func submit() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSubmit, !text.isEmpty else { return }
@@ -155,9 +162,15 @@ public final class HobWorkspaceController: ObservableObject {
                 _ = try await runtime.proposeSchedule(
                     try self.scheduleRequest(at: instant)
                 )
-                self.notice = actions.count == 1
-                    ? "Captured and planned one task."
-                    : "Captured and planned \(actions.count) tasks."
+                if response.outcome.appliedKinds == ["replan"] {
+                    self.notice = "Built a new plan from what changed."
+                } else if response.outcome.appliedKinds.allSatisfy({ $0 == "capture" }) {
+                    self.notice = actions.count == 1
+                        ? "Captured and planned one task."
+                        : "Captured and planned \(actions.count) tasks."
+                } else {
+                    self.notice = "Updated the tasks and built a new plan."
+                }
             case .clarificationRequired:
                 self.notice = "I need a clearer date or task before changing anything."
             case .confirmationRequired:
@@ -197,9 +210,22 @@ public final class HobWorkspaceController: ObservableObject {
                 try? self.calendarStore.remove(eventIDs: eventIDs)
                 throw error
             }
+            await self.refresh()
+            try await self.cleanupCalendarEventsIfNeeded()
+            try await self.cleanupNotificationsIfNeeded()
             self.notice = notificationIDs.isEmpty
-                ? "Schedule added to Calendar. Notifications are off."
-                : "Schedule added to Calendar with start reminders."
+                ? "Calendar schedule updated. Notifications are off."
+                : "Calendar schedule updated with start reminders."
+            await self.refresh()
+        }
+    }
+
+    public func keepAdoptedSchedule() {
+        guard let proposal else { return }
+        run {
+            guard let runtime = self.runtime else { return }
+            try await runtime.discardScheduleProposal(proposalID: proposal.id)
+            self.notice = "Kept the current Calendar schedule."
             await self.refresh()
         }
     }

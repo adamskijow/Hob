@@ -160,6 +160,24 @@ def test_adopted_plans_have_actionable_durable_start_reminders():
     assert "notificationCleanupIDs" in storage
 
 
+def test_replanning_keeps_calendar_stable_until_the_diff_is_accepted():
+    schedule = (
+        FOUNDATION / "Sources" / "HobAppCore" / "ScheduleRuntime.swift"
+    ).read_text(encoding="utf-8")
+    workspace = (
+        FOUNDATION
+        / "Sources"
+        / "HobAppExperience"
+        / "HobWorkspaceView.swift"
+    ).read_text(encoding="utf-8")
+
+    assert "RuntimeScheduleDiff" in schedule
+    assert 'Label("Review schedule changes"' in workspace
+    assert 'Text("Your Calendar stays unchanged until you accept.")' in workspace
+    assert 'Button("Update Calendar")' in workspace
+    assert 'Button("Keep current schedule")' in workspace
+
+
 def test_iphone_app_uses_the_same_native_workspace_and_local_model():
     spec = (IOS_PROJECT / "project.yml").read_text(encoding="utf-8")
     app = (IOS_PROJECT / "Sources" / "HobPhoneApp.swift").read_text(
@@ -181,6 +199,8 @@ def test_iphone_app_uses_the_same_native_workspace_and_local_model():
     assert "HobAppFoundation" in project
     assert "SystemLanguageModel.default" in interpreter
     assert "LanguageModelSession" in interpreter
+    assert '"complete", "drop", "reschedule", "amend", "replan"' in interpreter
+    assert 'RuntimeAction(type: "replan")' in interpreter
 
     with (IOS_PROJECT / "Info.plist").open("rb") as fh:
         info = plistlib.load(fh)

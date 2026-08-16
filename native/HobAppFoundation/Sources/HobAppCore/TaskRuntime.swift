@@ -669,6 +669,12 @@ public struct TaskRuntime: Sendable {
             tasks = snapshot
             return outcome(.applied, kinds: ["undo"])
         }
+        if actions.contains(where: { $0.type == "replan" }) {
+            guard actions == [RuntimeAction(type: "replan")] else {
+                return outcome(.rejected)
+            }
+            return outcome(.applied, kinds: ["replan"])
+        }
         var prepared: [PreparedMutation] = []
         var nextID = nextItemID()
         for action in actions {

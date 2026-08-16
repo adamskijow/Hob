@@ -24,7 +24,11 @@ public struct HobWorkspaceView: View {
                     notificationSetup
                     composer
                     feedback
-                    if let schedule = controller.adoptedSchedule {
+                    if let schedule = controller.adoptedSchedule,
+                       let proposal = controller.proposal,
+                       let diff = controller.scheduleDiff {
+                        replanView(schedule, proposal: proposal, diff: diff)
+                    } else if let schedule = controller.adoptedSchedule {
                         adopted(schedule)
                     } else if let proposal = controller.proposal {
                         proposalView(proposal)
@@ -187,6 +191,102 @@ public struct HobWorkspaceView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private func replanView(
+        _ adopted: RuntimeAdoptedSchedule,
+        proposal: RuntimeScheduleProposal,
+        diff: RuntimeScheduleDiff
+    ) -> some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 14) {
+                Label("Review schedule changes", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+                    .font(.title2.bold())
+                Text("Your Calendar stays unchanged until you accept.")
+                    .foregroundStyle(.secondary)
+                ForEach(diff.changes) { change in
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: changeIcon(change.kind))
+                            .foregroundStyle(changeColor(change.kind))
+                            .frame(width: 20)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("\(changeLabel(change.kind)): \(change.task)")
+                                .fontWeight(.semibold)
+                            Text(changeDetail(change))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                HStack {
+                    Button("Update Calendar") {
+                        controller.adoptProposal()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(controller.isWorking)
+                    Button("Keep current schedule") {
+                        controller.keepAdoptedSchedule()
+                    }
+                    .disabled(controller.isWorking)
+                }
+                DisclosureGroup("Proposed schedule") {
+                    scheduleBlocks(proposal)
+                        .padding(.top, 8)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func changeLabel(_ kind: RuntimeScheduleChangeKind) -> String {
+        switch kind {
+        case .stays: return "Stays"
+        case .moves: return "Moves"
+        case .added: return "Adds"
+        case .removed: return "Removes"
+        case .unscheduled: return "Needs room"
+        }
+    }
+
+    private func changeIcon(_ kind: RuntimeScheduleChangeKind) -> String {
+        switch kind {
+        case .stays: return "equal.circle.fill"
+        case .moves: return "arrow.right.circle.fill"
+        case .added: return "plus.circle.fill"
+        case .removed: return "minus.circle.fill"
+        case .unscheduled: return "exclamationmark.circle.fill"
+        }
+    }
+
+    private func changeColor(_ kind: RuntimeScheduleChangeKind) -> Color {
+        switch kind {
+        case .stays: return .secondary
+        case .moves, .added: return .blue
+        case .removed: return .secondary
+        case .unscheduled: return .orange
+        }
+    }
+
+    private func changeDetail(_ change: RuntimeScheduleChange) -> String {
+        switch change.kind {
+        case .stays:
+            return change.proposedStartAt.map(displayTime) ?? "Same time"
+        case .moves:
+            return "\(change.previousStartAt.map(displayTime) ?? "Unscheduled") → \(change.proposedStartAt.map(displayTime) ?? "Unscheduled")"
+        case .added:
+            return change.proposedStartAt.map(displayTime) ?? "Added to the plan"
+        case .removed:
+            return change.previousStartAt.map(displayTime) ?? "Removed from the plan"
+        case .unscheduled:
+            return change.reason ?? "No open block fits"
+        }
+    }
+
+    private func displayTime(_ timestamp: String) -> String {
+        guard let date = ISO8601DateFormatter().date(from: timestamp) else {
+            return timestamp
+        }
+        return date.formatted(date: .abbreviated, time: .shortened)
     }
 
     private func scheduleHeader(
