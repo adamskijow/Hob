@@ -775,6 +775,7 @@ def _setting_value_question(key: str) -> str:
         "work_days": "which weekdays may i plan flexible work on?",
         "default_duration": "how many minutes should i use for the default task estimate?",
         "transition_buffer": "how many minutes should i use for the transition buffer?",
+        "pin_digest": "should i pin the morning digest?",
     }.get(key, "what value should i use?")
 
 
@@ -836,10 +837,20 @@ def _reconcile_setting(action: Setting, message: str, plan: Plan) -> None:
             )
             return
         plan.settings.append(SettingChange(key=action.key, value=str(value)))
+    elif action.key == "pin_digest":
+        if action.enabled is None:
+            _setting_question(action, plan, "should i pin the morning digest?")
+            return
+        plan.settings.append(
+            SettingChange(
+                key=action.key,
+                value="true" if action.enabled else "false",
+            )
+        )
     else:
         plan.questions.append(
             "i can change digest, recap, work hours, work days, breaks, "
-            "default effort, and buffers."
+            "default effort, buffers, and digest pinning."
         )
 
 

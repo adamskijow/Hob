@@ -10,6 +10,8 @@ from app import (
     DIGEST_DECISION_KEY,
     DigestService,
     INSTALL_VERSION_KEY,
+    PIN_DIGEST_KEY,
+    PINNED_KEY,
     RELEASE_NOTICE_KEY,
 )
 from core.digest import (
@@ -431,3 +433,69 @@ def test_upgraded_owner_gets_one_digest_discovery_note_but_fresh_install_does_no
     fresh_send = FakeSend()
     asyncio.run(DigestService(fresh, FakeClock(at(7, 0)), fresh_send).fire())
     assert "new in hob" not in fresh_send.calls[0][1]
+
+
+def test_digest_pinning_defaults_off():
+    class SendWithId(FakeSend):
+        async def __call__(self, chat_id, text):
+            await super().__call__(chat_id, text)
+            return 222
+
+    pin_calls = []
+
+    async def pin(*args):
+        pin_calls.append(args)
+
+    store = SqliteStore(":memory:")
+    store.set_meta("chat_id", "42")
+    asyncio.run(
+        DigestService(store, FakeClock(at(7, 0)), SendWithId(), pin=pin).fire()
+    )
+
+    assert pin_calls == []
+    assert store.get_meta(PINNED_KEY) is None
+
+
+def test_digest_pinning_opt_in_replaces_the_previous_pin():
+    class SendWithId(FakeSend):
+        async def __call__(self, chat_id, text):
+            await super().__call__(chat_id, text)
+            return 222
+
+    pin_calls = []
+
+    async def pin(*args):
+        pin_calls.append(args)
+
+    store = SqliteStore(":memory:")
+    store.set_meta("chat_id", "42")
+    store.set_meta(PIN_DIGEST_KEY, "true")
+    store.set_meta(PINNED_KEY, "111")
+    asyncio.run(
+        DigestService(store, FakeClock(at(7, 0)), SendWithId(), pin=pin).fire()
+    )
+
+    assert pin_calls == [(42, 222, 111)]
+    assert store.get_meta(PINNED_KEY) == "222"
+
+
+def test_disabled_digest_pinning_removes_the_previous_pin():
+    class SendWithId(FakeSend):
+        async def __call__(self, chat_id, text):
+            await super().__call__(chat_id, text)
+            return 222
+
+    pin_calls = []
+
+    async def pin(*args):
+        pin_calls.append(args)
+
+    store = SqliteStore(":memory:")
+    store.set_meta("chat_id", "42")
+    store.set_meta(PINNED_KEY, "111")
+    asyncio.run(
+        DigestService(store, FakeClock(at(7, 0)), SendWithId(), pin=pin).fire()
+    )
+
+    assert pin_calls == [(42, None, 111)]
+    assert store.get_meta(PINNED_KEY) is None

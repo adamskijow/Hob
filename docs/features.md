@@ -1,278 +1,185 @@
 <!-- SPDX-License-Identifier: MIT -->
-# Everything Hob understands
+# Features
 
-The full tour of the loop and the plain-language features. The
-[front page](../README.md) has the short version.
+## Daily loop
 
-## The loop
+1. Send tasks to Hob throughout the day.
+2. Review one morning digest of scheduled and carried work.
+3. Correct the list in ordinary language.
+4. Tell Hob what finished during the evening recap.
 
-1. **Capture.** Throughout the day you send short messages to a Telegram bot
-   ("call the pool guy", "review the SR audit before standup"). Tasks too small
-   to put on a calendar.
-2. **EOD report.** At end of day you message what you got done. This closes items.
-3. **Morning digest.** Each morning the bot sends one organized message: today's
-   items plus anything undone that rolled forward from prior days.
-4. **Reply to correct.** The morning digest will often be wrong, because the EOD
-   report is easy to forget. You fix it in plain language ("already did the prez
-   one", "drop the pool call, not happening", "push the audit to Wednesday",
-   "what's on for tomorrow?") and Hob updates the list. Every inbound message
-   flows through one interpreter that decides what you meant and turns it into
-   concrete actions.
+Every free-form message reaches the local model. Tested code validates task
+identity, dates, scope, arithmetic, prompt context, and allowed effects before a
+change commits. `/undo` reverses the latest change.
 
-Feature 4 is the reason Hob exists rather than a standard to-do app. The
-interpreter is the load-bearing component; everything else is plumbing.
+## Onboarding
 
-## Onboarding and explicit work style
+A private `/start` shows the local pairing command. After pairing, five short
+questions set:
 
-A fresh private `/start` shows the sender's Telegram ID and a local pairing
-command. After `scripts/hobctl pair ID` runs on the Mac, `/start` begins five
-short setup steps:
-planning hours, planning days, protected daily time, the estimate for tasks
-without a duration, and transition minutes between commitments. Setup state and
-its pending question are transactional local metadata, so the flow resumes after
-a restart. Every step can be kept as-is in natural language, the whole flow can
-be paused in natural language, and `/setup` resumes it later. There is no setup
-control phrase to memorize.
-`/settings` shows setup progress, Calendar readiness, every resulting value, and
-whether the first plan has actually been adopted.
+- work hours;
+- work days;
+- protected time;
+- default task effort;
+- transition time.
 
-These preferences are explicit rather than inferred from private behavior.
-Natural-language changes use the normal validated setting and action-log path,
-so they are undoable and included in backup/export. Calendar permission remains
-an explicit command on the Mac; Telegram setup reports the state but cannot
-grant private-data access remotely.
+Setup resumes after restart. `/setup` resumes a paused flow. `/settings` shows
+setup progress, Calendar state, and saved values. Settings changed in chat use
+the same validation and undo path as task edits.
 
-An upgraded owner gets one concise note in the existing morning digest for a
-new release. Fresh installs suppress it because `/start` already owns activation;
-successful delivery records the version so the note does not become a recurring
-nag.
+## Capture and correction
 
-## Asking instead of guessing
+Hob supports:
 
-When a message is ambiguous (two possible dates, an unclear reference) Hob asks
-instead of guessing, and it remembers the question or proposed mutation: your
-next message is read as the answer. So "lunch with sam thursday or friday"
-followed by "thursday"
-captures it for Thursday, rather than the reply being misread on its own. The
-context Hob keeps is deliberately small (the one open question), not a running
-chat transcript; the task list itself carries the rest. You can also act on many
-items at once in plain language ("did everything today", "did everything but the
-slides", "clear my whole list", "drop all of friday"). Past-tense completion
-also scopes across named tasks: "I did home insurance and called the bank"
-closes both. An explicit tense change remains literal: "I did home insurance
-and will call the bank" closes only the first task and keeps the second open.
-These scopes and tense relationships are model-owned typed intent; the core
-validates ids and scope without reinterpreting the sentence through keywords.
+- new tasks, several tasks in one message, forwards, and media captions;
+- dates, times, deadlines, estimates, priority, projects, notes, dependencies,
+  preferred windows, earliest starts, fixed commitments, and split work;
+- completion, partial progress, drops, rescheduling, bulk changes, and numbered
+  exclusions;
+- edited Telegram messages, brief follow-ups, and reply-anchored actions;
+- clarification and confirmation when a target, date, or large change is
+  uncertain.
 
-## Reminders
+Examples:
 
-A task with a time ("call the vet at 3pm") also gets a one-off reminder ping a
-short lead before it (10 minutes by default, set with `HOB_REMINDER_LEAD`), so
-it is a heads-up rather than a line in the morning digest or a ping at the exact
-moment. Rescheduling it re-arms the reminder for the new time. You can reply
-directly to a reminder: "done" completes that task, "snooze 20" puts the ping
-off, "push it to friday" moves it, all anchored to the message you replied to.
-Reminder messages also have Done, Snooze 10, and Drop buttons. Slow local-model
-turns show Telegram's typing state, and long lists are split safely across
-Telegram's message limit.
+```text
+Call the pool guy Friday.
+For the wedding: book the caterer, order flowers.
+I did home insurance and called the bank.
+Finished everything except 1 and 6.
+Move everything to Monday except taxes, which goes Sunday.
+```
 
-## Conversational focus and edits
+Ambiguous messages stay pending until the answer arrives. A message such as
+`lunch with Sam Thursday or Friday` followed by `Thursday` becomes one Thursday
+task.
 
-Hob keeps a short conversational focus: right after "got it: call the vet
-tomorrow", a bare follow-up like "make it 4pm", "actually thursday", or "that's
-urgent" applies to that task. Editing an earlier Telegram message works the way
-you'd hope too: Hob reverts what the original said and applies the corrected
-text, so fixing a typo fixes the task.
+## Digests, recaps, and stale work
 
-## Evening recap and stale tasks
+The morning digest includes today's work and carried items. It marks repeated
+rollover with an age and asks whether stale work should stay, move, or drop.
+Waiting tasks receive a similar blocker check.
 
-The loop closes in the evening: at `HOB_EOD_TIME` (20:30 by default, or "do the
-evening check-in at 9" in chat; empty disables it) Hob asks "what got done
-today?" and your free-text answer checks items off. Answer naturally: Hob uses
-the local model and the active recap context to understand completed work,
-partial progress, or a zero-result answer such as `nada` or `today was a wash`.
-There is no fixed command phrase. A zero-result report changes nothing and
-confirms that the displayed items stay open. A task that keeps
-rolling over is marked in the digest ("day 4") with a gentle question about
-whether it is still real, so the list does not silently rot. Undated tasks age
-too. When the digest asks, answer naturally whether the task stays, moves, or
-gets dropped. A stale waiting prompt likewise understands that the blocker
-cleared. The same-day prompt is single-use, and a
-newer task conversation takes precedence over destructive terse choices. A keep
-decision resets the nudge clock without moving the task.
+The evening recap lists open work and accepts natural completion reports,
+partial progress, or zero-result answers such as `nada`, `today was a wash`, or
+`jack shit got done`. A zero-result answer leaves every shown task open.
 
-Numbered bulk reports keep the digest's original order even after earlier rows
-close: `finished it all except 1 and 6` completes the other displayed items. An
-excluded position outside that displayed list changes nothing and asks for a
-clearer reference rather than shifting the number to another task.
+Digest numbers remain tied to the displayed list. Newer task conversations take
+priority over old recap, confirmation, onboarding, and stale-task prompts.
 
-## Telegram-native moves
+## Reminders and Telegram controls
 
-Forward any message to Hob (a "grab milk?" text from someone) and it becomes a
-task credited to the sender; react to a reminder with a thumbs-up to complete it
-(thumbs-down drops it); and each morning's digest is pinned in the chat,
-replacing yesterday's pin. A photo or other media caption follows the same text
-capture path. Unsupported media such as an uncaptioned voice message receives a
-short text explanation instead of disappearing silently. Telegram-generated
-status events, including the event emitted when Hob pins that digest, advance
-the durable update offset silently because they are not messages from the owner.
+A timed task receives a reminder before its due time. Reply with `done`,
+`snooze 20`, or a new date. Reminder buttons offer Done, Snooze 10, and Drop.
+Thumbs-up completes an anchored reminder; thumbs-down drops it.
 
-## Notes and waiting-on
+Digest pinning defaults off. Say `pin my morning digest` to enable it or `stop
+pinning the morning digest` to disable it. When enabled, each digest replaces
+the prior pin. Telegram pin events are ignored. Unsupported owner media gets a
+short text response. Slow model calls show Telegram's typing state, and long
+replies split at safe boundaries.
 
-Tasks can carry notes ("add a note to the vet one: gate code is 4412"), which
-show up on the reminder when it fires. A task blocked on someone else ("the
-contract is waiting on jerry") parks as waiting: it leaves the daily list and
-reminders, stays visible as [waiting], answers "what am I waiting on", and
-resurfaces in the digest after a few days ("still waiting: ... (4d). worth a
-nudge?"). "jerry got back to me" puts it back on deck.
+## Notes, projects, and waiting
 
-## Recurring tasks
+Notes appear with the task and its reminder. Project tags support grouped
+queries. Waiting tasks leave the daily list until their blocker clears, while
+remaining visible through queries and periodic checks.
 
-A recurring task ("take out the trash every monday", "water the plants daily",
-"standup every weekday") reappears each occurrence: completing it advances to the
-next one and stays on the list rather than closing. Dropping it ends the series.
-Multiple weekdays, a numbered day each month, month/day yearly rules, and plain
-intervals such as every 2 weeks are supported as well.
+```text
+Add a note to the vet task: gate code 4412.
+The contract is waiting on Jerry.
+Jerry got back to me.
+What's left for the wedding?
+```
 
-## Planning and recall
+## Recurrence
 
-"Plan my day", "plan tomorrow", and constraints such as "I have 40 minutes and
-low energy" trigger a separate read-only planning pass. A pure,
-deterministic engine fits work into the remaining day without overlaps. It
-respects opaque Calendar busy periods, working hours, protected breaks, fixed
-times, durations, deadlines, dependencies, earliest starts, preferred windows,
-splitting permission, and literal time budgets. Unknown durations are shown as
-30-minute estimates rather than hidden assumptions. Work that cannot fit is
-named with a reason, deadline risk is called out, and fixed conflicts are shown
-without silently moving the commitment.
+Supported rules include daily, weekdays, several weekdays, monthly dates,
+yearly dates, and intervals such as every two weeks. Series may follow a fixed
+cadence or advance from completion. They can end by date or count and support
+skip and stop actions. Moving one fixed occurrence preserves the series anchor.
 
-The model sees only the feasible task timeline, then supplies a concise headline
-and reasons. It cannot change times or add work. Hob persists the prior proposal
-so "my afternoon is gone" can show a small plan diff. Nothing moves until you
-explicitly request a change. Calendar event titles never cross the Swift
-EventKit adapter boundary. Without permission or a bridge, the same planner
-falls back to working hours and breaks. A named future day uses that day's full
-window and Calendar snapshot; it never silently falls back to today.
+## Planning
 
-Unknown task durations use the visible default estimate. A transition buffer
-expands busy periods only for feasibility math, leaving fixed commitments at
-their stated times and warning when a fixed time cannot honor the buffer. Plan
-order is stored as conversational focus, so "start the second one" resolves to
-the displayed plan rather than a different list order. Starting focuses the task
-and explicitly does not mark it complete.
+`Plan my day`, `plan tomorrow`, and constrained requests run the feasibility
+engine. It accounts for:
 
-"Use this plan" explicitly adopts the proposal as local plan sessions,
-preserving every split segment without changing task dates or writing Calendar
-events. `/plan` and natural plan-status questions show the active version. A
-replan is another proposal and cannot replace active sessions until the user
-says "replace my plan with this"; cancellation and undo restore plan state
-atomically. Task completion, dropping, waiting, recurrence rollover, and
-stale-day expiry update sessions deterministically. One durable nudge may fire
-at an adopted session's start; replies remain anchored to the task and retries
-cannot duplicate delivery.
+- work hours and work days;
+- protected breaks and transition time;
+- opaque Calendar busy periods;
+- stated times, estimates, deadlines, dependencies, and earliest starts;
+- preferred windows, energy, splitting, and explicit time budgets.
 
-Search is semantic across task wording, the original capture, notes, and project
-tags, with literal search as the failure fallback.
+The result lists scheduled blocks, conflicts, deferred work, deadline risk, and
+visible default estimates. Calendar titles stay inside the EventKit bridge.
+Without Calendar access, planning uses work hours and breaks.
 
-## Dates, priorities, tags, settings
+`Use this plan` adopts the proposal as local sessions. A later proposal needs
+`replace my plan with this` to replace active sessions. `/plan`, `cancel my
+plan`, and `/undo` inspect or change that state. Plan adoption never changes task
+dates or writes Calendar events.
 
-Dates can be vague: "this weekend", "next week", "end of the month", "in a couple
-days" all resolve to concrete days (the core owns the math, never the model). A
-task can carry a priority ("call the plumber, it's urgent", "the audit can wait")
-that floats it up or down the digest, and a project tag ("for the wedding: book
-the caterer, order flowers") you can later query ("what's left for the wedding").
-You can change settings by chat too ("send the morning digest at 6:30", "plan
-work from 9 to 5", "plan flexible work weekdays", "protect lunch noon to 1").
+Plan order remains available for follow-ups such as `start the second one`.
+Starting focuses the task and leaves its completion state open. Session-start
+nudges use durable, deduplicated delivery.
 
-The weekly outlook applies the same deterministic planning rules across up to
-seven days. It counts each task's effort once, reserves adopted sessions and
-opaque Calendar busy periods, simulates prerequisites only on later forecast
-days, and reports deadline risk, leftovers, conflicts, and default-estimate
-assumptions. It is a load test, not a schedule: it changes no tasks, plans,
-reminders, or Calendar data.
+## Capacity, explanations, and what-ifs
 
-Each day plan or weekly outlook saves one bounded explanation snapshot for 24
-hours. Ask naturally why a task did not fit, which assumptions were used, or
-what would need to change. The model selects relevant fact and suggestion ids;
-Hob renders only deterministic text tied to the saved result, ignores invented
-ids, and falls back to the same grounded facts if the explanation call fails.
+Ask `am I overloaded this week?` or `can I finish by Friday?` for a seven-day
+capacity outlook. Hob carries remaining effort across days, reserves adopted
+sessions and Calendar busy time, and reports leftovers, risks, conflicts, and
+assumptions.
 
-A follow-up what-if reruns the same deterministic engine. Temporary inputs may
-change available minutes, energy, earliest/latest availability, working bounds,
-one task's duration, or its split permission. The result is labeled
-`what-if plan` or `what-if week outlook`. It does not edit the task estimate,
-planning profile, Calendar, or adopted plan. A day what-if is still only a
-proposal and requires explicit adoption. A separate semantic guard distinguishes
-counterfactual questions from durable corrections and fails closed if that
-guard is unavailable.
+Plan and outlook facts remain available for 24 hours. Follow with:
 
-## Commands and queries
+```text
+Why didn't the audit fit?
+What assumptions did you use?
+What would need to change?
+What if it took 30 minutes and I worked until 7?
+```
 
-- `/today` lists only today's on-deck items.
-- `/list` lists every open item, including future and waiting tasks.
-- `/settings` shows timezone, digest/recap times, planning profile, Calendar,
-  and setup progress.
-- `/setup` starts or resumes the guided planning-profile setup.
-- `/plan` shows the explicitly adopted plan and its next session.
-- `/outlook` or `/capacity` shows the read-only seven-day capacity outlook.
-- `/undo` reverts your last change (one inbound message is one undoable batch;
-  repeat to walk further back).
-- `/help` shows a one-liner.
+What-if inputs apply to a temporary copy. They may change available time,
+energy, work bounds, one estimate, or split permission. Saved tasks, settings,
+Calendar data, and adopted plans stay unchanged until an explicit edit or
+adoption.
 
-Everything else is just plain language. You can ask ("what's on today", "what's
-overdue", "am I overloaded this week", "what will not fit by Friday", "anything
-about the audit", "what did I finish today", "why didn't that fit?", "what if
-the audit only took 30 minutes?"), move many at once ("push
-everything to tomorrow"), and undo
-conversationally ("scratch that") as well as with `/undo`.
+## Search and queries
 
-## Ownership and portability
+Semantic search covers labels, original captures, notes, and project tags. Hob
+validates every returned task ID and falls back to literal search when needed.
 
-Ownership is established locally with `scripts/hobctl pair ID`, or explicitly
-with `HOB_ALLOWED_TELEGRAM_USER_ID`; first contact cannot claim Hob. Every
-interactive update—including captions, reactions, and buttons—must come from
-that owner in the same private chat. Other users and group chats are silently
-dropped before message content reaches durable storage. Completed delivery
-metadata and reply anchors are retained for 30 days and capped at 1,000 rows per
-queue, while pending work is never pruned.
-`python app.py backup` creates a consistent SQLite backup; `python app.py export`
-writes portable JSON containing tasks, history, digests, and settings. If a
-legacy checkout database and the app-data database both exist, daemon startup,
-status, and recovery commands refuse to guess until `HOB_DB_PATH` explicitly
-selects one. A token-scoped local lease also prevents separate databases from
-running the same Telegram bot concurrently.
+Common queries include today's work, overdue work, waiting tasks, completed
+work, project status, plan status, and weekly capacity.
 
-The Telegram token can live in macOS Keychain (`python app.py token set`) rather
-than plaintext deployment configuration. `python app.py status` reports local
-database, queue, pairing, digest, and model health without exposing task text or
-secrets. It also reports aggregate plan-run and session states, the latest
-adoption timestamp, and plan-nudge delivery counts, so activation can be
-verified without printing task labels, constraints, or message bodies. Verified
-`restore` and `import` commands safety-backup current data
-before an atomic replacement.
+## Commands
 
-On macOS, the Open Local installer adds a native menu-bar teapot. It distinguishes
-running from healthy, can turn the fixed Hob service on or restart it, runs the
-same privacy-safe aggregate health check, and opens logs without requiring a
-service label or database path. It returns at login. `scripts/hobctl` mirrors
-those operations for keyboard-only and remote sessions.
+- `/today`: today's on-deck tasks
+- `/list`: every open task
+- `/settings`: schedule, planning profile, Calendar, and setup
+- `/setup`: guided setup
+- `/plan`: adopted plan and next session
+- `/outlook` or `/capacity`: seven-day capacity
+- `/undo`: latest change
+- `/help`: command summary
 
-Every Telegram update is durable before its polling offset advances. One user
-turn (including mutations, settings, undo history, clarification state, and its
-reply) commits atomically. Temporary model failures retry the original inbox row;
-delivery failures retry a deduplicated outbox without applying the task twice.
+## Ownership, privacy, and recovery
 
-## Scheduling constraints
+Pairing occurs locally with `scripts/hobctl pair ID` or through an explicit
+`HOB_ALLOWED_TELEGRAM_USER_ID`. Messages, captions, reactions, and buttons must
+come from that owner in the paired private chat. Other content is discarded
+before storage.
 
-`due_date` is Hob's do/scheduled date; a hard deadline is separate. Captures and
-existing tasks can carry duration plus estimate confidence, fixed/flexible
-status, whether work may split, an earliest start, a preferred part of day or
-clock window, a parent task, dependency ids, and several reminder offsets. Hob
-rejects impossible date combinations and dependency cycles. Undo and portable
-export/import preserve every constraint.
+The Telegram token can live in macOS Keychain. `status` reports health and
+aggregate queue/plan state without task text or secrets. Backup, export,
+restore, and import preserve task, history, setting, proposal, and session data.
 
-Structured recurrence stores frequency, interval, weekdays or month date,
-fixed versus completion-relative anchoring, the original cadence anchor, end
-date/count, completed count, and exception dates. Moving the current occurrence
-does not rewrite the fixed cadence. Skipping, stopping, or changing the series
-is an explicit operation.
+Authorized updates enter a durable inbox before Telegram's polling offset moves.
+Each turn commits its state and reply atomically. Failed model calls retry the
+same inbox row; failed sends retry a deduplicated outbox. Completed delivery
+metadata is retained for 30 days and capped at 1,000 rows per queue. Pending
+work is exempt.
+
+The Open Local installer adds a menu-bar teapot for status, start, restart,
+health, logs, and data access. `scripts/hobctl` provides the same service
+controls in Terminal.

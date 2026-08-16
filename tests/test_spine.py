@@ -1123,6 +1123,25 @@ def test_default_effort_and_buffer_are_visible_and_undoable_together():
     assert store.get_meta("transition_buffer") is None
 
 
+def test_digest_pinning_is_chat_configurable_visible_and_undoable():
+    llm = FakeLlm({"actions": [{
+        "type": "setting",
+        "key": "pin_digest",
+        "raw": "pin my morning digest",
+        "enabled": True,
+    }]})
+    store = SqliteStore(":memory:")
+    clock = FakeClock(datetime(2026, 6, 29, 9, 0, tzinfo=TZ))
+    svc = MessageService(store, clock, llm, "America/New_York")
+
+    assert "pin each morning digest" in svc.handle(msg("pin my morning digest"))
+    assert store.get_meta("pin_digest") == "true"
+    assert "pin morning digest: on" in svc.handle(msg("/settings", message_id=2))
+    assert "1 change" in svc.handle(msg("/undo", message_id=3))
+    assert store.get_meta("pin_digest") is None
+    assert "pin morning digest: off" in svc.handle(msg("/settings", message_id=4))
+
+
 def test_fresh_start_runs_resumable_guided_setup_to_completion():
     from app import (
         INSTALL_VERSION_KEY,

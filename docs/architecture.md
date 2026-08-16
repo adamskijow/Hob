@@ -1,180 +1,121 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Architecture
 
-Pure core, adapters at the edges. All logic lives in `core/` with zero I/O: no
-network, no `sqlite3`, no Telegram library, no wall-clock reads. The LLM call,
-the clock, and the store are injected as protocols (`core/ports.py`). This makes
-the core fully unit-testable headless with a fake clock, an in-memory store, and
-a fake LLM that returns canned JSON, and it makes the design portable: the
-capture channel and the storage are swappable without touching the logic.
+Hob separates pure task logic from I/O.
 
-```
-core/         pure, zero I/O, fully tested, time injected
-  models.py       Item, Action variants, Digest, etc.
-  ports.py        Protocols: Store, Llm, Clock
-  interpreter.py  builds the prompt; parses + validates JSON into Actions
-  dates.py        typed date-intent resolution and calendar arithmetic
-  planner.py      Actions + context -> concrete mutations (no I/O)
-  digest.py       owed-decision, digest selection + rollover, rendering
-  feasibility.py  deterministic time-grid planning and plan diffs
-  recurrence.py   recurring-rule parsing + next-occurrence math
-  undo.py         action-log replay / revert (operates on snapshots)
-adapters/     all I/O lives here
-  store_sqlite.py SQLite Store, transactions, durable inbox/outbox
-  data_files.py   verified backup restore and JSON import
-  keychain.py     macOS Keychain credential storage
-  llm_ollama.py   Ollama structured-output client
-  telegram_bot.py long-poll loop, durable ingestion and delivery
-  clock.py        real clock
-  scheduler.py    morning-digest timer + catch-up-on-wake
-  calendar_eventkit.py read-only subprocess edge for opaque busy times
-native/
-  HobCalendarBridge/ signed Swift EventKit bridge; no event writes or titles
-app.py        composition root: wire adapters into core, run the daemon
-config.py     env config + validation
+```text
+core/         models, interpretation, dates, planning, recurrence, undo
+adapters/     SQLite, Ollama, Telegram, Keychain, clock, scheduler, EventKit
+native/       Calendar bridge, menu-bar apps, App Store foundation
+app.py        composition root and service orchestration
+config.py     environment parsing and validation
 ```
 
-Two correctness rules the core never breaks:
+`core/` has no network, database, Telegram, or wall-clock access. Protocols in
+`core/ports.py` inject the model, clock, and store. Tests replace them with
+fakes.
 
-- **The model never does date math.** It classifies a date phrase into a typed
-  intent ("next friday" becomes weekday/next/fri); the core (`dates.py`) does
-  the calendar arithmetic, exactly and testably. Meaning stays model-owned:
-  deterministic code does not replace a typed date, deadline, recurrence,
-  completion scope, or planning constraint by scanning the original prose.
-  On typed ambiguity ("thursday or friday") Hob asks rather than guesses.
-- **Fuzzy language never silently mutates state.** An unresolved reference or a
-  low-confidence guess produces a clarifying question, not an edit, and Hob
-  remembers that question so your next message can answer it. Sweeping deletes
-  and implausibly far dates are held for a yes/no. The action log plus `/undo`
-  backs everything that does get applied.
+## Interpretation boundary
 
-## Caveat: not fully local
+Free-form language belongs to the model. It emits typed actions and typed date
+intent. The core then:
 
-The model and the store run locally, but Telegram messages transit Telegram's
-servers, so this is not an end-to-end local pipeline. The capture channel is the
-swappable part: anyone who needs fully local can replace the Telegram adapter
-(`adapters/telegram_bot.py`) without touching the core.
+- resolves calendar arithmetic;
+- validates task IDs, references, ordinals, and prompt context;
+- checks bounds, exclusions, dates, dependencies, and destructive scope;
+- requests clarification or confirmation when required;
+- commits one atomic change and records undo state.
 
-## Read-only intelligence
+Phrase lists and keyword routers cannot synthesize meaning from free text.
+Slash commands, callbacks, reactions, IDs, and ordinals are closed protocols
+and stay code-owned.
 
-Planning and semantic recall deliberately sit outside the mutation path. The
-feasibility core owns all time arithmetic: it subtracts opaque Calendar busy
-periods and protected breaks from working hours, locks stated times, validates
-dependencies and earliest starts, then packs flexible or explicitly splittable
-work. The model only explains the resulting timeline. It cannot change a time,
-create capacity, complete, move, or delete through this pass. The last proposal
-is stored as meta state so a replan can retain still-valid blocks and render a
-minimal diff.
+The model proposes; the core validates and commits.
 
-The planning profile is also meta state, but changes flow through typed Setting
-actions and the ordinary action log so `/undo`, backup, and export preserve the
-same contract as task edits. Feasibility receives validated default-duration and
-transition-buffer values plus explicit working days. Upgraded profiles with no
-working-day choice retain the old all-days behavior and label that assumption
-until the owner chooses. Generated plan order becomes typed conversational
-focus for 15 minutes; deterministic reference resolution uses that visible order
-for ordinal follow-ups. A `start` action changes focus only and states that the
-task was not completed.
+## Planning and analysis
 
-Adoption is separate from proposal. Schema 10 stores `plan_runs` and
-`plan_sessions`; every split block retains its task, time, segment, and state.
-Typed plan actions adopt, replace, or cancel only after explicit language and
-write an action-log state snapshot so undo and edited-message recovery remain
-atomic. Task lifecycle changes synchronize active sessions, while recurring
-completion closes only the occurrence-day session and preserves a future one.
-Adopted order becomes fallback conversational focus after the ordinary
-15-minute focus expires.
+The feasibility engine subtracts protected breaks and opaque Calendar busy
+periods from work hours, locks fixed commitments, validates dependencies and
+earliest starts, then places flexible or splittable work. The model explains the
+result from known facts and cannot alter its times or capacity.
 
-Session-start nudges use the durable outbox with a stable session key, but not
-the due-time reminder buttons. The sent message is anchored to its task after
-delivery, so a reply such as "done" stays deterministic without promising a
-snooze that an undated session cannot honor. Plan state is included in portable
-export/import and status without exposing task text.
+Planning preferences use typed setting actions, action logging, backup/export,
+and `/undo`. A plan proposal remains separate from adoption. Schema 11 stores
+plan runs and sessions, including split blocks, order, state, and supersession.
+Adopt, replace, and cancel actions require explicit intent.
 
-First-run onboarding is a small persisted state machine at the edge. Each step
-sets the normal pending Setting question, so model outages, invalid answers, and
-restarts retain the question without creating a parallel interpretation path.
-Natural keep-current and pause answers are typed model decisions bounded by the
-active setup stage.
+The weekly outlook composes up to seven daily feasibility passes in memory. It
+carries remaining effort and simulated prerequisites while reserving adopted
+sessions and Calendar busy time. Forecast allocations never enter task, plan,
+reminder, or Calendar state.
 
-Morning stale-task questions and risky confirmations follow the same split. A
-narrow semantic model pass reads the machine-owned question and the owner's
-ordinary wording; the planner accepts only the allowed decision for that exact
-prompt. It never infers a target from the wording. Bulk actions receive a
-focused model scope check, then deterministic code validates exclusions against
-known ids and the selected all/today/date/presented set. Exact slash commands,
-button callback payloads, reactions, ids, and ordinal positions remain closed
-protocols; free-form language has no pre-model command-phrase bypass.
+Plan and outlook results keep a bounded 24-hour fact snapshot. Explanation may
+select known fact and suggestion IDs. A what-if clones task state, applies
+temporary inputs, and reruns feasibility. Durable state changes only through a
+normal task edit, setting action, or plan adoption.
 
-The pure weekly forecast composes up to seven daily feasibility passes without
-a new database model. It carries remaining effort and simulated prerequisite
-state in memory, reserves adopted sessions and opaque Calendar periods, and
-returns typed days, risks, leftovers, and assumptions. The edge renders that
-result as a read-only capacity answer. No forecast allocation enters plan,
-task, action, reminder, or Calendar state. Named boundaries such as "by Friday"
-are resolved by the deterministic date core.
+Semantic search follows the same ID boundary: the model selects from known
+tasks, code validates every ID, and literal search handles failure.
 
-The latest day plan or outlook also becomes a versioned, 24-hour explanation
-snapshot in meta state. It contains deterministic facts, bounded suggestions,
-typed query inputs, and a compact item/result map. For a free-form explanation,
-the local model may select only known fact and suggestion ids; the edge renders
-the stored text and discards invented ids. Model failure falls back to relevant
-stored facts, so explanation never becomes an ungrounded prose path.
+## Conversation context
 
-A typed `what_if` query clones current open tasks in memory, applies bounded
-temporary duration/split/availability inputs, and reruns feasibility. The clone
-may produce a new explicit proposal but cannot write task metadata or profile
-settings. An independent semantic guard audits any mutation-shaped response
-while an analysis is conversationally active, distinguishing counterfactuals
-from durable corrections. Unavailable or uncertain guard output fails closed.
-A real mutation invalidates the old snapshot before any same-turn replan writes
-a fresh one.
+Hob stores small, typed contexts for:
 
-The Swift EventKit bridge is a signed background app because Calendar permission
-belongs to a stable macOS bundle identity. Apple exposes reads through a full-
-access permission tier, but the bridge implements only status, permission, and
-event-query commands. It emits only start, end, and all-day state; titles,
-calendar names, and event identifiers never cross the adapter boundary. Denial, a missing
-bridge, or a non-macOS development host degrades to working-hours-only planning.
+- clarification and confirmation;
+- recent task focus;
+- digest and recap lists;
+- stale-task and waiting prompts;
+- setup questions;
+- plan order and explanation facts.
 
-Semantic search still asks the model for known ids, validates every id against
-the current store, and falls back deterministically on malformed output or an
-outage. Requested changes use the interpreter, planner, action log, and undo
-path above.
+Each context carries provenance, age, and allowed effects. Newer work can
+supersede stale prompts. Free text still passes through the model before code
+applies a contextual choice.
+
+## Calendar boundary
+
+The signed Swift EventKit bridge owns Calendar permission. It exposes status,
+authorization, and event queries. Results contain start, end, and all-day state.
+Titles, calendar names, and event IDs stay inside the bridge. Denial, timeout,
+missing bridge, and non-macOS development hosts fall back to work hours and
+breaks.
 
 ## Transaction and delivery boundary
 
-Interactive updates first cross a common owner/private-chat authorization gate.
-Unauthorized and Telegram-generated service updates advance the polling offset
-without retaining their content. Authorized updates become normalized rows in
-`inbox`; only after that commit does Hob advance the offset. Processing a row
-nests the entire message service inside one SQLite transaction. Item mutations,
-setting changes, the action log, pending clarification/confirmation, focus, and
-the reply's `outbox` row therefore commit or roll back together. Completed
-delivery rows and reply anchors are age- and count-bounded; pending work is never
-pruned.
+All Telegram updates cross one private-owner authorization gate. Authorized
+content enters `inbox` before the polling offset advances. Unauthorized and
+Telegram service updates advance the offset without content retention.
 
-Outbox delivery happens after commit. A failed send remains pending and is
-retried in order. Stable keys deduplicate digests, recaps, reminders, and
-message replies. Like every system built on a remote API without an idempotency
-key, there is one unavoidable at-least-once edge: a process killed after
-Telegram accepts a send but before Hob records Telegram's response can produce
-a duplicate message. It cannot duplicate the underlying task mutation.
+Processing one inbox row wraps task mutations, settings, action log,
+conversation context, and reply outbox in one SQLite transaction. A failure
+rolls back the whole turn. Outbox delivery runs after commit and retries in
+order. Stable keys deduplicate replies, digests, recaps, reminders, and session
+nudges.
 
-A process-lifetime advisory lease prevents two Hob daemons from opening the
-same data path and makes restore/import refuse to replace a database while its
-daemon is live. Backup and export remain safe against a running database.
+Telegram has no idempotency key. A process killed after Telegram accepts a send
+but before Hob records the response may send that message twice. The task
+mutation still applies once.
+
+Completed inbox, outbox, and reply-reference history is retained for 30 days
+and capped at 1,000 rows per table. Pending work is exempt. Reply anchors use
+`(chat_id, message_id)`.
+
+A process lease blocks duplicate daemons on one database and blocks live
+restore/import. Backup and export remain safe while Hob runs.
 
 ## Temporal model
 
-Schema 9 retains `due_date` as the backward-compatible scheduled/do date and
-adds a distinct hard deadline, duration and confidence, flexibility, splitting,
-earliest start, preferred window, hierarchy, dependencies, and reminder-offset
-state. The planner resolves literal dates and validates references; the store
-persists flat scalar columns plus JSON lists.
+`due_date` is the scheduled work date. A hard deadline is separate. Tasks can
+also store duration and confidence, fixed/flexible state, split permission,
+earliest start, preferred window, parent, dependencies, and reminder offsets.
 
-The model still emits a compact recurrence shorthand at the edge, but the core
-immediately converts it to a `RecurrenceRule`. Occurrence arithmetic uses that
-structured rule, including a stable anchor date, end conditions, completion
-count, and exceptions. This prevents a one-off move from silently changing a
-fixed series.
+Recurrence becomes a structured `RecurrenceRule` with frequency, interval,
+weekdays or month date, cadence anchor, completion-relative option, end date or
+count, and exception dates. Moving one fixed occurrence preserves the series
+anchor.
+
+## Privacy boundary
+
+Ollama and task storage are local by default. Telegram messages transit
+Telegram. Remote Ollama requires explicit HTTPS consent. The Telegram adapter
+is replaceable without changing the core.

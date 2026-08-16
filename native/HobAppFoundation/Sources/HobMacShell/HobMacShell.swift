@@ -6,6 +6,9 @@ import HobAppCore
 #if canImport(HobAppStorage)
 import HobAppStorage
 #endif
+#if canImport(HobAppExperience)
+import HobAppExperience
+#endif
 import SwiftUI
 
 @main
@@ -23,11 +26,18 @@ struct HobMacShell: App {
             modelAvailable: foundationModel.state.isReady,
             storageAvailable: [.new, .ready].contains(
                 taskStorage.inspection.condition
-            )
+            ),
+            requiresOwnerPairing: false,
+            requiresBackgroundService: false
         )
     }
 
     var body: some Scene {
+        Window("Hob", id: "workspace") {
+            HobWorkspaceView()
+        }
+        .defaultSize(width: 820, height: 760)
+
         Window("Hob Setup", id: "setup") {
             SetupHomeView(
                 readiness: readiness,
@@ -38,8 +48,12 @@ struct HobMacShell: App {
         }
         .defaultSize(width: 680, height: 560)
 
-        MenuBarExtra("Hob", systemImage: "sparkles") {
+        MenuBarExtra {
             HobMenu(readiness: readiness)
+        } label: {
+            HobTeapotIcon(filled: readiness.canRun)
+                .frame(width: 18, height: 15)
+                .accessibilityLabel("Hob")
         }
 
         Settings {
@@ -78,7 +92,7 @@ private struct HobMenu: View {
             Divider()
             Button("Open Hob") {
                 NSApplication.shared.activate()
-                openWindow(id: "setup")
+                openWindow(id: "workspace")
             }
             SettingsLink {
                 Text("Open Settings")
@@ -101,9 +115,9 @@ private struct SetupHomeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("A realistic day, renegotiated in chat")
+                    Text("Hob")
                         .font(.largeTitle.bold())
-                    Text("Set up Hob without Terminal. Nothing runs in the background until you approve it.")
+                    Text("Plan locally with Apple Intelligence and Calendar.")
                         .foregroundStyle(.secondary)
                 }
                 if readiness.canRun {
@@ -340,7 +354,7 @@ private struct OnboardingContent: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             LabeledContent("Model", value: "Apple on-device")
-            LabeledContent("Task storage", value: "This Mac")
+            LabeledContent("Task storage", value: "Private app storage")
             LabeledContent("Storage health", value: "Visible in Storage settings")
             LabeledContent("Calendar", value: "Busy times only")
             Divider()
@@ -357,10 +371,10 @@ private struct PrivacyView: View {
     var body: some View {
         Form {
             Section("What stays local") {
-                Text("Tasks, plans, model prompts, and Calendar busy-time calculations stay on this Mac.")
+                Text("Tasks, plans, model prompts, and Calendar busy-time calculations stay on this device.")
             }
-            Section("What leaves this Mac") {
-                Text("Messages sent through Telegram transit Telegram's service. Hob never sends Calendar titles to Telegram or the model.")
+            Section("Current native increment") {
+                Text("This build uses Apple's on-device model and local task storage. Device sync and Calendar writing arrive in later audited increments.")
             }
         }
         .formStyle(.grouped)

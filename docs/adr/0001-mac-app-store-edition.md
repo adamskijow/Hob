@@ -1,112 +1,62 @@
 <!-- SPDX-License-Identifier: MIT -->
-# ADR 0001: one Hob core, two macOS editions
+# ADR 0001: one behavior, two macOS editions
 
-Status: accepted for implementation, 2026-07-11.
+Status: superseded by [ADR 0003](0003-universal-apple-app.md), 2026-08-16.
 
 ## Decision
 
-Hob will support two macOS distribution editions with the same behavior and
-portable data contract:
+Hob supports two macOS editions with shared behavior and portable data:
 
-1. **Open Local edition.** The current source distribution uses Ollama, Hearth,
-   Telegram, SQLite, a signed EventKit bridge, and a user LaunchAgent. It remains
-   the configurable edition for owners who choose their own local model.
-2. **Mac App Store edition.** An Xcode-owned, sandboxed application bundle uses
-   Apple's on-device Foundation Models, a consented bundled background helper,
-   container or App Group storage, EventKit, and the existing Telegram service.
-   It never installs or depends on Homebrew, uv, Ollama, Hearth, or code outside
-   its signed bundle.
+1. **Open Local:** Python, Ollama, Hearth, Telegram, SQLite, EventKit bridge,
+   and user LaunchAgents.
+2. **Mac App Store:** sandboxed Xcode bundle, Apple Foundation Models, bundled
+   login helper, App Group storage, EventKit, and Telegram.
 
-The Python `core/` behavior remains the reference implementation. The App Store
-bundle may embed a pinned Python runtime and dependencies if submission
-rehearsals prove that path reviewable, self-contained, sandbox-correct, and
-maintainable. If they do not, deterministic core behavior will move behind a
-portable native library rather than being independently reimplemented. Golden
-fixtures must make divergence between editions a release-blocking failure.
+Python `core/` is the reference implementation. Privacy-safe fixtures execute
+against Python and Swift and block release on divergence. Native migration uses
+small vertical behavior slices.
 
-Native migration proceeds by vertical behavior slices, not a second unchecked
-rewrite. Each slice begins with synthetic, privacy-safe golden turns executed
-through the Python reference and Swift core. A versioned runtime request keeps
-the original message beside typed model actions for audit and value grounding;
-free-form meaning remains model-owned in both editions. Unsupported actions,
-protocol versions, oversized input,
-ambiguous dates, missing targets, and low-confidence mutations fail closed.
-Store task and undo state is a versioned, bounded document in the App Group.
-Each candidate turn is applied to a copy, atomically persisted with a verified
-previous-state recovery copy, and only then becomes the live runtime state.
-Corrupt, oversized, future-version, duplicate-id, invalid-date, and redirected
-paths fail closed. The Store helper cannot be activated until the complete
-release corpus and durable inbox/outbox edges replace the initial behavior
-slice.
+The Store runtime carries the original message beside typed model actions. Code
+resolves dates, validates targets and confidence, applies changes atomically,
+and records undo. Invalid protocols, input bounds, dates, targets, state, or
+storage paths reject the turn.
 
-The first native package in `native/HobAppFoundation` establishes three seams:
+Store state uses a bounded, versioned App Group document with atomic writes and
+a verified previous copy. Background activation waits for the complete behavior
+corpus and durable delivery pipeline.
 
-- a small SwiftUI menu-bar and settings surface for setup, privacy, and health;
-- typed readiness rules that never call an edition ready while model, owner, or
-  background-service consent is missing;
-- a bounded JSON bridge to Apple Foundation Models so existing validated Hob
-  prompts can be evaluated without giving the model mutation authority.
+## Store boundaries
 
-The bridge returns model text only. Existing schema validation, deterministic
-date math, planning, confirmation, action-log, and undo rules remain the trust
-boundary. Foundation Models is an interpreter adapter, not a scheduler.
+- Main app and helpers ship sandboxed and signed together.
+- Background operation uses `SMAppService` after explicit consent and can be
+  disabled in Hob.
+- `HobAgent.app` lives in `Contents/Library/LoginItems`.
+- App and agent share `group.com.josephadamski.hob` only.
+- The app opens outbound connections and exposes no local server.
+- EventKit output contains opaque busy ranges without titles.
+- Import and export use user-selected security-scoped URLs.
+- Every executable dependency ships inside the bundle.
+- Model readiness requires Apple Intelligence eligibility and a successful
+  bounded generation probe.
+- The Foundation Models tool carries sandbox inheritance entitlements, a stable
+  identifier, bounded I/O, a correlation ID, and a 30-second deadline.
+- Onboarding and Store privacy details disclose Telegram transit.
 
-## Why
+## Implementation choice
 
-A wrapper around the released daemon would retain the hardest setup work and
-would not satisfy the App Store's self-contained or sandbox expectations. A
-full independent Swift rewrite would create two correctness implementations for
-dates, recurrence, undo, planning, and recovery. The chosen path builds a native
-product and distribution boundary while preserving one behavioral authority.
+A daemon wrapper would retain Terminal-era setup and conflict with sandbox
+distribution. A separate Swift rewrite would duplicate date, recurrence,
+planning, recovery, and undo logic. Shared fixtures and incremental native
+slices preserve one behavior authority.
 
-## Non-negotiable App Store boundaries
+## Release policy
 
-- The main app and every executable helper are sandboxed and signed together.
-- Background operation is registered with `SMAppService` only after a clear
-  owner action, remains visible in the UI, and can be disabled there.
-- The Store app embeds a GUI-less login-item helper at
-  `Contents/Library/LoginItems/HobAgent.app`. Main app and helper share only the
-  registered App Group `group.com.josephadamski.hob`; absence of that container
-  is a hard readiness failure rather than permission to use another path.
-- The app opens outbound connections only; it never exposes a local server.
-- Calendar access uses EventKit with an honest full-access explanation because
-  Apple offers no read-only authorization tier. Hob still emits only opaque busy
-  ranges to its planner and never event titles.
-- Tasks and plans live in the container or App Group. Import and export outside
-  it use user-selected security-scoped URLs.
-- The Store bundle contains every executable dependency. It never downloads or
-  launches Ollama, Python packages, installers, or feature code.
-- Apple Intelligence availability is checked before setup promises completion.
-  A harmless generation probe must also pass because the framework's reported
-  availability can precede required model-service assets. Unsupported hardware,
-  disabled Apple Intelligence, and unavailable assets get an actionable state,
-  not a broken chat loop.
-- The Foundation Models adapter is an embedded command tool inside the login
-  item. It carries only `app-sandbox` and `inherit`, disables injected base
-  entitlements, uses a stable signing identifier, and is launched by the
-  sandboxed app. Its readiness request has a generated correlation id, bounded
-  input and output, and a 30-second deadline. Only a completed generation may
-  satisfy model readiness.
-- Telegram transit is disclosed during onboarding and in Store privacy details.
-  “Local” never implies that Telegram messages remain on the Mac.
-
-## Release and parity policy
-
-The Open Local edition can reach 1.0 before App Store review, but the Store
-edition cannot use the 1.0 version until it passes the same behavioral corpus,
-onboarding and accessibility journeys, data migration/export compatibility,
-background delivery rehearsal, sandbox audit, privacy disclosure review, and
-App Review submission build. A missing Store feature must be labeled as such;
-the editions may not quietly disagree about task or plan semantics.
+Open Local may reach 1.0 before Store review. The Store edition earns the same
+version after behavior parity, onboarding, accessibility, migration/export,
+background delivery, sandbox, privacy, archive, and App Review gates pass.
 
 ## Rejected alternatives
 
-- **Require an existing Ollama install.** This violates the one-click product
-  goal and is in direct tension with the Store's self-contained requirement.
-- **Download Ollama after install.** The Store edition will not download or
-  install executable functionality.
-- **Cloud model by default.** This weakens Hob's privacy position and adds a
-  service dependency. It can be reconsidered only as an explicit separate
-  product decision.
-- **Immediate independent Swift rewrite.** It creates unacceptable semantic
-  drift before portable fixtures and parity gates exist.
+- Require or download Ollama for the Store edition.
+- Use a cloud model by default.
+- Rewrite the full core in Swift before parity fixtures exist.

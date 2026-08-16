@@ -168,6 +168,7 @@ RELEASE_NOTICE_KEY = "release_notice_version"
 FIRST_PLAN_ADOPTED_KEY = "first_plan_adopted_at"
 DIGEST_DECISION_KEY = "digest_decision"
 PINNED_KEY = "pinned_digest_mid"
+PIN_DIGEST_KEY = "pin_digest"
 ONBOARDING_STEPS = (
     "work_hours",
     "work_days",
@@ -1204,6 +1205,7 @@ class MessageService:
             "break_window": BREAKS_KEY,
             "default_duration": DEFAULT_DURATION_KEY,
             "transition_buffer": TRANSITION_BUFFER_KEY,
+            "pin_digest": PIN_DIGEST_KEY,
         }.get(s.key, s.key)
         before = self._store.get_meta(key)
         self._store.set_meta(key, s.value)
@@ -1238,6 +1240,12 @@ class MessageService:
             return f"ok, i will estimate unstated tasks at {s.value} minutes."
         if s.key == "transition_buffer":
             return f"ok, i will leave {s.value} minutes between commitments."
+        if s.key == "pin_digest":
+            return (
+                "ok, i will pin each morning digest."
+                if s.value == "true"
+                else "ok, morning digest pinning is off."
+            )
         return "ok"
 
     def _apply_plan_action(
@@ -3079,6 +3087,7 @@ class MessageService:
         transition_buffer = self._minutes_setting(
             TRANSITION_BUFFER_KEY, self._transition_buffer_minutes, 0, 120
         )
+        pin_digest = self._store.get_meta(PIN_DIGEST_KEY) == "true"
         setup_stage = self._store.get_meta(ONBOARDING_STAGE_KEY)
         if setup_stage in ONBOARDING_STEPS:
             setup = f"in progress ({setup_stage.replace('_', ' ')})"
@@ -3101,6 +3110,7 @@ class MessageService:
             f"settings:\ntimezone: {self._timezone}\n"
             f"morning digest: {wake}\n"
             f"evening recap: {eod if eod != '' else 'disabled'}\n"
+            f"pin morning digest: {'on' if pin_digest else 'off'}\n"
             f"planning hours: {work_hours}\n"
             f"planning days: {work_days}\n"
             f"protected breaks: {'none' if breaks == 'none' else breaks}\n"
@@ -3117,8 +3127,8 @@ class MessageService:
 class DigestService:
     """Builds the morning digest, sends it, and records what was presented so
     later references resolve. send is an async callable(chat_id, text); pin is
-    an optional async callable(chat_id, message_id, unpin_message_id) that pins
-    today's digest and unpins yesterday's.
+    an optional async callable(chat_id, message_id, unpin_message_id). Pinning
+    is an opt-in stored preference.
     """
 
     def __init__(self, store: Store, clock: Clock, send, pin=None) -> None:
@@ -3203,9 +3213,17 @@ class DigestService:
             if nudge is not None and isinstance(sent_id, int):
                 self._store.record_sent_ref(int(chat), sent_id, nudge.id)
         if self._pin is not None and isinstance(sent_id, int):
-            old = self._store.get_meta(PINNED_KEY)
-            await self._pin(int(chat), sent_id, int(old) if old else None)
-            self._store.set_meta(PINNED_KEY, str(sent_id))
+            old_raw = self._store.get_meta(PINNED_KEY)
+            try:
+                old = int(old_raw) if old_raw else None
+            except ValueError:
+                old = None
+            if self._store.get_meta(PIN_DIGEST_KEY) == "true":
+                await self._pin(int(chat), sent_id, old)
+                self._store.set_meta(PINNED_KEY, str(sent_id))
+            elif old is not None:
+                await self._pin(int(chat), None, old)
+                self._store.delete_meta(PINNED_KEY)
         return True
 
 

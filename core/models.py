@@ -286,6 +286,7 @@ class Setting:
     end_time: str | None = None
     days: list[str] = field(default_factory=list)
     minutes: int | None = None
+    enabled: bool | None = None
     clear: bool = False  # explicitly remove/reset the bounded setting
     confidence: float = 1.0
 

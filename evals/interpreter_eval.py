@@ -396,6 +396,16 @@ CASES = [
              ("transition_buffer", "10")
          ],
          "NL setting (transition buffer)"),
+    Case("stop pinning the morning digest",
+         lambda p: [(s.key, s.value) for s in p.settings] == [
+             ("pin_digest", "false")
+         ],
+         "NL setting (digest pinning off)"),
+    Case("pin my morning digest",
+         lambda p: [(s.key, s.value) for s in p.settings] == [
+             ("pin_digest", "true")
+         ],
+         "NL setting (digest pinning on)"),
     Case("tomorrow I need to look at the slides, prep my 1130 meeting, and join the 2 o clock call",
          lambda p: kinds(p) == ["capture", "capture", "capture"]
          and all(m.due_date == "2026-06-30" for m in p.mutations),

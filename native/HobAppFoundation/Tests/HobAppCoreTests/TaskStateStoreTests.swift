@@ -124,7 +124,7 @@ import Testing
         withIntermediateDirectories: true
     )
     let store = TaskStateStore(directoryURL: directory)
-    let future = RuntimePersistentState(version: 3, tasks: [], undoSnapshots: [])
+    let future = RuntimePersistentState(version: 6, tasks: [], undoSnapshots: [])
     try JSONEncoder().encode(future).write(to: store.stateURL)
     #expect(throws: TaskStateStoreError.unsupportedVersion) {
         try store.load()
@@ -335,6 +335,94 @@ import Testing
     #expect(migrated.inbox.isEmpty)
     #expect(migrated.outbox.isEmpty)
     #expect(migrated.nextSequence == 1)
+}
+
+@Test func proposedAndAdoptedSchedulesSurviveRestart() async throws {
+    let directory = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = TaskStateStore(directoryURL: directory)
+    let runtime = try DurableTaskRuntime(store: store)
+    let timestamp = "2026-06-29T08:00:00-04:00"
+    let turn = request(
+        id: "schedule-capture",
+        message: "finish taxes by Friday in 90 minutes",
+        actions: [RuntimeAction(
+            type: "capture",
+            task: "finish taxes",
+            raw: "finish taxes by Friday in 90 minutes",
+            deadline: RuntimeDateIntent(kind: "weekday", which: "this", day: "fri"),
+            durationMinutes: 90,
+            priority: "high"
+        )]
+    )
+    _ = try await runtime.process(turn)
+    let proposal = try await runtime.proposeSchedule(RuntimeScheduleRequest(
+        proposalID: "durable-proposal",
+        generatedAt: timestamp,
+        startDate: "2026-06-29",
+        timezone: "America/New_York"
+    ))
+    #expect(proposal.blocks.count == 1)
+
+    let afterProposalRestart = try DurableTaskRuntime(store: store)
+    #expect(await afterProposalRestart.snapshot().latestProposal?.id == "durable-proposal")
+    _ = try await afterProposalRestart.adoptSchedule(
+        proposalID: "durable-proposal",
+        at: "2026-06-29T08:01:00-04:00"
+    )
+
+    let afterAdoptionRestart = try DurableTaskRuntime(store: store)
+    #expect(await afterAdoptionRestart.snapshot().adoptedSchedule?.proposal.id == "durable-proposal")
+    try await afterAdoptionRestart.cancelAdoptedSchedule()
+    #expect(await afterAdoptionRestart.snapshot().adoptedSchedule == nil)
+}
+
+@Test func taskMutationInvalidatesAProposalBeforeAdoption() async throws {
+    let directory = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let runtime = try DurableTaskRuntime(
+        store: TaskStateStore(directoryURL: directory)
+    )
+    _ = try await runtime.process(request(
+        id: "first-task",
+        message: "first",
+        actions: [RuntimeAction(type: "capture", task: "first", raw: "first")]
+    ))
+    _ = try await runtime.proposeSchedule(RuntimeScheduleRequest(
+        proposalID: "stale",
+        generatedAt: "2026-06-29T08:00:00-04:00",
+        startDate: "2026-06-29",
+        timezone: "America/New_York"
+    ))
+    _ = try await runtime.adoptSchedule(
+        proposalID: "stale",
+        at: "2026-06-29T08:01:00-04:00",
+        calendarEventIDs: ["event-for-first-task"]
+    )
+    _ = try await runtime.process(request(
+        id: "second-task",
+        message: "second",
+        actions: [RuntimeAction(type: "capture", task: "second", raw: "second")]
+    ))
+
+    await #expect(throws: RuntimeScheduleError.calendarCleanupPending) {
+        _ = try await runtime.adoptSchedule(
+            proposalID: "stale",
+            at: "2026-06-29T08:02:00-04:00"
+        )
+    }
+    #expect(await runtime.snapshot().adoptedSchedule == nil)
+    #expect(await runtime.snapshot().calendarCleanupEventIDs == ["event-for-first-task"])
+    try await runtime.acknowledgeCalendarCleanup(
+        eventIDs: ["event-for-first-task"]
+    )
+    #expect(await runtime.snapshot().calendarCleanupEventIDs.isEmpty)
+    await #expect(throws: RuntimeScheduleError.noProposal) {
+        _ = try await runtime.adoptSchedule(
+            proposalID: "stale",
+            at: "2026-06-29T08:03:00-04:00"
+        )
+    }
 }
 
 @Test func storageInspectionIsActionableAndStatusContainsNoUserContent() async throws {

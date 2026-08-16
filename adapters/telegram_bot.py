@@ -698,18 +698,23 @@ class TelegramAdapter:
             log.exception("could not set bot profile photo")
             return False
 
-    async def pin(self, chat_id: int, message_id: int, unpin_message_id: int | None) -> None:
-        """Pin today's digest (quietly) and unpin yesterday's. Pin failures are
-        cosmetic: log and move on, never break the digest."""
+    async def pin(
+        self,
+        chat_id: int,
+        message_id: int | None,
+        unpin_message_id: int | None,
+    ) -> None:
+        """Update the digest pin. A missing message id only removes the old pin."""
         bot = self._ensure_bot()
         try:
             if unpin_message_id is not None:
                 await bot.unpin_chat_message(chat_id=chat_id, message_id=unpin_message_id)
         except Exception:
             log.info("unpin failed (already unpinned?); continuing")
-        try:
-            await bot.pin_chat_message(
-                chat_id=chat_id, message_id=message_id, disable_notification=True
-            )
-        except Exception:
-            log.exception("pin failed; digest sent unpinned")
+        if message_id is not None:
+            try:
+                await bot.pin_chat_message(
+                    chat_id=chat_id, message_id=message_id, disable_notification=True
+                )
+            except Exception:
+                log.exception("pin failed; digest sent unpinned")

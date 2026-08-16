@@ -1,266 +1,112 @@
 <!-- SPDX-License-Identifier: MIT -->
-# Hob handoff
+# Handoff
 
-Picking up development? Read [CLAUDE.md](CLAUDE.md) first (conventions, the
-model-proposes/core-disposes doctrine, the dev loop, and ops), then
-[docs/architecture.md](docs/architecture.md). This file is just the current-state
-snapshot.
+## Current state
 
-## Where it stands
+- Release: `v0.9.13`
+- Runtime schema: 11
+- Python suite: 474 tests at release
+- Native suites: 40 tests at release
+- Real-model gate: 113 interpreter cases plus the analysis gate on
+  `qwen2.5:14b-instruct`
+- Platforms: released Open Local macOS edition; App Store edition in development
 
-- **Live and in daily use.** Runs as a `launchd` daemon on macOS, with
-  [Hearth](https://github.com/adamskijow/Hearth) keeping Ollama alive. Model:
-  `qwen2.5:14b-instruct` (7b works; 14b is more reliable on dense messages).
-- **Release target:** v0.9.12. v0.9 adds a deterministic weekly capacity outlook,
-  explicit working days, plan-aware EOD, first-adoption coaching, accessible
-  media fallback, privacy-safe activation metrics, and correct silent handling
-  of Telegram-generated service events, and guarded shared-tense completion
-  reports, plain-message digest decisions, safe numbered exclusions, and
-  token-wide Telegram singleton ownership, contextual model-owned language
-  throughout the free-text surface, grounded why/what-if negotiation over
-  deterministic plan/outlook results, a fail-closed semantic safety pass over
-  every evening-recap reply, and a native Open Local menu-bar recovery surface
-  with one-command durable installation. Schema remains 10.
-- **Green target:** `uv run pytest` (456 passing), 29 native App Store foundation
-  tests plus 11 Open Local service/health/branding tests, signed native bridge build, and the
-  real-model eval (`HOB_MODEL=qwen2.5:14b-instruct uv run python -m
-  evals.interpreter_eval`, 113/113), plus the end-to-end analysis eval. The release head must pass exact Ubuntu and
-  macOS CI before tagging.
-- **Live v0.9:** release commit `c656459` passed exact Ubuntu/macOS CI in run
-  `29165341007`, was tagged and published as v0.9.0, backed up, and deployed by
-  graceful launchd restart. Status is healthy on schema 10 with clean queues and
-  14B. The first real `/outlook` delivered without changing adopted-plan state.
-- **Historical v0.9.1 patch:** PR #7 fixed the live
-  screenshot case where an immediate “Nevermind I'm good” became chitchat and
-  left the unwanted capture scheduled. Only an exact standalone phrase plus a
-  mutation batch at most 15 minutes old could trigger undo. v0.9.8 supersedes
-  that phrase matcher with a typed semantic audit bounded by the recent action
-  log.
-- **Live v0.9.1 evidence:** release commit `9a7d253` passed Ubuntu and macOS CI
-  in run `29165983344`, including the EventKit bridge. The release was tagged,
-  backed up, and deployed by graceful restart. A phone replay captured a new
-  tomorrow task and immediately retracted it with “Nevermind I'm good”; Hob
-  reported one undone change, the item is absent from storage, and queues are
-  clean.
-- **v0.9.2 list-scope patch:** a live EOD reply exposed that “everything on
-  that list” could inherit the model's broad `all` scope and move unrelated
-  open tasks that were not displayed. Proactive EOD lists are now persisted for
-  24 hours, list-referential bulk turns are deterministically intersected with
-  those exact ids, and a missing or stale list asks instead of guessing. See
-  `docs/audits/v0.9.2.md`.
-- **v0.9.3 service-event patch:** daily use exposed an unsupported-media reply
-  immediately after Hob pinned the morning digest even though the owner sent
-  nothing. Telegram pin and other status updates are now durable silent no-ops;
-  actual uncaptioned owner media retains its text alternative. See
-  `docs/audits/v0.9.3.md`.
-- **Historical v0.9.4 shared-tense patch:** daily use exposed “I did A and hit B” being
-  split into one completion plus a false start because “hit” has the same
-  present and past form. A conservative deterministic core correction now
-  closes both tasks unless future, imperative, or partial-progress wording
-  changes the second clause. v0.9.8 replaces that raw-language repair with typed
-  model output. See `docs/audits/v0.9.4.md`.
-- **Historical v0.9.5 digest-decision patch:** daily use exposed that the digest advertised
-  “Reply keep” but only an explicit Telegram reply carried the item anchor. A
-  content-free, same-day, single-use decision context now makes plain `keep`,
-  `tomorrow`, `drop`, and `back on` work, while newer task focus wins for terse
-  destructive choices. v0.9.8 keeps the machine-owned anchor but moves meaning
-  back to the model. See `docs/audits/v0.9.5.md`.
-- **v0.9.6 numbered-exclusion and singleton patch:** an unrecognized local CLI
-  flag started a second process on the legacy database, which could share the
-  Telegram bot because ownership was only database-scoped. The stale six-row
-  digest then disagreed with the live four-row context. CLI commands and
-  ambiguous database selection now fail fast, a content-free token-wide lease
-  permits only one local poller, and numbered `all except` reports preserve the
-  exact digest order or change nothing. See `docs/audits/v0.9.6.md`.
-- **Historical v0.9.7 zero-completion recap patch:** daily use exposed `Nothing got done`
-  being rejected immediately after Hob asked what was completed. Explicit
-  zero-result reports now bypass the model, change nothing, acknowledge that
-  the displayed items remain open, and are taught in the recap itself. Mixed
-  negative and positive reports stayed on the normal interpretation path.
-  v0.9.8 removes the bypass and uses a focused contextual model pass. See
-  `docs/audits/v0.9.7.md`.
-- **v0.9.8 model-owned-language patch:** every free-text turn reaches the local
-  model. Typed focused audits cover recaps, stale work, confirmations,
-  onboarding, capture/plan/undo disagreements, scheduling metadata, settings,
-  and bulk scope/exclusions. The core validates ids, provenance, literal values,
-  confidence, arithmetic, confirmation, atomic application, and undo. Dormant
-  raw date/deadline parsing and `dateparser` are gone. Daily use's accidental
-  `eod_time` batch was backed up and restored to its recorded absent pre-state.
-  See `docs/audits/v0.9.8.md`.
-- **v0.9.9 grounded why/what-if increment:** each plan/outlook keeps one
-  deterministic 24-hour explanation snapshot. The model selects only known
-  facts and safe levers; temporary duration, split, budget, energy, and working
-  bounds rerun feasibility without rewriting tasks or settings. A separate
-  counterfactual guard prevents mutation-shaped model output from leaking into
-  a hypothetical and fails closed when unavailable. See
-  `docs/audits/v0.9.9.md`.
-- **v0.9.10 evening-recap safety patch:** every uncontested machine-owned EOD
-  reply gets an independent reasoning-first model pass, regardless of the first
-  pass's proposed action type or count. This prevents slang such as “Jack shit
-  bud” from becoming a task drop while preserving explicit drops, new tasks,
-  positive completion reports, partial progress, and social replies. The guard
-  fails closed. The live erroneous drop was restored from its recorded
-  before-state. See `docs/audits/v0.9.10.md`.
-- **v0.9.11 desktop recovery increment:** the Open Local edition has a distinct
-  native SwiftUI menu-bar companion with visible launchd state, Turn On,
-  Restart, explicit privacy-safe health, logs, and data-folder access.
-  `scripts/install_macos.sh` preserves the installed daemon configuration,
-  refuses ambiguous databases, installs both login services, and retains prior
-  companion/plist copies. `scripts/setup.sh` invokes it; `scripts/hobctl`
-  provides the same text-only recovery vocabulary. The App Store shell remains
-  sandboxed and separate. ADR 0002 records the shared future Windows tray
-  contract without claiming Windows support. See `docs/audits/v0.9.11.md`.
-- **v0.9.12 teapot identity increment:** Hob now uses a custom vector teapot in
-  the macOS menu bar instead of Hearth's flame. Filled, outlined, checking,
-  paused, and warning presentations keep the product identity stable while
-  communicating status, with explicit text remaining the accessibility source
-  of truth. Setup and recovery language consistently point to the teapot.
-  Daily-use follow-up also split evening-recap adjudication into independent
-  recap-answer and message-intent judgments, so unrelated dated captures are
-  preserved while open-ended slang and multilingual zero reports remain
-  model-owned. A later morning-digest collision extended the same non-modal
-  contract to stale nudges, confirmations, and onboarding: independent passes
-  see the first typed proposal, require explicit answer evidence, and cannot
-  replace a different concrete task, work update, setting, or request. The live
-  business-case drop was reversed, emissions completed, and the later haircut
-  capture preserved from a verified backup. A subsequent hanging haircut
-  reschedule exposed overlapping morning/EOD contexts plus semantic uncertainty
-  mislabeled as a model outage. Morning now supersedes EOD atomically, newer
-  contexts suppress stale recap audits, and only real call exceptions retry;
-  the original durable message completed once after 12 safe attempts. Its
-  recovered date then exposed deterministic weekday resolution ignoring the
-  model's correct `this` versus `next` distinction. `Next Friday` now means the
-  Friday in the following calendar week, and the live haircut was corrected
-  through the ordinary mutation log from August 14 to August 21. See
-  `docs/audits/v0.9.12.md`.
-- **v0.9.12 confirmation-explanation follow-up:** a live 10-year capture showed
-  that the far-future safeguard stated the date but not why Hob suddenly asked.
-  Capture, reschedule, and deadline holds now name the affected work, date, and
-  unusual distance, ask `are you sure?`, and use a `Confirm` button instead of
-  `Yes`. The exact real-model far-future case passes.
-- **New 1.0 operational finding:** Hearth's configured 20-second deep probe can
-  queue behind direct 14B traffic, call the healthy server stuck, and restart
-  it. It interrupted three long-corpus attempts. Pausing supervision through
-  Hearth's authenticated local control API yielded an uninterrupted 111/111
-  run, and Hearth was returned to healthy managed ownership afterward. Durable
-  setup must make in-flight work visible or validate a safe probe policy.
-- **Resolved v0.9.12 model-consistency finding:** the release gate found two
-  semantically correct actions with incorrect prompt lifecycle metadata. An
-  exact waiting-item resume now consumes its machine-owned nudge after normal
-  reference resolution, and onboarding uses distinct `continue now` versus
-  `pause setup` outcomes. Both actual 14B cases and deterministic regressions
-  pass.
-- **Resolved v0.9.12 waiting-identity finding:** the full release gate found
-  that one model pass could capture an existing task's blocker as separate new
-  work. Capture review now includes `wait`, and an independent task-identity
-  pass distinguishes an existing task becoming blocked from genuinely new work
-  that starts blocked. Both sides pass deterministic and actual 14B
-  regressions; 113/113 remains a release requirement.
-- **Mac App Store track:** ADR 0001 establishes one behavior with Open Local
-  and Store distribution editions. `native/HobAppFoundation` starts the native
-  menu-bar/settings surface, typed setup readiness, bounded Apple Foundation
-  Models seam, and minimum sandbox/Calendar/network boundary. The Xcode target
-  now produces a real unsigned `Hob.app` shell in local and CI builds. It is not
-  yet a signed archive or distributable Store app.
-- **Store helper increment:** the Xcode shell embeds a sandboxed login-item
-  helper, exposes an explicit reversible `SMAppService` consent flow, and
-  resolves shared data only through the protected App Group. The helper is
-  health-only, so the UI deliberately locks registration until the real task
-  runtime is connected. See `docs/audits/app-store-background-service.md`.
-- **Store model-readiness increment:** the Xcode bundle now embeds the
-  Foundation Models command tool with Apple's sandbox-inheritance signing
-  boundary. Setup exposes an explicit privacy-safe generation check with a
-  30-second deadline and fails closed on missing, unavailable, timed-out, or
-  malformed responses. A framework availability flag is never enough. See
-  `docs/audits/app-store-model-readiness.md`.
-- **Store runtime-contract increment:** a bounded versioned Swift turn contract
-  and first deterministic task slice now compile into both app and agent. One
-  shared fixture executes against Python and Swift for capture, date math,
-  correction, confidence holds, unknown targets, atomic multi-action turns,
-  and repeated undo. It remains in-memory and intentionally cannot unlock the
-  background service. See `docs/audits/app-store-runtime-contract.md`.
-- **Store durable-state increment:** task state and bounded undo history now
-  persist atomically in the protected App Group with private permissions,
-  validation, size and symlink defenses, and explicit previous-state recovery.
-  A save failure cannot commit the in-memory candidate or return success. The
-  agent validates storage at startup but remains health-only and registration
-  stays locked. See `docs/audits/app-store-durable-state.md`.
-- **Store delivery-pipeline increment:** state v2 adds a durable typed-turn
-  inbox and compact reply outbox. Interrupted turns replay once, duplicate ids
-  cannot repeat mutation, delivery order and bounded retry state persist, and
-  setup exposes content-free storage health plus confirmed previous-copy
-  recovery. Telegram transport remains disconnected and background registration
-  stays locked. See `docs/audits/app-store-delivery-pipeline.md`.
-- **Live v0.8 evidence:** the exact launchd database contains one active and one
-  superseded run, three canceled old sessions, one started and two planned
-  revised sessions. The direct nudge reply produced `started`, not completion;
-  inbox and outbox have no pending or failed rows. Details are in the v0.8 audit.
+The live Open Local install runs under `com.local.hob`. Hearth runs Ollama under
+`com.hearth.headless`. Both return at login. `scripts/hobctl status` is the
+privacy-safe health check.
 
-## What is built
+## Product boundary
 
-The full loop (capture, morning digest, reply-to-correct, EOD recap) plus:
-natural-language everything (complete/drop/reschedule/amend/bulk, queries and
-search, history, undo); model-owned typed-intent date classification with
-deterministic calendar arithmetic;
-priorities, project tags, recurring tasks, notes, waiting-on; timed reminders
-with a lead time, snooze, and reply-to-act; conversational focus and edited-
-message sync; Telegram-native forwarding, reactions, reminder/confirmation
-buttons, and a pinned digest; actionable stale-task nudges (including undated
-tasks); chat-settable wake/recap times; single-owner pairing; safe long-message
-splitting; portable export and backup; semantic recall; read-only constraint-
-aware daily planning; broader recurrence; the kettle bot avatar; a `doctor`
-preflight and `scripts/setup.sh`. Details in
-[docs/features.md](docs/features.md).
+Hob is a single-owner task agent over Telegram. Free-form language reaches the
+local model. Code owns identity, dates, arithmetic, prompt context, consent,
+atomic mutation, delivery, and undo.
 
-The v0.4 reliability layer commits one user turn atomically, persists Telegram
-updates before offset advancement, retries model outages without asking the
-user to resend, and delivers replies/digests/reminders through a deduplicated
-outbox. `status`, verified `restore`/`import`, macOS Keychain token management,
-app-data defaults outside the checkout, and released-schema migration fixtures
-complete the operational surface.
+Do not add phrase lists, keyword routers, or raw-text semantic repairs. Slash
+commands, callback payloads, reactions, IDs, and ordinals are closed protocols.
 
-The v0.5 temporal layer separates scheduled dates from hard deadlines and adds
-duration/confidence, fixed/flexible and splittable work, earliest starts,
-preferred windows, parents, dependency validation, and multiple reminders.
-Structured recurrence preserves fixed cadence across a moved occurrence and
-supports completion-relative schedules, end dates/counts, skips, and stops.
+The Open Local edition stores the Telegram token in Keychain, pairs the owner
+locally, keeps local files owner-only, and uses an explicit HTTPS opt-in for
+remote Ollama. Calendar access returns opaque busy intervals through a signed
+read-only EventKit bridge.
 
-The v0.6 feasibility layer subtracts opaque EventKit busy periods and protected
-breaks from working hours, locks stated times, and packs flexible work without
-letting the model invent capacity. Event titles never leave the Swift bridge.
-The prior proposal is persisted as meta state so replanning shows a small diff.
-Calendar denial or an absent bridge falls back to working-hours-only planning.
+## Recent release
 
-The customer-profile layer has a five-step `/setup` state machine that
-resumes across restart and uses ordinary pending Setting actions. Default task
-effort, planning days, and transition space are explicit, inspectable, undoable
-inputs to the feasibility core. Plan blocks persist as ordered conversational
-focus so ordinal follow-ups target what was displayed. “Start the second one”
-focuses work without falsely completing it. The initial increment audit is in
-`docs/audits/v0.7.md`.
+`v0.9.13` closed the security audit findings:
 
-The v0.8 execution layer preserves each proposed block as a local plan session,
-including split work. “Use this plan” explicitly adopts it; an active plan can
-only change through an explicit replacement or cancellation, and none of those
-operations changes task dates or writes Calendar events. Named future days use
-their own availability window. Adopted order remains conversational context,
-task lifecycle and recurrence stay authoritative, stale plans expire safely,
-and durable start nudges retain reply anchoring without reminder controls that
-cannot be honored. The increment audit is in `docs/audits/v0.8.md`.
+- one private-owner boundary across Telegram text, media, callbacks, and
+  reactions;
+- local owner pairing for fresh installs;
+- chat-scoped reply references and bounded completed delivery history;
+- private databases, sidecars, locks, backup/export/recovery files, and logs;
+- 5 MiB log rotation with three backups;
+- argv-safe Keychain writes;
+- explicit HTTPS consent for remote Ollama;
+- pinned CI actions, locked installs, dependency audit, and Dependabot;
+- Hearth login supervision verified after restart.
 
-The v0.9 draft carries each task's remaining effort through a read-only outlook
-of up to seven days. Natural overload, fit, weekly-budget, morning-only, and
-named-boundary questions use deterministic Calendar and feasibility math. Daily
-planning now has explicit working days with backward-compatible upgrade
-behavior. EOD reviews adopted session state without inferring completion, and
-status exposes aggregate adoption/session/nudge evidence without private text.
-The increment audit and unresolved dogfood gate are in `docs/audits/v0.9.md`.
+Evidence: [`docs/audits/v0.9.13.md`](docs/audits/v0.9.13.md).
 
-## How development goes here
+## 1.0 priorities
 
-Screenshots of live misbehavior are the usual input. Reproduce against the real
-model with a throwaway scratchpad probe. Keep open-ended meaning in typed model
-output and keep deterministic core work to validation, provenance, arithmetic,
-consent, atomicity, and undo. Add a test and eval case, then restart the daemon
-(`launchctl kill SIGTERM gui/$(id -u)/com.local.hob`) and confirm live. See
-CLAUDE.md for the full loop and safety boundary.
+The current gate is [`docs/audits/v1.0-acceptance.md`](docs/audits/v1.0-acceptance.md).
+Highest-risk gaps:
+
+1. Confirm the local timezone during first-run setup.
+2. Add privacy-safe queue retry, quarantine, and recovery for permanent inbox or
+   outbox failures.
+3. Define and test DST behavior across planning, reminders, recurrence,
+   Calendar, sessions, digest, and recap.
+4. Prove the supported model baseline. Documentation defaults to 7B; release
+   evidence currently covers 14B.
+5. Rehearse clean install, update, rollback, backup/restore, logout/login,
+   reboot, sleep/wake, and Calendar denial/revocation.
+6. Complete keyboard, text-only, VoiceOver, date/time comprehension, and command
+   discoverability checks.
+7. Measure long-run database size, latency, queue drain, and history retention.
+8. Complete seven consecutive days of privacy-safe daily-use evidence.
+
+The App Store edition also needs its Telegram edge, full behavior parity,
+no-Terminal onboarding, distribution signing, privacy metadata, accessibility,
+archive validation, and App Review.
+
+## Development loop
+
+```sh
+uv sync --locked
+uv run pytest
+HOB_MODEL=qwen2.5:14b-instruct uv run python -m evals.interpreter_eval
+HOB_MODEL=qwen2.5:14b-instruct uv run python -m evals.analysis_eval
+```
+
+CI also builds both Swift packages, the EventKit bridge, and the App Store shell
+on macOS.
+
+For interpreter work:
+
+1. Reproduce the message against the real model.
+2. Keep semantics in typed model output.
+3. Validate IDs, context, dates, bounds, and effects in code.
+4. Add a deterministic regression and a real-model case.
+5. Install with `scripts/install_macos.sh` and verify `scripts/hobctl status`.
+
+## Operations
+
+```sh
+scripts/hobctl status
+scripts/hobctl restart
+uv run python app.py doctor
+uv run python app.py backup /safe/hob.db
+```
+
+Never print task text, Telegram tokens, Hearth credentials, message IDs, or
+Calendar titles in audit evidence. Preserve the live database and unrelated
+working-tree changes.
+
+## Docs
+
+- User setup and operations: [`README.md`](README.md)
+- Feature behavior: [`docs/features.md`](docs/features.md)
+- Architecture: [`docs/architecture.md`](docs/architecture.md)
+- Deployment: [`docs/deployment.md`](docs/deployment.md)
+- App Store track: [`docs/app-store.md`](docs/app-store.md)
+- Historical release evidence: [`docs/audits/`](docs/audits/)

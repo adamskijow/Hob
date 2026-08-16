@@ -1190,6 +1190,26 @@ def test_work_days_setting_validates_typed_day_codes_and_grounding():
     assert not invalid.settings and invalid.pending[0].key == "work_days"
 
 
+def test_digest_pinning_setting_uses_typed_boolean():
+    off = reconcile(
+        [Setting(key="pin_digest", raw="stop pinning", enabled=False)],
+        ctx(message="stop pinning the morning digest"),
+    )
+    assert [(s.key, s.value) for s in off.settings] == [("pin_digest", "false")]
+
+    on = reconcile(
+        [Setting(key="pin_digest", raw="pin", enabled=True)],
+        ctx(message="pin my morning digest"),
+    )
+    assert [(s.key, s.value) for s in on.settings] == [("pin_digest", "true")]
+
+    unclear = reconcile(
+        [Setting(key="pin_digest", raw="pin")],
+        ctx(message="change the pin setting"),
+    )
+    assert not unclear.settings and unclear.pending[0].key == "pin_digest"
+
+
 def test_query_today_and_all():
     plan = reconcile([Query(kind="today")], ctx(ACTIVE))
     assert plan.queries[0].kind == "today"

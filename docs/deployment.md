@@ -1,149 +1,127 @@
 <!-- SPDX-License-Identifier: MIT -->
-# Deployment (launchd and Hearth)
+# Deployment
 
-Hob does not supervise itself; it is built to survive being killed and restarted
-at any moment. Two supervisors keep the setup alive: `launchd` keeps Hob running
-(restart on crash, resume on login), and
-[Hearth](https://github.com/adamskijow/Hearth) keeps the Ollama model runner Hob
-depends on alive (readiness checks, restart on crash or wedge, sleep
-prevention). Ready-to-edit `LaunchAgent` templates for both are in
-[`deploy/`](../deploy/).
+## Supported macOS install
 
-For the Open Local edition, the supported macOS install/update/repair path is:
-
-```
+```sh
 scripts/install_macos.sh
 ```
 
-It preserves an existing daemon configuration, builds and ad-hoc signs the
-native **Hob Local.app** menu-bar companion, installs both user LaunchAgents,
-and starts or restarts Hob when its Telegram credential is available. It
-refuses to guess when legacy and app-data databases conflict. Re-running it is
-safe. The menu appears at login and exposes Turn On, Restart, privacy-safe
-health, logs, and the data folder. `scripts/hobctl` is the text-only fallback.
+The installer:
 
-Underneath that product surface, Hob is one process started by `launchd`. The
-run command is:
+- preserves existing daemon settings;
+- refuses ambiguous database paths;
+- builds and signs **Hob Local.app**;
+- installs Hob and its menu control as user LaunchAgents;
+- starts or restarts Hob when a Telegram token is available.
 
+Run it again to update or repair the installation. The menu-bar teapot provides
+start, restart, health, logs, and data-folder actions. Terminal equivalents:
+
+```sh
+scripts/hobctl status
+scripts/hobctl on
+scripts/hobctl restart
+scripts/hobctl logs
 ```
+
+Hob runs under `launchd` as `com.local.hob`. Hearth supervises Ollama as
+`com.hearth.headless`. Install Hearth's login agent with:
+
+```sh
+/Applications/Hearth.app/Contents/MacOS/Hearth install-agent
+```
+
+Both services return at login.
+
+## Telegram ownership
+
+Store the bot token in macOS Keychain:
+
+```sh
+uv run python app.py token set
+```
+
+For local pairing, send `/start` to the bot, then run the command it shows:
+
+```sh
+scripts/hobctl pair TELEGRAM_USER_ID
+```
+
+Managed installs may set `HOB_ALLOWED_TELEGRAM_USER_ID`. Group chats and other
+users are rejected before content reaches storage.
+
+## Calendar
+
+```sh
+scripts/build_calendar_bridge.sh
+uv run python app.py calendar authorize
+```
+
+Run authorization while logged into the account that owns the LaunchAgent.
+Apple calls this full Calendar access. The bridge exposes status, permission,
+and event queries only, and returns busy intervals without titles. Planning uses
+work hours and breaks when access is unavailable.
+
+## Manual LaunchAgent
+
+The supported installer renders [`deploy/com.local.hob.plist`](../deploy/com.local.hob.plist).
+For managed deployment, copy that template to `~/Library/LaunchAgents`, edit its
+paths and settings, then load it:
+
+```sh
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.local.hob.plist
+```
+
+The service command is:
+
+```sh
 uv run --directory /path/to/hob python app.py
 ```
 
-`launchd` sets the environment, runs that command, and restarts it on exit.
-For manual or managed deployment, copy
-[`deploy/com.local.hob.plist`](../deploy/com.local.hob.plist) to
-`~/Library/LaunchAgents/`, edit the paths, store the bot token with
-`uv run python app.py token set`, and load it with
-`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.local.hob.plist`.
-That template expands the minimal plist below with `WorkingDirectory`, `PATH`,
-and `HOB_KEEP_ALIVE`:
+Keep the Telegram token in Keychain. Set `HOB_DB_PATH`, `HOB_LOG_PATH`, model,
+timezone, and owner ID in the plist. Route launchd stdout and stderr to
+`/dev/null`; Hob writes its own rotating application log.
 
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>            <string>com.local.hob</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/Users/you/hob/.venv/bin/python</string>
-    <string>app.py</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>HOB_ALLOWED_TELEGRAM_USER_ID</key> <string>123456789</string>
-    <key>HOB_MODEL</key>          <string>qwen2.5:7b-instruct</string>
-    <key>HOB_OLLAMA_HOST</key>    <string>http://localhost:11434</string>
-    <key>HOB_ALLOW_REMOTE_OLLAMA</key> <string>0</string>
-    <key>HOB_WAKE_TIME</key>      <string>07:00</string>
-    <key>HOB_TIMEZONE</key>       <string>America/New_York</string>
-    <key>HOB_DB_PATH</key>        <string>/Users/you/Library/Application Support/Hob/hob.db</string>
-    <key>HOB_LOG_PATH</key>       <string>/Users/you/Library/Application Support/Hob/hob.log</string>
-    <key>HOB_WORK_DAYS</key>      <string>mon,tue,wed,thu,fri</string>
-  </dict>
-  <key>KeepAlive</key>          <true/>
-  <key>StandardOutPath</key>    <string>/dev/null</string>
-  <key>StandardErrorPath</key>  <string>/dev/null</string>
-</dict>
-</plist>
+## Ollama privacy
+
+Loopback Ollama works by default. A remote endpoint requires HTTPS and:
+
+```sh
+HOB_ALLOW_REMOTE_OLLAMA=1
 ```
 
-The Telegram token lives in the user's macOS Keychain, not in the plist. The
-explicit owner id is recommended for unattended installs. Otherwise, send the
-bot `/start` to learn your ID, run `scripts/hobctl pair ID` locally, and send
-`/start` again. First contact never establishes ownership. Group chats and
-non-owner updates are silently rejected before their content is persisted.
+`doctor` and `status` identify remote inference. URLs containing credentials are
+rejected.
 
-Build the local Calendar bridge once from the checkout, then explicitly grant
-access while logged into the same macOS user account that owns the LaunchAgent:
+## Logs
 
+The installer creates private app data and a private `hob.log`. Hob rotates the
+log at 5 MiB and retains three backups. All four generations stay owner-only.
+
+## Recovery guarantees
+
+- Authorized owner updates enter a durable inbox before the polling offset
+  advances.
+- Telegram service events and unauthorized updates advance the offset without
+  content retention.
+- One turn commits mutations, settings, undo history, conversational state, and
+  its reply row in one transaction.
+- Model failures retry the original inbox row. Send failures retry the outbox
+  without repeating task changes.
+- Stable keys deduplicate replies, reminders, digests, and recaps.
+- Digest catch-up runs after sleep or restart when today's digest is owed.
+- A local lease blocks duplicate daemons and live restore/import.
+
+Restart from the teapot, with `scripts/hobctl restart`, or with:
+
+```sh
+launchctl kickstart -k gui/$(id -u)/com.local.hob
 ```
-scripts/build_calendar_bridge.sh
-uv run --directory /path/to/hob python app.py calendar authorize
-```
 
-Apple labels read access as full Calendar access. Hob's bridge exposes no write
-operation and emits no event titles. If permission is denied or later revoked,
-the daemon remains healthy and plans against working hours and protected breaks.
+## Backup and restore
 
-Ollama is kept alive separately by Hearth. Install Hearth, then run it headless
-under `launchd` with
-[`deploy/com.hearth.headless.plist`](../deploy/com.hearth.headless.plist) (it
-points at the Hearth app binary and your Hearth config). The menubar app also
-works, but the `LaunchAgent` survives logout and restarts on crash. Hob degrades
-gracefully when the model is briefly unreachable; Hearth keeps those windows
-short.
-
-Hob accepts loopback Ollama endpoints by default. Sending task prompts to any
-other host requires both HTTPS and `HOB_ALLOW_REMOTE_OLLAMA=1`; health output
-keeps that privacy boundary visible. Endpoint URLs containing credentials are
-rejected. The supported setup path skips local Ollama installation for an
-explicitly trusted remote endpoint instead of silently changing model hosts.
-
-**Logging.** Hob logs to stderr (and stdout). Under `launchd`, point
-`StandardErrorPath` at a file as above. The bot token is kept out of the log.
-The installer creates the app-data directory and log with owner-only
-permissions. Hob rotates `hob.log` at 5 MiB and retains three older generations
-(20 MiB maximum plus a small record-boundary overrun). Manual deployments must
-set `HOB_LOG_PATH`; launchd stdout/stderr go to `/dev/null` so two writers never
-race the rotating log.
-
-**Restart behavior and recovery.** Hob is safe to kill at any moment. Use
-**Restart Hob** under the menu-bar teapot. In a remote or non-graphical session,
-use `scripts/hobctl restart`. The equivalent raw command remains
-`launchctl kickstart -k gui/$(id -u)/com.local.hob`.
-
-- Authorized owner updates are normalized into a durable inbox before the
-  polling offset advances. Model outages and processing failures leave the
-  message pending for automatic retry instead of asking the user to resend it.
-  Unauthorized updates advance the offset silently without retaining content.
-- Telegram-generated service events such as pin, membership, and chat-setting
-  changes advance the offset without entering the inbox, user-message handler,
-  or outbox.
-- Each message's mutations, settings, undo log, conversational state, and reply
-  outbox row commit as one transaction. Delivery failures retry the outbox
-  without reapplying state. Stable keys deduplicate proactive messages too.
-- The morning digest fires once per day. macOS sleep does not eat it: an
-  in-process timer cannot fire while asleep, so on startup and on every tick Hob
-  checks the last sent date and fires the digest if today's is still owed and the
-  time is past wake time. The day is marked done only once the digest is actually
-  sent, so a digest owed before the chat is known is not lost.
-- Model timeouts or malformed output degrade to a clarifying question rather than
-  a crash.
-
-**Backups and recovery.** Backups include committed WAL changes and are
-integrity-checked after writing. Restore/import verify a candidate in isolation,
-safety-backup current data, and replace the database atomically.
-All Hob-created database, lock, backup, export, and restore files are owner-only;
-opening an older database tightens its mode automatically.
-Schema 10 backups and portable exports include proposed and adopted plan runs
-and every split session.
-The daemon holds an advisory database lease: restore/import will refuse to run
-until the LaunchAgent is stopped, preventing a live process from continuing on
-the replaced file. A second daemon using the same data path is rejected too.
-
-```
+```sh
 uv run --directory /path/to/hob python app.py backup /safe/hob.db
 uv run --directory /path/to/hob python app.py export /safe/hob.json
 uv run --directory /path/to/hob python app.py restore /safe/hob.db
@@ -151,7 +129,10 @@ uv run --directory /path/to/hob python app.py import /safe/hob.json
 uv run --directory /path/to/hob python app.py status
 ```
 
-Status is safe to retain in operational logs: execution activation is reported
-only as aggregate run/session state counts, adoption time, and plan-nudge
-delivery counts. It does not print task labels, plan constraints, message text,
-Telegram message identifiers, or secrets.
+Backups include committed WAL changes and receive an integrity check. Restore
+and import validate the candidate, save current data, and replace the database
+atomically. Hob creates database, sidecar, lock, backup, export, restore, and
+log files owner-only. Opening older data tightens its permissions.
+
+Status output contains aggregate health and queue/plan counts. It omits task
+text, plan constraints, message bodies, Telegram message IDs, and secrets.

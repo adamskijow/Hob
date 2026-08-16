@@ -6,6 +6,7 @@ import plistlib
 ROOT = Path(__file__).parents[1]
 FOUNDATION = ROOT / "native" / "HobAppFoundation"
 XCODE_PROJECT = ROOT / "native" / "HobMacApp" / "HobMacApp.xcodeproj"
+IOS_PROJECT = ROOT / "native" / "HobAppleApps"
 
 
 def test_app_store_entitlements_are_minimal_and_sandboxed():
@@ -57,6 +58,10 @@ def test_native_package_exposes_shell_core_and_model_adapter():
     assert 'name: "HobMacShell"' in manifest
     assert 'name: "HobAgent"' in manifest
     assert 'name: "HobFoundationBridge"' in manifest
+    assert 'name: "HobAppleIntelligence"' in manifest
+    assert 'name: "HobAppExperience"' in manifest
+    assert 'name: "HobCalendar"' in manifest
+    assert '.iOS("26.0")' in manifest
 
     bridge = (
         FOUNDATION / "Sources" / "HobFoundationBridge" / "main.swift"
@@ -100,7 +105,7 @@ def test_foundation_model_tool_inherits_the_parent_sandbox_only():
     assert "SKIP_INSTALL = YES" in project
 
 
-def test_model_readiness_requires_a_bounded_correlated_generation_probe():
+def test_model_readiness_uses_a_real_in_process_generation_probe():
     controller = (
         FOUNDATION
         / "Sources"
@@ -108,11 +113,10 @@ def test_model_readiness_requires_a_bounded_correlated_generation_probe():
         / "FoundationModelController.swift"
     ).read_text(encoding="utf-8")
 
-    assert '"command": "probe"' in controller
-    assert "Date().addingTimeInterval(30)" in controller
-    assert "data.count <= 100_000" in controller
-    assert 'object["requestID"] as? String == requestID' in controller
-    assert 'status == "available" ? .available : .unavailable' in controller
+    assert "AppleFoundationInterpreter" in controller
+    assert "await interpreter.probe()" in controller
+    assert "interpreter.isAvailable" in controller
+    assert "Process()" not in controller
 
 
 def test_portable_task_runtime_is_compiled_into_app_and_agent():
@@ -123,10 +127,43 @@ def test_portable_task_runtime_is_compiled_into_app_and_agent():
 
     assert "TaskRuntime.swift in Sources" in project
     assert "TaskRuntime.swift in Agent Sources" in project
+    assert "ScheduleRuntime.swift in Sources" in project
+    assert "ScheduleRuntime.swift in Agent Sources" in project
+    assert "CalendarScheduling.swift in Sources" in project
+    assert "EventKitScheduleStore.swift in Sources" in project
     assert "request.version == 1" in runtime
     assert "request.message.utf8.count <= 20_000" in runtime
     assert "actions.count <= 32" in runtime
     assert "undoSnapshots.count == 100" in runtime
+
+
+def test_iphone_app_uses_the_same_native_workspace_and_local_model():
+    spec = (IOS_PROJECT / "project.yml").read_text(encoding="utf-8")
+    app = (IOS_PROJECT / "Sources" / "HobPhoneApp.swift").read_text(
+        encoding="utf-8"
+    )
+    project = (
+        IOS_PROJECT / "HobAppleApps.xcodeproj" / "project.pbxproj"
+    ).read_text(encoding="utf-8")
+    interpreter = (
+        FOUNDATION
+        / "Sources"
+        / "HobAppleIntelligence"
+        / "FoundationModelInterpreter.swift"
+    ).read_text(encoding="utf-8")
+
+    assert "platform: iOS" in spec
+    assert "product: HobAppExperience" in spec
+    assert "HobWorkspaceView()" in app
+    assert "HobAppFoundation" in project
+    assert "SystemLanguageModel.default" in interpreter
+    assert "LanguageModelSession" in interpreter
+
+    with (IOS_PROJECT / "Info.plist").open("rb") as fh:
+        info = plistlib.load(fh)
+    assert "adds only schedules you adopt" in info[
+        "NSCalendarsFullAccessUsageDescription"
+    ]
 
 
 def test_agent_uses_fail_closed_private_durable_task_storage():
@@ -166,6 +203,8 @@ def test_store_app_exposes_content_free_health_and_confirmed_recovery():
     assert "TaskStateStore.swift in Sources" in project
     assert "TaskStorageController.swift in Sources" in project
     assert 'Label("Storage", systemImage: "externaldrive")' in shell
+    assert "HobTeapotIcon" in shell
+    assert 'systemImage: "sparkles"' not in shell
     assert 'alert("Restore the previous copy?"' in shell
     assert "inspection.pipeline.pendingInbound" in shell
     assert "inspection.pipeline.pendingOutbound" in shell

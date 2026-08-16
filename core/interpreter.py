@@ -147,11 +147,12 @@ ACTION_SCHEMA = {
                         "setting",
                         {"key": {"type": "string", "enum": [
                             "wake_time", "eod_time", "work_hours", "break_window",
-                            "work_days", "default_duration", "transition_buffer"
+                            "work_days", "default_duration", "transition_buffer",
+                            "pin_digest"
                         ]},
                          "raw": _STR, "time": _STR, "start_time": _STR,
                          "end_time": _STR, "days": _STRS, "minutes": _NUM,
-                         "clear": _BOOL, "confidence": _NUM},
+                         "enabled": _BOOL, "clear": _BOOL, "confidence": _NUM},
                         ["type", "key", "raw"],
                     ),
                     _variant(
@@ -490,15 +491,15 @@ SETTING_AUDIT_SCHEMA = _variant(
     {
         "key": {"type": "string", "enum": [
             "wake_time", "eod_time", "work_hours", "break_window",
-            "work_days", "default_duration", "transition_buffer",
+            "work_days", "default_duration", "transition_buffer", "pin_digest",
         ]},
         "raw": _STR, "time": _STR, "start_time": _STR, "end_time": _STR,
-        "days": _STRS, "minutes": _NUM, "clear": _BOOL,
+        "days": _STRS, "minutes": _NUM, "enabled": _BOOL, "clear": _BOOL,
         "confidence": {"type": "number"},
     },
     [
         "type", "key", "raw", "time", "start_time", "end_time", "days",
-        "minutes", "clear", "confidence",
+        "minutes", "enabled", "clear", "confidence",
     ],
 )
 
@@ -659,15 +660,18 @@ the task is DONE, use complete instead.
 the bounds Hob may plan inside; "break_window" = protected daily break; \
 "work_days" = weekdays on which Hob may plan flexible work; \
 "default_duration" = the estimate for tasks with no stated duration; \
-"transition_buffer" = open minutes kept between commitments), raw \
+"transition_buffer" = open minutes kept between commitments; "pin_digest" = \
+whether Hob pins each morning digest), raw \
 (an exact literal substring copied from the user's message), confidence, and \
 the typed value fields: time for wake/eod; start_time and end_time for ranges; \
-days as mon..sun codes for work_days; minutes for durations; clear true only \
+days as mon..sun codes for work_days; minutes for durations; enabled true or \
+false for pin_digest; clear true only \
 when the user explicitly removes a break or buffer. Never invent or normalize \
 raw. Use for "send the digest at 8", "plan work from 9 \
 to 5", "protect lunch from noon to 1", "assume tasks take 45 minutes", \
 "leave 10 minutes between things", "plan work Monday through Friday", \
-or "remove my lunch break".
+"remove my lunch break", "pin my morning digest", or "stop pinning the \
+morning digest".
 - prioritize: change the importance of an item ALREADY on the list. Fields: type \
 "prioritize", target (item number), level ("high", "normal", or "low"), \
 confidence. Use it when the user re-ranks an existing item: "make the prez deck \
@@ -853,6 +857,9 @@ patterns; do not rely on another program to recover missing meaning:
     start_time "12:00", end_time "13:00". "remove my lunch break" -> setting
     break_window with a literal raw substring and clear true. "assume tasks take
     45 minutes" -> setting default_duration, raw "45 minutes", minutes 45.
+    "stop pinning the morning digest" -> setting pin_digest, raw "stop pinning",
+    enabled false. "pin my morning digest" -> setting pin_digest, raw "pin",
+    enabled true.
   - A recent-change context plus "nevermind", "forget that", or "belay that"
     means undo when it is a standalone retraction. Do not require one spelling.
   - "finished it all except 1 and 6" -> ONE bulk complete whose except contains
@@ -1296,6 +1303,11 @@ def _parse_one(action: object):
                 end_time=_str(action.get("end_time")),
                 days=_strings(action.get("days")),
                 minutes=_int(action.get("minutes")),
+                enabled=(
+                    action.get("enabled")
+                    if isinstance(action.get("enabled"), bool)
+                    else None
+                ),
                 clear=bool(action.get("clear")),
                 confidence=conf,
             )
@@ -2042,8 +2054,9 @@ First-pass JSON:
 
 Extract clock values as HH:MM, day ranges as mon..sun codes, and durations as
 minutes. A working-hours or protected-break range needs both start_time and
-end_time. A wake/evening setting uses time. Removal uses clear true. Use null,
-false, or an empty list for value fields the user did not set. The first pass
+end_time. A wake/evening setting uses time. Digest pinning uses enabled.
+Removal uses clear true. Use null, false, or an empty list for value fields the
+user did not set. The first pass
 is evidence, not authority. Return only the setting object.
 """
 

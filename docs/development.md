@@ -1,44 +1,50 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Development
 
+Install the locked environment and run the Python suite:
+
 ```
+uv sync --locked
 uv run pytest
 ```
 
-On macOS, build and smoke-test the native availability edge separately:
+On macOS, test the native core and build both app surfaces:
+
+```
+swift test --package-path native/HobAppFoundation
+xcodebuild -project native/HobMacApp/HobMacApp.xcodeproj -scheme Hob CODE_SIGNING_ALLOWED=NO build
+xcodebuild -project native/HobAppleApps/HobAppleApps.xcodeproj -scheme HobiOS -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+```
+
+Build and smoke-test Calendar separately:
 
 ```
 scripts/build_calendar_bridge.sh
 uv run python app.py calendar status
 ```
 
-Permission is not part of a build or test. `python app.py calendar authorize`
-is an explicit local-user operation. Linux CI exercises the pure feasibility
-engine and the Python adapter with fakes; macOS CI also compiles the Swift
-source.
+Calendar authorization requires a local user action:
 
-Core modules are near-fully covered with a fake clock, an in-memory store, and a
-fake LLM returning canned JSON. Reliability tests inject failures between state
-application and delivery, reopen databases, and migrate the released v7 schema
-fixture. CI verifies the lockfile, compiles the runtime, and runs the suite on
-both Linux and macOS for every push and pull request.
+```
+uv run python app.py calendar authorize
+```
 
-The unit suite uses a fake LLM. To check the interpreter against the *real*
-model (after tuning the prompt or changing `HOB_MODEL`), run the eval, which
-feeds representative messages through Ollama and asserts the resulting plan:
+Tests use a fake clock, in-memory store, and fake LLM. Recovery tests inject
+failures, reopen databases, and migrate released schema fixtures. CI checks the
+lockfile, frozen dependencies, Python runtime, native packages, EventKit bridge,
+App Store shell, and test suite on Ubuntu and macOS.
+
+After interpreter or prompt changes, run the real-model corpus:
 
 ```
 HOB_MODEL=qwen2.5:14b-instruct uv run python -m evals.interpreter_eval
 ```
 
-The explanation increment also has an end-to-end real-model gate. It builds a
-constrained plan, asks why a deferred task did not fit, tests a combined
-duration/window hypothetical, and verifies that durable task state is unchanged:
+The analysis gate checks planning explanation, a what-if, and unchanged durable
+state:
 
 ```
 HOB_MODEL=qwen2.5:14b-instruct uv run python -m evals.analysis_eval
 ```
 
-On Windows, a `tzdata` package is installed under a platform marker so the
-standard-library `zoneinfo` has a timezone database; on the macOS target the OS
-provides it and the marker keeps it off that environment.
+`tzdata` installs only on Windows through its platform marker.

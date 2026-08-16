@@ -63,5 +63,18 @@ jobs:
           test -x "$RUNNER_TEMP/hob-macapp-derived/Build/Products/Debug/Hob.app/Contents/Library/LoginItems/HobAgent.app/Contents/MacOS/HobAgent"
           test -x "$RUNNER_TEMP/hob-macapp-derived/Build/Products/Debug/Hob.app/Contents/Library/LoginItems/HobAgent.app/Contents/MacOS/HobFoundationBridge"
 
+      - name: Build iPhone app
+        if: runner.os == 'macOS'
+        run: |
+          xcodebuild \
+            -project native/HobAppleApps/HobAppleApps.xcodeproj \
+            -scheme HobiOS \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/hob-ios-derived" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+          test -x "$RUNNER_TEMP/hob-ios-derived/Build/Products/Debug-iphonesimulator/Hob.app/Hob"
+
       - name: Test
         run: uv run pytest

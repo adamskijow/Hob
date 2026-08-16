@@ -7,6 +7,9 @@ public struct RuntimeTask: Codable, Equatable, Sendable {
     public var task: String
     public var dueDate: String?
     public var dueTime: String?
+    public var deadlineDate: String?
+    public var durationMinutes: Int?
+    public var priority: String?
     public var status: String
     public let createdAt: String
     public var updatedAt: String
@@ -17,6 +20,9 @@ public struct RuntimeTask: Codable, Equatable, Sendable {
         task: String,
         dueDate: String?,
         dueTime: String?,
+        deadlineDate: String? = nil,
+        durationMinutes: Int? = nil,
+        priority: String? = nil,
         status: String,
         createdAt: String,
         updatedAt: String
@@ -26,6 +32,9 @@ public struct RuntimeTask: Codable, Equatable, Sendable {
         self.task = task
         self.dueDate = dueDate
         self.dueTime = dueTime
+        self.deadlineDate = deadlineDate
+        self.durationMinutes = durationMinutes
+        self.priority = priority
         self.status = status
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -50,7 +59,10 @@ public struct RuntimeAction: Codable, Equatable, Sendable {
     public let raw: String?
     public let target: String?
     public let when: RuntimeDateIntent?
+    public let deadline: RuntimeDateIntent?
     public let time: String?
+    public let durationMinutes: Int?
+    public let priority: String?
     public let confidence: Double?
 
     public init(
@@ -59,7 +71,10 @@ public struct RuntimeAction: Codable, Equatable, Sendable {
         raw: String? = nil,
         target: String? = nil,
         when: RuntimeDateIntent? = nil,
+        deadline: RuntimeDateIntent? = nil,
         time: String? = nil,
+        durationMinutes: Int? = nil,
+        priority: String? = nil,
         confidence: Double? = nil
     ) {
         self.type = type
@@ -67,7 +82,10 @@ public struct RuntimeAction: Codable, Equatable, Sendable {
         self.raw = raw
         self.target = target
         self.when = when
+        self.deadline = deadline
         self.time = time
+        self.durationMinutes = durationMinutes
+        self.priority = priority
         self.confidence = confidence
     }
 }
@@ -238,7 +256,7 @@ public struct RuntimePipelineStatus: Codable, Equatable, Sendable {
 }
 
 public struct RuntimePersistentState: Codable, Equatable, Sendable {
-    public static let currentVersion = 2
+    public static let currentVersion = 5
 
     public let version: Int
     public let tasks: [RuntimeTask]
@@ -246,6 +264,9 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
     public let inbox: [RuntimeInboundRecord]
     public let outbox: [RuntimeOutboundRecord]
     public let nextSequence: Int
+    public let latestProposal: RuntimeScheduleProposal?
+    public let adoptedSchedule: RuntimeAdoptedSchedule?
+    public let calendarCleanupEventIDs: [String]
 
     public init(
         version: Int = RuntimePersistentState.currentVersion,
@@ -253,7 +274,10 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         undoSnapshots: [[RuntimeTask]],
         inbox: [RuntimeInboundRecord] = [],
         outbox: [RuntimeOutboundRecord] = [],
-        nextSequence: Int = 1
+        nextSequence: Int = 1,
+        latestProposal: RuntimeScheduleProposal? = nil,
+        adoptedSchedule: RuntimeAdoptedSchedule? = nil,
+        calendarCleanupEventIDs: [String] = []
     ) {
         self.version = version
         self.tasks = tasks
@@ -261,6 +285,9 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         self.inbox = inbox
         self.outbox = outbox
         self.nextSequence = nextSequence
+        self.latestProposal = latestProposal
+        self.adoptedSchedule = adoptedSchedule
+        self.calendarCleanupEventIDs = calendarCleanupEventIDs
     }
 
     public static let empty = RuntimePersistentState(tasks: [], undoSnapshots: [])
@@ -279,20 +306,24 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
     }
 
     public func validated() throws -> RuntimePersistentState {
-        guard version == 1 || version == Self.currentVersion else {
+        guard (1...Self.currentVersion).contains(version) else {
             throw RuntimeStateError.unsupportedVersion
         }
         let migrated: RuntimePersistentState
-        if version == 1 {
-            guard inbox.isEmpty, outbox.isEmpty, nextSequence == 1 else {
+        if version < Self.currentVersion {
+            if version == 1,
+               (!inbox.isEmpty || !outbox.isEmpty || nextSequence != 1) {
                 throw RuntimeStateError.invalidState
             }
             migrated = RuntimePersistentState(
                 tasks: tasks,
                 undoSnapshots: undoSnapshots,
-                inbox: [],
-                outbox: [],
-                nextSequence: 1
+                inbox: version == 1 ? [] : inbox,
+                outbox: version == 1 ? [] : outbox,
+                nextSequence: version == 1 ? 1 : nextSequence,
+                latestProposal: version >= 3 ? latestProposal : nil,
+                adoptedSchedule: version >= 3 ? adoptedSchedule : nil,
+                calendarCleanupEventIDs: []
             )
         } else {
             migrated = self
@@ -301,6 +332,12 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
               migrated.undoSnapshots.count <= 100,
               migrated.inbox.count <= 10_000,
               migrated.outbox.count <= 10_000,
+              migrated.calendarCleanupEventIDs.count <= 10_000,
+              Set(migrated.calendarCleanupEventIDs).count
+                == migrated.calendarCleanupEventIDs.count,
+              migrated.calendarCleanupEventIDs.allSatisfy({
+                  Self.validIdentifier($0, maxBytes: 1_024)
+              }),
               migrated.nextSequence > 0 else {
             throw RuntimeStateError.invalidState
         }
@@ -310,6 +347,10 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
             try Self.validate(snapshot)
         }
         try Self.validatePipeline(migrated)
+        guard RuntimeScheduleValidator.valid(migrated.latestProposal),
+              RuntimeScheduleValidator.valid(migrated.adoptedSchedule) else {
+            throw RuntimeStateError.invalidState
+        }
         return migrated
     }
 
@@ -320,6 +361,9 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         case inbox
         case outbox
         case nextSequence
+        case latestProposal
+        case adoptedSchedule
+        case calendarCleanupEventIDs
     }
 
     public init(from decoder: Decoder) throws {
@@ -336,6 +380,18 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
             forKey: .outbox
         ) ?? []
         nextSequence = try container.decodeIfPresent(Int.self, forKey: .nextSequence) ?? 1
+        latestProposal = try container.decodeIfPresent(
+            RuntimeScheduleProposal.self,
+            forKey: .latestProposal
+        )
+        adoptedSchedule = try container.decodeIfPresent(
+            RuntimeAdoptedSchedule.self,
+            forKey: .adoptedSchedule
+        )
+        calendarCleanupEventIDs = try container.decodeIfPresent(
+            [String].self,
+            forKey: .calendarCleanupEventIDs
+        ) ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -346,6 +402,9 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         try container.encode(inbox, forKey: .inbox)
         try container.encode(outbox, forKey: .outbox)
         try container.encode(nextSequence, forKey: .nextSequence)
+        try container.encodeIfPresent(latestProposal, forKey: .latestProposal)
+        try container.encodeIfPresent(adoptedSchedule, forKey: .adoptedSchedule)
+        try container.encode(calendarCleanupEventIDs, forKey: .calendarCleanupEventIDs)
     }
 
     private static func validatePipeline(_ state: RuntimePersistentState) throws {
@@ -435,8 +494,15 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
             && bounded(action.raw, maxBytes: 20_000)
             && bounded(action.target, maxBytes: 128)
             && bounded(action.time, maxBytes: 16)
+            && (action.durationMinutes.map { (5...480).contains($0) } ?? true)
+            && (action.priority.map { ["high", "normal", "low"].contains($0) } ?? true)
             && (action.confidence.map { $0.isFinite && (0...1).contains($0) } ?? true)
             && (action.when.map {
+                validIdentifier($0.kind)
+                    && bounded($0.which, maxBytes: 32)
+                    && bounded($0.day, maxBytes: 32)
+            } ?? true)
+            && (action.deadline.map {
                 validIdentifier($0.kind)
                     && bounded($0.which, maxBytes: 32)
                     && bounded($0.day, maxBytes: 32)
@@ -477,7 +543,12 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
                   ISO8601DateFormatter().date(from: task.createdAt) != nil,
                   ISO8601DateFormatter().date(from: task.updatedAt) != nil,
                   validDate(task.dueDate),
-                  validTime(task.dueTime) else {
+                  validTime(task.dueTime),
+                  validDate(task.deadlineDate),
+                  (task.durationMinutes.map { (5...480).contains($0) } ?? true),
+                  (task.priority.map { ["high", "normal", "low"].contains($0) } ?? true),
+                  task.dueDate == nil || task.deadlineDate == nil
+                    || task.dueDate! <= task.deadlineDate! else {
                 throw RuntimeStateError.invalidState
             }
         }
@@ -642,26 +713,40 @@ public struct TaskRuntime: Sendable {
                   let raw = bounded(action.raw, maxBytes: 20_000) else {
                 return .rejected
             }
+            let dueDate: String?
             switch resolve(action.when, now: now, timezone: timezone) {
-            case .date(let dueDate):
-                let dueTime = validTime(action.time)
-                if action.time != nil && dueTime == nil { return .clarification }
-                defer { nextID += 1 }
-                return .success(.capture(RuntimeTask(
-                    id: "a\(nextID)",
-                    rawText: raw,
-                    task: task,
-                    dueDate: dueDate,
-                    dueTime: dueTime,
-                    status: "open",
-                    createdAt: now,
-                    updatedAt: now
-                )))
-            case .ambiguous:
-                return .clarification
-            case .invalid:
-                return .rejected
+            case .date(let resolved): dueDate = resolved
+            case .ambiguous: return .clarification
+            case .invalid: return .rejected
             }
+            let deadlineDate: String?
+            switch resolve(action.deadline, now: now, timezone: timezone) {
+            case .date(let resolved): deadlineDate = resolved
+            case .ambiguous: return .clarification
+            case .invalid: return .rejected
+            }
+            let dueTime = validTime(action.time)
+            if action.time != nil && dueTime == nil { return .clarification }
+            guard action.durationMinutes.map({ (5...480).contains($0) }) ?? true,
+                  action.priority.map({ ["high", "normal", "low"].contains($0) }) ?? true
+            else { return .clarification }
+            if let dueDate, let deadlineDate, dueDate > deadlineDate {
+                return .clarification
+            }
+            defer { nextID += 1 }
+            return .success(.capture(RuntimeTask(
+                id: "a\(nextID)",
+                rawText: raw,
+                task: task,
+                dueDate: dueDate,
+                dueTime: dueTime,
+                deadlineDate: deadlineDate,
+                durationMinutes: action.durationMinutes,
+                priority: action.priority,
+                status: "open",
+                createdAt: now,
+                updatedAt: now
+            )))
         }
 
         guard ["complete", "drop", "reschedule", "amend"].contains(action.type)

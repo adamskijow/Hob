@@ -351,7 +351,9 @@ public actor DurableTaskRuntime {
             runtimeState: runtime.persistentState,
             inbox: inbox,
             outbox: state.outbox,
-            nextSequence: sequence + 1
+            nextSequence: sequence + 1,
+            latestProposal: state.latestProposal,
+            adoptedSchedule: state.adoptedSchedule
         )
         guard let receiptState = try? unvalidatedReceipt.validated() else {
             throw RuntimePipelineError.invalidEnvelope
@@ -470,6 +472,104 @@ public actor DurableTaskRuntime {
         state
     }
 
+    @discardableResult
+    public func proposeSchedule(
+        _ request: RuntimeScheduleRequest
+    ) throws -> RuntimeScheduleProposal {
+        let proposal = try RuntimeSchedulePlanner.propose(
+            tasks: runtime.tasks,
+            request: request
+        )
+        let candidate = combinedState(
+            runtimeState: runtime.persistentState,
+            inbox: state.inbox,
+            outbox: state.outbox,
+            nextSequence: state.nextSequence,
+            latestProposal: proposal,
+            adoptedSchedule: state.adoptedSchedule
+        )
+        try store.save(candidate)
+        state = candidate
+        return proposal
+    }
+
+    @discardableResult
+    public func adoptSchedule(
+        proposalID: String,
+        at timestamp: String,
+        calendarEventIDs: [String] = []
+    ) throws -> RuntimeAdoptedSchedule {
+        guard state.calendarCleanupEventIDs.isEmpty else {
+            throw RuntimeScheduleError.calendarCleanupPending
+        }
+        guard ISO8601DateFormatter().date(from: timestamp) != nil else {
+            throw RuntimeScheduleError.invalidRequest
+        }
+        guard let proposal = state.latestProposal else {
+            throw RuntimeScheduleError.noProposal
+        }
+        guard proposal.id == proposalID else {
+            throw RuntimeScheduleError.proposalMismatch
+        }
+        let currentVersions = Dictionary(uniqueKeysWithValues: runtime.tasks
+            .filter { $0.status == "open" }
+            .map { ($0.id, $0.updatedAt) })
+        guard currentVersions == proposal.taskVersions else {
+            throw RuntimeScheduleError.staleProposal
+        }
+        let adopted = RuntimeAdoptedSchedule(
+            proposal: proposal,
+            adoptedAt: timestamp,
+            calendarEventIDs: calendarEventIDs
+        )
+        let candidate = combinedState(
+            runtimeState: runtime.persistentState,
+            inbox: state.inbox,
+            outbox: state.outbox,
+            nextSequence: state.nextSequence,
+            latestProposal: proposal,
+            adoptedSchedule: adopted
+        )
+        try store.save(candidate)
+        state = candidate
+        return adopted
+    }
+
+    public func cancelAdoptedSchedule() throws {
+        guard state.adoptedSchedule != nil else { return }
+        let candidate = combinedState(
+            runtimeState: runtime.persistentState,
+            inbox: state.inbox,
+            outbox: state.outbox,
+            nextSequence: state.nextSequence,
+            latestProposal: state.latestProposal,
+            adoptedSchedule: nil
+        )
+        try store.save(candidate)
+        state = candidate
+    }
+
+    public func acknowledgeCalendarCleanup(eventIDs: [String]) throws {
+        guard !eventIDs.isEmpty,
+              Set(eventIDs).isSubset(of: Set(state.calendarCleanupEventIDs))
+        else { throw RuntimeScheduleError.invalidRequest }
+        let acknowledged = Set(eventIDs)
+        let remaining = state.calendarCleanupEventIDs.filter {
+            !acknowledged.contains($0)
+        }
+        let candidate = combinedState(
+            runtimeState: runtime.persistentState,
+            inbox: state.inbox,
+            outbox: state.outbox,
+            nextSequence: state.nextSequence,
+            latestProposal: state.latestProposal,
+            adoptedSchedule: state.adoptedSchedule,
+            calendarCleanupEventIDs: remaining
+        )
+        try store.save(candidate)
+        state = candidate
+    }
+
     public func pipelineStatus() -> RuntimePipelineStatus {
         state.pipelineStatus
     }
@@ -514,20 +614,33 @@ public actor DurableTaskRuntime {
             status: .pending,
             summary: summary
         ))
-        try commit(runtime: candidate, inbox: inbox, outbox: outbox)
+        try commit(
+            runtime: candidate,
+            inbox: inbox,
+            outbox: outbox,
+            invalidateSchedule: candidate.tasks != runtime.tasks
+        )
         return response
     }
 
     private func commit(
         runtime candidate: TaskRuntime,
         inbox: [RuntimeInboundRecord],
-        outbox: [RuntimeOutboundRecord]
+        outbox: [RuntimeOutboundRecord],
+        invalidateSchedule: Bool = false
     ) throws {
+        let cleanup = invalidateSchedule
+            ? state.calendarCleanupEventIDs
+                + (state.adoptedSchedule?.calendarEventIDs ?? [])
+            : state.calendarCleanupEventIDs
         let candidateState = combinedState(
             runtimeState: candidate.persistentState,
             inbox: inbox,
             outbox: outbox,
-            nextSequence: state.nextSequence
+            nextSequence: state.nextSequence,
+            latestProposal: invalidateSchedule ? nil : state.latestProposal,
+            adoptedSchedule: invalidateSchedule ? nil : state.adoptedSchedule,
+            calendarCleanupEventIDs: Array(Set(cleanup)).sorted()
         )
         try store.save(candidateState)
         runtime = candidate
@@ -538,14 +651,21 @@ public actor DurableTaskRuntime {
         runtimeState: RuntimePersistentState,
         inbox: [RuntimeInboundRecord],
         outbox: [RuntimeOutboundRecord],
-        nextSequence: Int
+        nextSequence: Int,
+        latestProposal: RuntimeScheduleProposal? = nil,
+        adoptedSchedule: RuntimeAdoptedSchedule? = nil,
+        calendarCleanupEventIDs: [String]? = nil
     ) -> RuntimePersistentState {
         RuntimePersistentState(
             tasks: runtimeState.tasks,
             undoSnapshots: runtimeState.undoSnapshots,
             inbox: inbox,
             outbox: outbox,
-            nextSequence: nextSequence
+            nextSequence: nextSequence,
+            latestProposal: latestProposal,
+            adoptedSchedule: adoptedSchedule,
+            calendarCleanupEventIDs: calendarCleanupEventIDs
+                ?? state.calendarCleanupEventIDs
         )
     }
 

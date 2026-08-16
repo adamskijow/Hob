@@ -1,0 +1,29 @@
+name: HobAppleApps
+options:
+  bundleIdPrefix: com.josephadamski
+  deploymentTarget:
+    iOS: "26.0"
+packages:
+  HobAppFoundation:
+    path: ../HobAppFoundation
+targets:
+  HobiOS:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.josephadamski.hob
+        PRODUCT_NAME: Hob
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: "0.1"
+        SWIFT_VERSION: 6.0
+        CODE_SIGN_ENTITLEMENTS: Hob.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Info.plist
+    dependencies:
+      - package: HobAppFoundation
+        product: HobAppExperience
+    scheme:
+      gatherCoverageData: true

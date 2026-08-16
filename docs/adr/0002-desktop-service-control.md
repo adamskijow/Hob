@@ -1,65 +1,48 @@
 <!-- SPDX-License-Identifier: MIT -->
 # ADR 0002: native desktop service control
 
-Status: accepted for implementation, 2026-07-25.
+Status: accepted, 2026-07-25.
 
 ## Decision
 
-Hob's background process is a product capability, not an operator detail. Each
-supported desktop platform gets a small native control surface in the operating
-system's persistent status area:
+Each desktop edition provides service controls in the OS status area:
 
-- the Open Local macOS edition uses a menu-bar companion;
-- a future supported Windows edition uses a notification-area (system-tray)
-  companion;
-- the Mac App Store edition keeps its existing sandboxed menu-bar surface and
-  controls only its bundled `SMAppService` helper.
+- Open Local macOS uses a menu-bar companion.
+- A future Windows edition may use the system tray.
+- The Store edition controls its bundled `SMAppService` helper.
 
-Every surface uses the same user-facing states and actions:
-
-| State | Meaning | Primary action |
+| State | Meaning | Action |
 | --- | --- | --- |
-| Running | Background delivery is loaded and executing | Restart |
-| Off | Installed but not executing | Turn on |
-| Needs setup | No registered service definition exists | Finish setup |
-| Unavailable | The OS could not report service state | Check again |
+| Running | Service process is active | Restart |
+| Off | Installed and stopped | Turn on |
+| Needs setup | Service definition is missing | Finish setup |
+| Unavailable | OS state lookup failed | Check again |
 
-Health is a separate, explicit check. “Running” means the operating system has
-the process; “healthy” additionally checks Hob's database, durable queues,
-Telegram pairing, and local model. No task text, message content, token, or
-Calendar title appears in the desktop surface.
+Health is an explicit check of database integrity, queues, pairing, and model.
+Desktop controls never show task text, message content, tokens, or Calendar
+titles.
 
-## macOS Open Local boundary
+## Open Local macOS
 
-The companion is a native SwiftUI app installed in the user's Applications
-folder and launched at login by its own user LaunchAgent. It calls only
-`launchctl` for the fixed `com.local.hob` label. Restart uses launchd's forced
-kickstart, preserving Hob's existing durable inbox/outbox and database leases.
-The companion can open the existing privacy-safe log and data folder and runs
-the released `app.py status` with the database and model configuration copied
-from the installed daemon.
+The SwiftUI companion lives in the user's Applications folder and starts at
+login. It controls the fixed `com.local.hob` label through `launchctl`, opens
+Hob's private log and data folder, and runs `app.py status` with installed
+configuration.
 
-This target is intentionally separate from the Mac App Store bundle. The Store
-app remains sandboxed and never launches `launchctl`, uv, Python, or executables
-outside its signed bundle.
+The Store app has a separate sandboxed implementation and uses only its bundled
+helper.
 
 ## Installation and recovery
 
-`scripts/install_macos.sh` builds and ad-hoc signs the companion, preserves an
-existing daemon configuration, creates the durable service only when missing,
-registers the menu at login, and starts or restarts Hob when a Telegram
-credential exists. It refuses to choose between two databases. Re-running it is
-the update/repair operation. The previous installed app and menu LaunchAgent
-remain recoverable copies.
+`scripts/install_macos.sh` builds and signs the companion, preserves daemon
+settings, installs both login services, rejects ambiguous databases, and starts
+or restarts Hob. Re-running it updates or repairs the installation.
 
-`scripts/hobctl` is a text fallback for accessibility, remote administration,
-and recovery when the graphical session is unavailable. It exposes the same
-`status`, `on`, `restart`, `logs`, and `install` concepts.
+`scripts/hobctl` provides `status`, `on`, `restart`, `logs`, and `install` for
+keyboard-only or remote use.
 
 ## Windows follow-on
 
-This decision does not claim Windows support for 1.0. A Windows tray build must
-first define and test the Windows service install/update boundary, durable data
-location, credential storage, log opening, and process-health probe. It should
-render the state/action contract above rather than importing launchd concepts
-or running a hidden shell command parser.
+Windows support requires a service installer, update path, data location,
+credential store, log action, and health probe. The tray should use the states
+and actions above without exposing service-manager details.

@@ -18,6 +18,8 @@ public struct AppReadiness: Equatable, Sendable {
     public let backgroundServiceApproved: Bool
     public let modelAvailable: Bool
     public let storageAvailable: Bool
+    public let requiresOwnerPairing: Bool
+    public let requiresBackgroundService: Bool
 
     public init(
         edition: DistributionEdition,
@@ -25,7 +27,9 @@ public struct AppReadiness: Equatable, Sendable {
         ownerPaired: Bool,
         backgroundServiceApproved: Bool,
         modelAvailable: Bool,
-        storageAvailable: Bool = true
+        storageAvailable: Bool = true,
+        requiresOwnerPairing: Bool = true,
+        requiresBackgroundService: Bool = true
     ) {
         self.edition = edition
         self.modelBackend = modelBackend
@@ -33,6 +37,8 @@ public struct AppReadiness: Equatable, Sendable {
         self.backgroundServiceApproved = backgroundServiceApproved
         self.modelAvailable = modelAvailable
         self.storageAvailable = storageAvailable
+        self.requiresOwnerPairing = requiresOwnerPairing
+        self.requiresBackgroundService = requiresBackgroundService
     }
 
     public var blockers: [ReadinessBlocker] {
@@ -43,13 +49,13 @@ public struct AppReadiness: Equatable, Sendable {
         if !modelAvailable {
             result.append(.modelUnavailable)
         }
-        if !ownerPaired {
+        if requiresOwnerPairing && !ownerPaired {
             result.append(.ownerNotPaired)
         }
         if !storageAvailable {
             result.append(.taskStorageUnavailable)
         }
-        if !backgroundServiceApproved {
+        if requiresBackgroundService && !backgroundServiceApproved {
             result.append(.backgroundServiceNotApproved)
         }
         return result
@@ -84,7 +90,7 @@ public enum ReadinessBlocker: String, Equatable, Sendable {
 public enum OnboardingStep: String, CaseIterable, Sendable {
     case welcome
     case model
-    case telegram
+    case notifications
     case schedule
     case calendar
     case backgroundService
@@ -94,7 +100,7 @@ public enum OnboardingStep: String, CaseIterable, Sendable {
         switch self {
         case .welcome: return "Meet Hob"
         case .model: return "Private intelligence"
-        case .telegram: return "Connect Telegram"
+        case .notifications: return "Choose where Hob should notify you"
         case .schedule: return "Set your working rhythm"
         case .calendar: return "Protect busy time"
         case .backgroundService: return "Deliver reliably"

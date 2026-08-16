@@ -25,6 +25,15 @@
 		E10000000000000000000001 /* TaskStateStore.swift in Agent Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000001 /* TaskStateStore.swift */; };
 		E10000000000000000000002 /* TaskStateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000001 /* TaskStateStore.swift */; };
 		E10000000000000000000003 /* TaskStorageController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000002 /* TaskStorageController.swift */; };
+		F10000000000000000000001 /* ScheduleRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000001 /* ScheduleRuntime.swift */; };
+		F10000000000000000000002 /* ScheduleRuntime.swift in Agent Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000001 /* ScheduleRuntime.swift */; };
+		F10000000000000000000003 /* RuntimeMessageInterpreter.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000002 /* RuntimeMessageInterpreter.swift */; };
+		F10000000000000000000004 /* FoundationModelInterpreter.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000003 /* FoundationModelInterpreter.swift */; };
+		F10000000000000000000005 /* HobWorkspaceController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000004 /* HobWorkspaceController.swift */; };
+		F10000000000000000000006 /* HobWorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000005 /* HobWorkspaceView.swift */; };
+		G10000000000000000000001 /* CalendarScheduling.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000001 /* CalendarScheduling.swift */; };
+		G10000000000000000000002 /* EventKitScheduleStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000002 /* EventKitScheduleStore.swift */; };
+		H10000000000000000000001 /* HobTeapotIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = H20000000000000000000001 /* HobTeapotIcon.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -90,6 +99,14 @@
 		D20000000000000000000001 /* TaskRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TaskRuntime.swift; path = ../HobAppFoundation/Sources/HobAppCore/TaskRuntime.swift; sourceTree = "<group>"; };
 		E20000000000000000000001 /* TaskStateStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TaskStateStore.swift; path = ../HobAppFoundation/Sources/HobAppStorage/TaskStateStore.swift; sourceTree = "<group>"; };
 		E20000000000000000000002 /* TaskStorageController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TaskStorageController.swift; path = ../HobAppFoundation/Sources/HobMacShell/TaskStorageController.swift; sourceTree = "<group>"; };
+		F20000000000000000000001 /* ScheduleRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ScheduleRuntime.swift; path = ../HobAppFoundation/Sources/HobAppCore/ScheduleRuntime.swift; sourceTree = "<group>"; };
+		F20000000000000000000002 /* RuntimeMessageInterpreter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RuntimeMessageInterpreter.swift; path = ../HobAppFoundation/Sources/HobAppCore/RuntimeMessageInterpreter.swift; sourceTree = "<group>"; };
+		F20000000000000000000003 /* FoundationModelInterpreter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = FoundationModelInterpreter.swift; path = ../HobAppFoundation/Sources/HobAppleIntelligence/FoundationModelInterpreter.swift; sourceTree = "<group>"; };
+		F20000000000000000000004 /* HobWorkspaceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = HobWorkspaceController.swift; path = ../HobAppFoundation/Sources/HobAppExperience/HobWorkspaceController.swift; sourceTree = "<group>"; };
+		F20000000000000000000005 /* HobWorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = HobWorkspaceView.swift; path = ../HobAppFoundation/Sources/HobAppExperience/HobWorkspaceView.swift; sourceTree = "<group>"; };
+		G20000000000000000000001 /* CalendarScheduling.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CalendarScheduling.swift; path = ../HobAppFoundation/Sources/HobAppCore/CalendarScheduling.swift; sourceTree = "<group>"; };
+		G20000000000000000000002 /* EventKitScheduleStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = EventKitScheduleStore.swift; path = ../HobAppFoundation/Sources/HobCalendar/EventKitScheduleStore.swift; sourceTree = "<group>"; };
+		H20000000000000000000001 /* HobTeapotIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = HobTeapotIcon.swift; path = ../HobAppFoundation/Sources/HobAppExperience/HobTeapotIcon.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -141,6 +158,14 @@
 				D20000000000000000000001 /* TaskRuntime.swift */,
 				E20000000000000000000001 /* TaskStateStore.swift */,
 				E20000000000000000000002 /* TaskStorageController.swift */,
+				F20000000000000000000001 /* ScheduleRuntime.swift */,
+				F20000000000000000000002 /* RuntimeMessageInterpreter.swift */,
+				F20000000000000000000003 /* FoundationModelInterpreter.swift */,
+				F20000000000000000000004 /* HobWorkspaceController.swift */,
+				F20000000000000000000005 /* HobWorkspaceView.swift */,
+				G20000000000000000000001 /* CalendarScheduling.swift */,
+				G20000000000000000000002 /* EventKitScheduleStore.swift */,
+				H20000000000000000000001 /* HobTeapotIcon.swift */,
 			);
 			name = Sources;
 			sourceTree = "<group>";
@@ -298,6 +323,14 @@
 				D10000000000000000000001 /* TaskRuntime.swift in Sources */,
 				E10000000000000000000002 /* TaskStateStore.swift in Sources */,
 				E10000000000000000000003 /* TaskStorageController.swift in Sources */,
+				F10000000000000000000001 /* ScheduleRuntime.swift in Sources */,
+				F10000000000000000000003 /* RuntimeMessageInterpreter.swift in Sources */,
+				F10000000000000000000004 /* FoundationModelInterpreter.swift in Sources */,
+				F10000000000000000000005 /* HobWorkspaceController.swift in Sources */,
+				F10000000000000000000006 /* HobWorkspaceView.swift in Sources */,
+				G10000000000000000000001 /* CalendarScheduling.swift in Sources */,
+				G10000000000000000000002 /* EventKitScheduleStore.swift in Sources */,
+				H10000000000000000000001 /* HobTeapotIcon.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -310,6 +343,7 @@
 				B10000000000000000000006 /* HobAgent.swift in Agent Sources */,
 				D10000000000000000000002 /* TaskRuntime.swift in Agent Sources */,
 				E10000000000000000000001 /* TaskStateStore.swift in Agent Sources */,
+				F10000000000000000000002 /* ScheduleRuntime.swift in Agent Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
