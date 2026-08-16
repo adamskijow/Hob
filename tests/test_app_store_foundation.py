@@ -61,6 +61,7 @@ def test_native_package_exposes_shell_core_and_model_adapter():
     assert 'name: "HobAppleIntelligence"' in manifest
     assert 'name: "HobAppExperience"' in manifest
     assert 'name: "HobCalendar"' in manifest
+    assert 'name: "HobNotifications"' in manifest
     assert '.iOS("26.0")' in manifest
 
     bridge = (
@@ -131,10 +132,32 @@ def test_portable_task_runtime_is_compiled_into_app_and_agent():
     assert "ScheduleRuntime.swift in Agent Sources" in project
     assert "CalendarScheduling.swift in Sources" in project
     assert "EventKitScheduleStore.swift in Sources" in project
+    assert "NotificationScheduling.swift in Sources" in project
+    assert "NotificationScheduling.swift in Agent Sources" in project
+    assert "LocalNotificationScheduler.swift in Sources" in project
     assert "request.version == 1" in runtime
     assert "request.message.utf8.count <= 20_000" in runtime
     assert "actions.count <= 32" in runtime
     assert "undoSnapshots.count == 100" in runtime
+
+
+def test_adopted_plans_have_actionable_durable_start_reminders():
+    notifications = (
+        FOUNDATION
+        / "Sources"
+        / "HobNotifications"
+        / "LocalNotificationScheduler.swift"
+    ).read_text(encoding="utf-8")
+    storage = (
+        FOUNDATION / "Sources" / "HobAppStorage" / "TaskStateStore.swift"
+    ).read_text(encoding="utf-8")
+
+    assert 'title: "Done"' in notifications
+    assert 'title: "Snooze 15m"' in notifications
+    assert 'title: "Replan"' in notifications
+    assert "UNCalendarNotificationTrigger" in notifications
+    assert "enqueueNotificationResponse" in storage
+    assert "notificationCleanupIDs" in storage
 
 
 def test_iphone_app_uses_the_same_native_workspace_and_local_model():

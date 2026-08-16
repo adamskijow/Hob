@@ -256,7 +256,7 @@ public struct RuntimePipelineStatus: Codable, Equatable, Sendable {
 }
 
 public struct RuntimePersistentState: Codable, Equatable, Sendable {
-    public static let currentVersion = 5
+    public static let currentVersion = 6
 
     public let version: Int
     public let tasks: [RuntimeTask]
@@ -267,6 +267,8 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
     public let latestProposal: RuntimeScheduleProposal?
     public let adoptedSchedule: RuntimeAdoptedSchedule?
     public let calendarCleanupEventIDs: [String]
+    public let notificationCleanupIDs: [String]
+    public let pendingNotificationResponses: [RuntimeNotificationResponse]
 
     public init(
         version: Int = RuntimePersistentState.currentVersion,
@@ -277,7 +279,9 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         nextSequence: Int = 1,
         latestProposal: RuntimeScheduleProposal? = nil,
         adoptedSchedule: RuntimeAdoptedSchedule? = nil,
-        calendarCleanupEventIDs: [String] = []
+        calendarCleanupEventIDs: [String] = [],
+        notificationCleanupIDs: [String] = [],
+        pendingNotificationResponses: [RuntimeNotificationResponse] = []
     ) {
         self.version = version
         self.tasks = tasks
@@ -288,6 +292,8 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         self.latestProposal = latestProposal
         self.adoptedSchedule = adoptedSchedule
         self.calendarCleanupEventIDs = calendarCleanupEventIDs
+        self.notificationCleanupIDs = notificationCleanupIDs
+        self.pendingNotificationResponses = pendingNotificationResponses
     }
 
     public static let empty = RuntimePersistentState(tasks: [], undoSnapshots: [])
@@ -323,7 +329,10 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
                 nextSequence: version == 1 ? 1 : nextSequence,
                 latestProposal: version >= 3 ? latestProposal : nil,
                 adoptedSchedule: version >= 3 ? adoptedSchedule : nil,
-                calendarCleanupEventIDs: []
+                calendarCleanupEventIDs: version >= 5
+                    ? calendarCleanupEventIDs : [],
+                notificationCleanupIDs: [],
+                pendingNotificationResponses: []
             )
         } else {
             migrated = self
@@ -338,6 +347,16 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
               migrated.calendarCleanupEventIDs.allSatisfy({
                   Self.validIdentifier($0, maxBytes: 1_024)
               }),
+              migrated.notificationCleanupIDs.count <= 10_000,
+              Set(migrated.notificationCleanupIDs).count
+                == migrated.notificationCleanupIDs.count,
+              migrated.notificationCleanupIDs.allSatisfy({
+                  Self.validIdentifier($0, maxBytes: 512)
+              }),
+              migrated.pendingNotificationResponses.count <= 100,
+              Set(migrated.pendingNotificationResponses.map(\.id)).count
+                == migrated.pendingNotificationResponses.count,
+              migrated.pendingNotificationResponses.allSatisfy(\.isValid),
               migrated.nextSequence > 0 else {
             throw RuntimeStateError.invalidState
         }
@@ -364,6 +383,8 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         case latestProposal
         case adoptedSchedule
         case calendarCleanupEventIDs
+        case notificationCleanupIDs
+        case pendingNotificationResponses
     }
 
     public init(from decoder: Decoder) throws {
@@ -392,6 +413,14 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
             [String].self,
             forKey: .calendarCleanupEventIDs
         ) ?? []
+        notificationCleanupIDs = try container.decodeIfPresent(
+            [String].self,
+            forKey: .notificationCleanupIDs
+        ) ?? []
+        pendingNotificationResponses = try container.decodeIfPresent(
+            [RuntimeNotificationResponse].self,
+            forKey: .pendingNotificationResponses
+        ) ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -405,6 +434,11 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         try container.encodeIfPresent(latestProposal, forKey: .latestProposal)
         try container.encodeIfPresent(adoptedSchedule, forKey: .adoptedSchedule)
         try container.encode(calendarCleanupEventIDs, forKey: .calendarCleanupEventIDs)
+        try container.encode(notificationCleanupIDs, forKey: .notificationCleanupIDs)
+        try container.encode(
+            pendingNotificationResponses,
+            forKey: .pendingNotificationResponses
+        )
     }
 
     private static func validatePipeline(_ state: RuntimePersistentState) throws {

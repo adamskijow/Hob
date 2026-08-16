@@ -124,7 +124,7 @@ import Testing
         withIntermediateDirectories: true
     )
     let store = TaskStateStore(directoryURL: directory)
-    let future = RuntimePersistentState(version: 6, tasks: [], undoSnapshots: [])
+    let future = RuntimePersistentState(version: 7, tasks: [], undoSnapshots: [])
     try JSONEncoder().encode(future).write(to: store.stateURL)
     #expect(throws: TaskStateStoreError.unsupportedVersion) {
         try store.load()
@@ -397,7 +397,8 @@ import Testing
     _ = try await runtime.adoptSchedule(
         proposalID: "stale",
         at: "2026-06-29T08:01:00-04:00",
-        calendarEventIDs: ["event-for-first-task"]
+        calendarEventIDs: ["event-for-first-task"],
+        notificationIDs: ["notification-for-first-task"]
     )
     _ = try await runtime.process(request(
         id: "second-task",
@@ -413,16 +414,59 @@ import Testing
     }
     #expect(await runtime.snapshot().adoptedSchedule == nil)
     #expect(await runtime.snapshot().calendarCleanupEventIDs == ["event-for-first-task"])
+    #expect(await runtime.snapshot().notificationCleanupIDs == ["notification-for-first-task"])
     try await runtime.acknowledgeCalendarCleanup(
         eventIDs: ["event-for-first-task"]
     )
     #expect(await runtime.snapshot().calendarCleanupEventIDs.isEmpty)
+    try await runtime.acknowledgeNotificationCleanup(
+        notificationIDs: ["notification-for-first-task"]
+    )
+    #expect(await runtime.snapshot().notificationCleanupIDs.isEmpty)
     await #expect(throws: RuntimeScheduleError.noProposal) {
         _ = try await runtime.adoptSchedule(
             proposalID: "stale",
             at: "2026-06-29T08:03:00-04:00"
         )
     }
+}
+
+@Test func notificationResponsesSurviveRestartAndDeduplicate() async throws {
+    let directory = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = TaskStateStore(directoryURL: directory)
+    let runtime = try DurableTaskRuntime(store: store)
+    let response = RuntimeNotificationResponse(
+        id: "notification-response-1",
+        action: .done,
+        notificationID: "notification-1",
+        proposalID: "proposal-1",
+        blockID: "block-1",
+        taskID: "task-1",
+        task: "finish taxes",
+        receivedAt: "2026-06-29T08:05:00-04:00"
+    )
+
+    try await runtime.enqueueNotificationResponse(response)
+    try await runtime.enqueueNotificationResponse(response)
+    #expect(await runtime.snapshot().pendingNotificationResponses == [response])
+
+    let restarted = try DurableTaskRuntime(store: store)
+    #expect(await restarted.snapshot().pendingNotificationResponses == [response])
+    await #expect(throws: RuntimePipelineError.idempotencyConflict) {
+        try await restarted.enqueueNotificationResponse(RuntimeNotificationResponse(
+            id: response.id,
+            action: .snooze,
+            notificationID: response.notificationID,
+            proposalID: response.proposalID,
+            blockID: response.blockID,
+            taskID: response.taskID,
+            task: response.task,
+            receivedAt: response.receivedAt
+        ))
+    }
+    try await restarted.acknowledgeNotificationResponse(responseID: response.id)
+    #expect(await restarted.snapshot().pendingNotificationResponses.isEmpty)
 }
 
 @Test func storageInspectionIsActionableAndStatusContainsNoUserContent() async throws {

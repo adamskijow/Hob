@@ -13,6 +13,9 @@ import HobAppleIntelligence
 #if canImport(HobCalendar)
 import HobCalendar
 #endif
+#if canImport(HobNotifications)
+import HobNotifications
+#endif
 
 @MainActor
 public final class HobWorkspaceController: ObservableObject {
@@ -25,10 +28,14 @@ public final class HobWorkspaceController: ObservableObject {
     @Published public private(set) var errorMessage: String?
     @Published public private(set) var calendarAuthorization: RuntimeCalendarAuthorization
     @Published public private(set) var calendarCleanupPending = false
+    @Published public private(set) var notificationAuthorization: RuntimeNotificationAuthorization
+    @Published public private(set) var notificationCleanupPending = false
+    @Published public private(set) var notificationActionsPending = false
 
     private let runtime: DurableTaskRuntime?
     private let interpreter: any RuntimeMessageInterpreting
     private let calendarStore: any RuntimeCalendarScheduling
+    private let notificationStore: any RuntimeNotificationScheduling
     private let gregorianCalendar: Calendar
     private let timezone: TimeZone
     private let now: @Sendable () -> Date
@@ -39,13 +46,15 @@ public final class HobWorkspaceController: ObservableObject {
             self.init(
                 store: TaskStateStore(directoryURL: directory),
                 interpreter: AppleFoundationInterpreter(),
-                calendarStore: EventKitScheduleStore()
+                calendarStore: EventKitScheduleStore(),
+                notificationStore: LocalNotificationScheduler()
             )
         } catch {
             self.init(
                 runtime: nil,
                 interpreter: AppleFoundationInterpreter(),
                 calendarStore: EventKitScheduleStore(),
+                notificationStore: LocalNotificationScheduler(),
                 timezone: .current,
                 now: Date.init
             )
@@ -57,6 +66,7 @@ public final class HobWorkspaceController: ObservableObject {
         store: TaskStateStore,
         interpreter: any RuntimeMessageInterpreting,
         calendarStore: any RuntimeCalendarScheduling = EventKitScheduleStore(),
+        notificationStore: any RuntimeNotificationScheduling,
         timezone: TimeZone = .current,
         now: @escaping @Sendable () -> Date = Date.init
     ) {
@@ -65,6 +75,7 @@ public final class HobWorkspaceController: ObservableObject {
             runtime: durable,
             interpreter: interpreter,
             calendarStore: calendarStore,
+            notificationStore: notificationStore,
             timezone: timezone,
             now: now
         )
@@ -77,6 +88,7 @@ public final class HobWorkspaceController: ObservableObject {
         runtime: DurableTaskRuntime?,
         interpreter: any RuntimeMessageInterpreting,
         calendarStore: any RuntimeCalendarScheduling,
+        notificationStore: any RuntimeNotificationScheduling,
         timezone: TimeZone,
         now: @escaping @Sendable () -> Date
     ) {
@@ -84,15 +96,22 @@ public final class HobWorkspaceController: ObservableObject {
         self.interpreter = interpreter
         self.calendarStore = calendarStore
         self.calendarAuthorization = calendarStore.authorization
+        self.notificationStore = notificationStore
+        self.notificationAuthorization = notificationStore.authorization
         self.timezone = timezone
         self.now = now
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timezone
         self.gregorianCalendar = calendar
+        notificationStore.setActionHandler { [weak self] response in
+            await self?.receiveNotificationResponse(response)
+        }
         Task {
+            notificationAuthorization = await notificationStore.refreshAuthorization()
             await refresh()
-            if calendarAuthorization == .fullAccess, calendarCleanupPending {
-                retryCalendarCleanup()
+            if calendarCleanupPending || notificationCleanupPending
+                || notificationActionsPending {
+                resumePendingWork()
             }
         }
     }
@@ -132,6 +151,7 @@ public final class HobWorkspaceController: ObservableObject {
             switch response.outcome.disposition {
             case .applied:
                 try await self.cleanupCalendarEventsIfNeeded()
+                try await self.cleanupNotificationsIfNeeded()
                 _ = try await runtime.proposeSchedule(
                     try self.scheduleRequest(at: instant)
                 )
@@ -158,17 +178,28 @@ public final class HobWorkspaceController: ObservableObject {
                 throw RuntimeCalendarError.permissionDenied
             }
             let eventIDs = try self.calendarStore.write(proposal)
+            var notificationIDs: [String] = []
             do {
+                if self.notificationStore.authorization == .authorized {
+                    notificationIDs = try await self.notificationStore.schedule(
+                        proposal: proposal,
+                        now: self.now()
+                    )
+                }
                 _ = try await runtime.adoptSchedule(
                     proposalID: proposal.id,
                     at: self.timestamp(self.now()),
-                    calendarEventIDs: eventIDs
+                    calendarEventIDs: eventIDs,
+                    notificationIDs: notificationIDs
                 )
             } catch {
+                self.notificationStore.cancel(notificationIDs: notificationIDs)
                 try? self.calendarStore.remove(eventIDs: eventIDs)
                 throw error
             }
-            self.notice = "Schedule added to Calendar."
+            self.notice = notificationIDs.isEmpty
+                ? "Schedule added to Calendar. Notifications are off."
+                : "Schedule added to Calendar with start reminders."
             await self.refresh()
         }
     }
@@ -176,12 +207,44 @@ public final class HobWorkspaceController: ObservableObject {
     public func cancelAdoptedSchedule() {
         run {
             guard let runtime = self.runtime else { return }
+            if let notificationIDs = self.adoptedSchedule?.notificationIDs {
+                self.notificationStore.cancel(notificationIDs: notificationIDs)
+            }
             if let eventIDs = self.adoptedSchedule?.calendarEventIDs,
                !eventIDs.isEmpty {
                 try self.calendarStore.remove(eventIDs: eventIDs)
             }
             try await runtime.cancelAdoptedSchedule()
             self.notice = "Calendar blocks removed. Tasks remain open."
+            await self.refresh()
+        }
+    }
+
+    public func requestNotificationAccess() {
+        run {
+            self.notificationAuthorization = try await self.notificationStore.requestAccess()
+            guard self.notificationAuthorization == .authorized else {
+                self.errorMessage = "Notifications are off. Enable them in Settings."
+                return
+            }
+            if let adopted = self.adoptedSchedule,
+               adopted.notificationIDs.isEmpty,
+               let runtime = self.runtime {
+                let identifiers = try await self.notificationStore.schedule(
+                    proposal: adopted.proposal,
+                    now: self.now()
+                )
+                do {
+                    try await runtime.attachNotificationIDs(
+                        proposalID: adopted.proposal.id,
+                        notificationIDs: identifiers
+                    )
+                } catch {
+                    self.notificationStore.cancel(notificationIDs: identifiers)
+                    throw error
+                }
+            }
+            self.notice = "Start reminders enabled."
             await self.refresh()
         }
     }
@@ -213,6 +276,14 @@ public final class HobWorkspaceController: ObservableObject {
         }
     }
 
+    public func retryNotificationCleanup() {
+        run {
+            try await self.cleanupNotificationsIfNeeded()
+            self.notice = "Old reminders removed."
+            await self.refresh()
+        }
+    }
+
     public func undoLastChange() {
         run {
             guard let runtime = self.runtime else { return }
@@ -233,6 +304,7 @@ public final class HobWorkspaceController: ObservableObject {
             if response.outcome.disposition == .applied,
                response.outcome.tasks.contains(where: { $0.status == "open" }) {
                 try await self.cleanupCalendarEventsIfNeeded()
+                try await self.cleanupNotificationsIfNeeded()
                 _ = try await runtime.proposeSchedule(
                     try self.scheduleRequest(at: instant)
                 )
@@ -251,15 +323,27 @@ public final class HobWorkspaceController: ObservableObject {
         proposal = snapshot.latestProposal
         adoptedSchedule = snapshot.adoptedSchedule
         calendarCleanupPending = !snapshot.calendarCleanupEventIDs.isEmpty
+        notificationCleanupPending = !snapshot.notificationCleanupIDs.isEmpty
+        notificationActionsPending = !snapshot.pendingNotificationResponses.isEmpty
         calendarAuthorization = calendarStore.authorization
+        notificationAuthorization = notificationStore.authorization
     }
 
-    private func run(_ operation: @escaping () async throws -> Void) {
+    private func run(
+        processPendingResponsesAfterward: Bool = true,
+        _ operation: @escaping () async throws -> Void
+    ) {
         guard !isWorking else { return }
         isWorking = true
         errorMessage = nil
         Task {
-            defer { isWorking = false }
+            defer {
+                isWorking = false
+                if processPendingResponsesAfterward,
+                   notificationActionsPending {
+                    processNotificationResponses()
+                }
+            }
             do {
                 try await operation()
             } catch RuntimeInterpretationError.modelUnavailable {
@@ -269,7 +353,7 @@ public final class HobWorkspaceController: ObservableObject {
             } catch RuntimeScheduleError.staleProposal {
                 errorMessage = "The tasks changed after this plan was made. Build a fresh plan first."
             } catch RuntimeScheduleError.calendarCleanupPending {
-                errorMessage = "Remove the old Calendar blocks before adopting a new plan."
+                errorMessage = "Remove the old Calendar blocks and reminders before adopting a new plan."
             } catch RuntimeCalendarError.permissionDenied {
                 errorMessage = "Connect Calendar before adopting this schedule."
             } catch RuntimeCalendarError.writeFailed {
@@ -280,6 +364,12 @@ public final class HobWorkspaceController: ObservableObject {
                 errorMessage = "Calendar has no writable default calendar."
             } catch RuntimeCalendarError.invalidSchedule {
                 errorMessage = "The proposed times are invalid. Build a fresh plan."
+            } catch RuntimeNotificationError.permissionDenied {
+                errorMessage = "Enable notifications before scheduling reminders."
+            } catch RuntimeNotificationError.schedulingFailed {
+                errorMessage = "Hob could not schedule every reminder. No partial reminder set was kept."
+            } catch RuntimeNotificationError.invalidRequest {
+                errorMessage = "That reminder is no longer valid."
             } catch {
                 errorMessage = "Hob could not finish that safely. Review the task list before retrying."
             }
@@ -315,6 +405,126 @@ public final class HobWorkspaceController: ObservableObject {
         try calendarStore.remove(eventIDs: eventIDs)
         try await runtime.acknowledgeCalendarCleanup(eventIDs: eventIDs)
         calendarCleanupPending = false
+    }
+
+    private func cleanupNotificationsIfNeeded() async throws {
+        guard let runtime else { return }
+        let identifiers = await runtime.snapshot().notificationCleanupIDs
+        guard !identifiers.isEmpty else { return }
+        notificationStore.cancel(notificationIDs: identifiers)
+        try await runtime.acknowledgeNotificationCleanup(
+            notificationIDs: identifiers
+        )
+        notificationCleanupPending = false
+    }
+
+    private func receiveNotificationResponse(
+        _ response: RuntimeNotificationResponse
+    ) async {
+        guard let runtime else { return }
+        do {
+            try await runtime.enqueueNotificationResponse(response)
+            await refresh()
+            if !isWorking { processNotificationResponses() }
+        } catch {
+            errorMessage = "Hob saved no notification action. Open Hob and try again."
+        }
+    }
+
+    public func processNotificationResponses() {
+        run(processPendingResponsesAfterward: false) {
+            guard let runtime = self.runtime else { return }
+            try await self.drainNotificationResponses(runtime: runtime)
+            await self.refresh()
+        }
+    }
+
+    private func resumePendingWork() {
+        run(processPendingResponsesAfterward: false) {
+            guard let runtime = self.runtime else { return }
+            if self.calendarStore.authorization == .fullAccess {
+                try await self.cleanupCalendarEventsIfNeeded()
+            }
+            try await self.cleanupNotificationsIfNeeded()
+            try await self.drainNotificationResponses(runtime: runtime)
+            await self.refresh()
+        }
+    }
+
+    private func drainNotificationResponses(
+        runtime: DurableTaskRuntime
+    ) async throws {
+        let responses = await runtime.snapshot().pendingNotificationResponses
+        for response in responses {
+            try await processNotificationResponse(response, runtime: runtime)
+            try await runtime.acknowledgeNotificationResponse(
+                responseID: response.id
+            )
+        }
+        notificationActionsPending = false
+    }
+
+    private func processNotificationResponse(
+        _ response: RuntimeNotificationResponse,
+        runtime: DurableTaskRuntime
+    ) async throws {
+        let snapshot = await runtime.snapshot()
+        let taskIsOpen = snapshot.tasks.contains {
+            $0.id == response.taskID && $0.status == "open"
+        }
+        switch response.action {
+        case .done:
+            guard taskIsOpen else {
+                notice = "That task was already closed."
+                return
+            }
+            let requestID = "notification:\(response.id)"
+            let instant = now()
+            let result = try await runtime.process(RuntimeTurnRequest(
+                requestID: requestID,
+                message: "Done from schedule reminder",
+                now: timestamp(instant),
+                timezone: timezone.identifier,
+                actions: [RuntimeAction(
+                    type: "complete",
+                    target: response.taskID
+                )]
+            ))
+            try? await runtime.markDelivered(
+                dedupeKey: "turn:\(requestID)",
+                at: timestamp(instant)
+            )
+            guard result.outcome.disposition == .applied else {
+                throw RuntimeNotificationError.invalidRequest
+            }
+            try await cleanupCalendarEventsIfNeeded()
+            try await cleanupNotificationsIfNeeded()
+            if result.outcome.tasks.contains(where: { $0.status == "open" }) {
+                _ = try await runtime.proposeSchedule(
+                    try scheduleRequest(at: instant)
+                )
+            }
+            notice = "Done: \(response.task). Review the updated plan."
+        case .snooze:
+            guard taskIsOpen,
+                  snapshot.adoptedSchedule?.proposal.id == response.proposalID
+            else {
+                notice = "That schedule is no longer active."
+                return
+            }
+            try await notificationStore.snooze(
+                response: response,
+                minutes: 15
+            )
+            notice = "Snoozed \(response.task) for 15 minutes."
+        case .replan:
+            guard taskIsOpen else {
+                notice = "That task was already closed."
+                return
+            }
+            draft = "I need to replan \(response.task) because "
+            notice = "What changed? Finish the sentence and Hob will rebuild the plan."
+        }
     }
 
     private func timestamp(_ value: Date) -> String {

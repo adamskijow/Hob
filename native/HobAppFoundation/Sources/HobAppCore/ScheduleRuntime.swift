@@ -130,19 +130,22 @@ public struct RuntimeAdoptedSchedule: Codable, Equatable, Sendable {
     public let proposal: RuntimeScheduleProposal
     public let adoptedAt: String
     public let calendarEventIDs: [String]
+    public let notificationIDs: [String]
 
     public init(
         proposal: RuntimeScheduleProposal,
         adoptedAt: String,
-        calendarEventIDs: [String] = []
+        calendarEventIDs: [String] = [],
+        notificationIDs: [String] = []
     ) {
         self.proposal = proposal
         self.adoptedAt = adoptedAt
         self.calendarEventIDs = calendarEventIDs
+        self.notificationIDs = notificationIDs
     }
 
     private enum CodingKeys: String, CodingKey {
-        case proposal, adoptedAt, calendarEventIDs
+        case proposal, adoptedAt, calendarEventIDs, notificationIDs
     }
 
     public init(from decoder: Decoder) throws {
@@ -152,6 +155,10 @@ public struct RuntimeAdoptedSchedule: Codable, Equatable, Sendable {
         calendarEventIDs = try values.decodeIfPresent(
             [String].self,
             forKey: .calendarEventIDs
+        ) ?? []
+        notificationIDs = try values.decodeIfPresent(
+            [String].self,
+            forKey: .notificationIDs
         ) ?? []
     }
 }
@@ -217,6 +224,11 @@ public enum RuntimeScheduleValidator {
             && Set(adopted.calendarEventIDs).count == adopted.calendarEventIDs.count
             && adopted.calendarEventIDs.allSatisfy {
                 identifier($0, maximum: 1_024)
+            }
+            && adopted.notificationIDs.count <= adopted.proposal.blocks.count
+            && Set(adopted.notificationIDs).count == adopted.notificationIDs.count
+            && adopted.notificationIDs.allSatisfy {
+                identifier($0, maximum: 512)
             }
     }
 

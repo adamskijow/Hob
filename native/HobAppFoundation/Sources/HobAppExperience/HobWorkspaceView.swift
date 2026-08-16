@@ -21,6 +21,7 @@ public struct HobWorkspaceView: View {
                 VStack(alignment: .leading, spacing: 22) {
                     introduction
                     calendarSetup
+                    notificationSetup
                     composer
                     feedback
                     if let schedule = controller.adoptedSchedule {
@@ -64,6 +65,37 @@ public struct HobWorkspaceView: View {
             if controller.calendarCleanupPending {
                 Button("Remove old Hob blocks") {
                     controller.retryCalendarCleanup()
+                }
+                .disabled(controller.isWorking)
+            }
+        }
+    }
+
+    private var notificationSetup: some View {
+        HStack(spacing: 10) {
+            switch controller.notificationAuthorization {
+            case .authorized:
+                Label("Start reminders enabled", systemImage: "bell.badge.fill")
+                    .foregroundStyle(.secondary)
+            case .notDetermined:
+                Button("Enable start reminders", systemImage: "bell.badge") {
+                    controller.requestNotificationAccess()
+                }
+                .buttonStyle(.bordered)
+                .accessibilityHint("Adds Done, Snooze, and Replan actions at scheduled start times")
+            case .denied:
+                Label("Enable notifications in Settings", systemImage: "bell.slash")
+                    .foregroundStyle(.orange)
+            }
+            if controller.notificationCleanupPending {
+                Button("Remove old reminders") {
+                    controller.retryNotificationCleanup()
+                }
+                .disabled(controller.isWorking)
+            }
+            if controller.notificationActionsPending {
+                Button("Finish reminder action") {
+                    controller.processNotificationResponses()
                 }
                 .disabled(controller.isWorking)
             }
@@ -142,6 +174,11 @@ public struct HobWorkspaceView: View {
                 Label("Adopted schedule", systemImage: "checkmark.seal.fill")
                     .font(.title2.bold())
                     .foregroundStyle(.green)
+                if !adopted.notificationIDs.isEmpty {
+                    Label("Done, Snooze, and Replan are available at each start time.", systemImage: "bell.fill")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
                 scheduleBlocks(adopted.proposal)
                 Button("Cancel adopted schedule", role: .destructive) {
                     controller.cancelAdoptedSchedule()

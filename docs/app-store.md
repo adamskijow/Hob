@@ -23,16 +23,17 @@ Telegram and Ollama remain part of Open Local. The Apple app needs neither.
 - Typed tasks, proposals, adoption, undo, and delivery state survive restart.
 - Plans avoid title-free EventKit busy intervals. Adoption writes all Calendar
   blocks transactionally and cancellation removes them.
+- Optional start reminders offer Done, Snooze, and Replan. Actions and cleanup
+  survive relaunch before changing task state.
 - Invalid inputs and stale proposals fail closed.
 - The reviewer scenario—multiple tasks with effort, priority, deadlines, and a
   busy period—has an end-to-end regression.
 
 ## Next
 
-1. Notify at block start and offer done, snooze, or replan.
-2. Show a proposed diff when reality changes.
-3. Sync an operation journal through private CloudKit.
-4. Add migration, onboarding, accessibility, and Store submission evidence.
+1. Show a proposed diff when reality changes.
+2. Sync an operation journal through private CloudKit.
+3. Add migration, onboarding, accessibility, and Store submission evidence.
 
 ## Release gate
 

@@ -34,6 +34,9 @@
 		G10000000000000000000001 /* CalendarScheduling.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000001 /* CalendarScheduling.swift */; };
 		G10000000000000000000002 /* EventKitScheduleStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000002 /* EventKitScheduleStore.swift */; };
 		H10000000000000000000001 /* HobTeapotIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = H20000000000000000000001 /* HobTeapotIcon.swift */; };
+		I10000000000000000000001 /* NotificationScheduling.swift in Sources */ = {isa = PBXBuildFile; fileRef = I20000000000000000000001 /* NotificationScheduling.swift */; };
+		I10000000000000000000002 /* NotificationScheduling.swift in Agent Sources */ = {isa = PBXBuildFile; fileRef = I20000000000000000000001 /* NotificationScheduling.swift */; };
+		I10000000000000000000003 /* LocalNotificationScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = I20000000000000000000002 /* LocalNotificationScheduler.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -107,6 +110,8 @@
 		G20000000000000000000001 /* CalendarScheduling.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CalendarScheduling.swift; path = ../HobAppFoundation/Sources/HobAppCore/CalendarScheduling.swift; sourceTree = "<group>"; };
 		G20000000000000000000002 /* EventKitScheduleStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = EventKitScheduleStore.swift; path = ../HobAppFoundation/Sources/HobCalendar/EventKitScheduleStore.swift; sourceTree = "<group>"; };
 		H20000000000000000000001 /* HobTeapotIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = HobTeapotIcon.swift; path = ../HobAppFoundation/Sources/HobAppExperience/HobTeapotIcon.swift; sourceTree = "<group>"; };
+		I20000000000000000000001 /* NotificationScheduling.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NotificationScheduling.swift; path = ../HobAppFoundation/Sources/HobAppCore/NotificationScheduling.swift; sourceTree = "<group>"; };
+		I20000000000000000000002 /* LocalNotificationScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LocalNotificationScheduler.swift; path = ../HobAppFoundation/Sources/HobNotifications/LocalNotificationScheduler.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -166,6 +171,8 @@
 				G20000000000000000000001 /* CalendarScheduling.swift */,
 				G20000000000000000000002 /* EventKitScheduleStore.swift */,
 				H20000000000000000000001 /* HobTeapotIcon.swift */,
+				I20000000000000000000001 /* NotificationScheduling.swift */,
+				I20000000000000000000002 /* LocalNotificationScheduler.swift */,
 			);
 			name = Sources;
 			sourceTree = "<group>";
@@ -331,6 +338,8 @@
 				G10000000000000000000001 /* CalendarScheduling.swift in Sources */,
 				G10000000000000000000002 /* EventKitScheduleStore.swift in Sources */,
 				H10000000000000000000001 /* HobTeapotIcon.swift in Sources */,
+				I10000000000000000000001 /* NotificationScheduling.swift in Sources */,
+				I10000000000000000000003 /* LocalNotificationScheduler.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -344,6 +353,7 @@
 				D10000000000000000000002 /* TaskRuntime.swift in Agent Sources */,
 				E10000000000000000000001 /* TaskStateStore.swift in Agent Sources */,
 				F10000000000000000000002 /* ScheduleRuntime.swift in Agent Sources */,
+				I10000000000000000000002 /* NotificationScheduling.swift in Agent Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

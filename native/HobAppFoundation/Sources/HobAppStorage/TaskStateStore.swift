@@ -497,9 +497,11 @@ public actor DurableTaskRuntime {
     public func adoptSchedule(
         proposalID: String,
         at timestamp: String,
-        calendarEventIDs: [String] = []
+        calendarEventIDs: [String] = [],
+        notificationIDs: [String] = []
     ) throws -> RuntimeAdoptedSchedule {
-        guard state.calendarCleanupEventIDs.isEmpty else {
+        guard state.calendarCleanupEventIDs.isEmpty,
+              state.notificationCleanupIDs.isEmpty else {
             throw RuntimeScheduleError.calendarCleanupPending
         }
         guard ISO8601DateFormatter().date(from: timestamp) != nil else {
@@ -520,7 +522,8 @@ public actor DurableTaskRuntime {
         let adopted = RuntimeAdoptedSchedule(
             proposal: proposal,
             adoptedAt: timestamp,
-            calendarEventIDs: calendarEventIDs
+            calendarEventIDs: calendarEventIDs,
+            notificationIDs: notificationIDs
         )
         let candidate = combinedState(
             runtimeState: runtime.persistentState,
@@ -533,6 +536,34 @@ public actor DurableTaskRuntime {
         try store.save(candidate)
         state = candidate
         return adopted
+    }
+
+    public func attachNotificationIDs(
+        proposalID: String,
+        notificationIDs: [String]
+    ) throws {
+        guard let adopted = state.adoptedSchedule,
+              adopted.proposal.id == proposalID,
+              adopted.notificationIDs.isEmpty,
+              notificationIDs.count <= adopted.proposal.blocks.count,
+              Set(notificationIDs).count == notificationIDs.count
+        else { throw RuntimeScheduleError.invalidRequest }
+        let updated = RuntimeAdoptedSchedule(
+            proposal: adopted.proposal,
+            adoptedAt: adopted.adoptedAt,
+            calendarEventIDs: adopted.calendarEventIDs,
+            notificationIDs: notificationIDs
+        )
+        let candidate = combinedState(
+            runtimeState: runtime.persistentState,
+            inbox: state.inbox,
+            outbox: state.outbox,
+            nextSequence: state.nextSequence,
+            latestProposal: state.latestProposal,
+            adoptedSchedule: updated
+        )
+        try store.save(candidate)
+        state = candidate
     }
 
     public func cancelAdoptedSchedule() throws {
@@ -565,6 +596,74 @@ public actor DurableTaskRuntime {
             latestProposal: state.latestProposal,
             adoptedSchedule: state.adoptedSchedule,
             calendarCleanupEventIDs: remaining
+        )
+        try store.save(candidate)
+        state = candidate
+    }
+
+    public func acknowledgeNotificationCleanup(notificationIDs: [String]) throws {
+        guard !notificationIDs.isEmpty,
+              Set(notificationIDs).isSubset(of: Set(state.notificationCleanupIDs))
+        else { throw RuntimeScheduleError.invalidRequest }
+        let acknowledged = Set(notificationIDs)
+        let remaining = state.notificationCleanupIDs.filter {
+            !acknowledged.contains($0)
+        }
+        let candidate = combinedState(
+            runtimeState: runtime.persistentState,
+            inbox: state.inbox,
+            outbox: state.outbox,
+            nextSequence: state.nextSequence,
+            latestProposal: state.latestProposal,
+            adoptedSchedule: state.adoptedSchedule,
+            notificationCleanupIDs: remaining
+        )
+        try store.save(candidate)
+        state = candidate
+    }
+
+    public func enqueueNotificationResponse(
+        _ response: RuntimeNotificationResponse
+    ) throws {
+        guard response.isValid else { throw RuntimePipelineError.invalidEnvelope }
+        if let existing = state.pendingNotificationResponses.first(where: {
+            $0.id == response.id
+        }) {
+            guard existing == response else {
+                throw RuntimePipelineError.idempotencyConflict
+            }
+            return
+        }
+        guard state.pendingNotificationResponses.count < 100 else {
+            throw RuntimePipelineError.queueFull
+        }
+        let candidate = combinedState(
+            runtimeState: runtime.persistentState,
+            inbox: state.inbox,
+            outbox: state.outbox,
+            nextSequence: state.nextSequence,
+            latestProposal: state.latestProposal,
+            adoptedSchedule: state.adoptedSchedule,
+            pendingNotificationResponses: state.pendingNotificationResponses
+                + [response]
+        )
+        try store.save(candidate)
+        state = candidate
+    }
+
+    public func acknowledgeNotificationResponse(responseID: String) throws {
+        guard state.pendingNotificationResponses.contains(where: {
+            $0.id == responseID
+        }) else { return }
+        let candidate = combinedState(
+            runtimeState: runtime.persistentState,
+            inbox: state.inbox,
+            outbox: state.outbox,
+            nextSequence: state.nextSequence,
+            latestProposal: state.latestProposal,
+            adoptedSchedule: state.adoptedSchedule,
+            pendingNotificationResponses: state.pendingNotificationResponses
+                .filter { $0.id != responseID }
         )
         try store.save(candidate)
         state = candidate
@@ -633,6 +732,10 @@ public actor DurableTaskRuntime {
             ? state.calendarCleanupEventIDs
                 + (state.adoptedSchedule?.calendarEventIDs ?? [])
             : state.calendarCleanupEventIDs
+        let notificationCleanup = invalidateSchedule
+            ? state.notificationCleanupIDs
+                + (state.adoptedSchedule?.notificationIDs ?? [])
+            : state.notificationCleanupIDs
         let candidateState = combinedState(
             runtimeState: candidate.persistentState,
             inbox: inbox,
@@ -640,7 +743,8 @@ public actor DurableTaskRuntime {
             nextSequence: state.nextSequence,
             latestProposal: invalidateSchedule ? nil : state.latestProposal,
             adoptedSchedule: invalidateSchedule ? nil : state.adoptedSchedule,
-            calendarCleanupEventIDs: Array(Set(cleanup)).sorted()
+            calendarCleanupEventIDs: Array(Set(cleanup)).sorted(),
+            notificationCleanupIDs: Array(Set(notificationCleanup)).sorted()
         )
         try store.save(candidateState)
         runtime = candidate
@@ -654,7 +758,9 @@ public actor DurableTaskRuntime {
         nextSequence: Int,
         latestProposal: RuntimeScheduleProposal? = nil,
         adoptedSchedule: RuntimeAdoptedSchedule? = nil,
-        calendarCleanupEventIDs: [String]? = nil
+        calendarCleanupEventIDs: [String]? = nil,
+        notificationCleanupIDs: [String]? = nil,
+        pendingNotificationResponses: [RuntimeNotificationResponse]? = nil
     ) -> RuntimePersistentState {
         RuntimePersistentState(
             tasks: runtimeState.tasks,
@@ -665,7 +771,11 @@ public actor DurableTaskRuntime {
             latestProposal: latestProposal,
             adoptedSchedule: adoptedSchedule,
             calendarCleanupEventIDs: calendarCleanupEventIDs
-                ?? state.calendarCleanupEventIDs
+                ?? state.calendarCleanupEventIDs,
+            notificationCleanupIDs: notificationCleanupIDs
+                ?? state.notificationCleanupIDs,
+            pendingNotificationResponses: pendingNotificationResponses
+                ?? state.pendingNotificationResponses
         )
     }
 
