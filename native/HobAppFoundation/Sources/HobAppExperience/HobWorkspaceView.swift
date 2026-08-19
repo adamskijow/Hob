@@ -23,9 +23,6 @@ public struct HobWorkspaceView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     introduction
-                    calendarSetup
-                    notificationSetup
-                    syncSetup
                     composer
                     feedback
                     if let schedule = controller.adoptedSchedule,
@@ -50,9 +47,7 @@ public struct HobWorkspaceView: View {
                     }
                     .disabled(controller.isWorking)
                 }
-                Button("Setup", systemImage: "gearshape") {
-                    showsOnboarding = true
-                }
+                connectionsMenu
             }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { controller.syncNow() }
@@ -76,107 +71,82 @@ public struct HobWorkspaceView: View {
         }
     }
 
-    private var calendarSetup: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 10) { calendarSetupControls }
-            VStack(alignment: .leading, spacing: 10) { calendarSetupControls }
+    private var connectionsMenu: some View {
+        Menu {
+            Section("Calendar") { calendarMenuItems }
+            Section("Reminders") { reminderMenuItems }
+            Section("iCloud") { syncMenuItems }
+            Divider()
+            Button("Review setup", systemImage: "slider.horizontal.3") {
+                showsOnboarding = true
+            }
+        } label: {
+            Image(systemName: "gearshape")
         }
+        .accessibilityLabel("Connections and setup")
     }
 
-    @ViewBuilder private var calendarSetupControls: some View {
-            switch controller.calendarAuthorization {
-            case .fullAccess:
-                Label("Calendar connected", systemImage: "calendar.badge.checkmark")
-                    .foregroundStyle(.secondary)
-            case .notDetermined:
-                Button("Connect Calendar", systemImage: "calendar.badge.plus") {
-                    controller.requestCalendarAccess()
-                }
-                .buttonStyle(.bordered)
-                .accessibilityHint("Lets Hob avoid busy times and add adopted schedules")
-            case .denied, .restricted:
-                Label("Enable full Calendar access in Settings", systemImage: "calendar.badge.exclamationmark")
-                    .foregroundStyle(.orange)
+    @ViewBuilder private var calendarMenuItems: some View {
+        switch controller.calendarAuthorization {
+        case .fullAccess:
+            Label("Connected", systemImage: "checkmark.circle.fill")
+        case .notDetermined:
+            Button("Connect", systemImage: "calendar.badge.plus") {
+                controller.requestCalendarAccess()
             }
-            if controller.calendarCleanupPending {
-                Button("Remove old Hob blocks") {
-                    controller.retryCalendarCleanup()
-                }
-                .disabled(controller.isWorking)
-            }
-    }
-
-    private var notificationSetup: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 10) { notificationSetupControls }
-            VStack(alignment: .leading, spacing: 10) { notificationSetupControls }
+        case .denied, .restricted:
+            Label("Needs access in Settings", systemImage: "exclamationmark.triangle")
         }
-    }
-
-    @ViewBuilder private var notificationSetupControls: some View {
-            switch controller.notificationAuthorization {
-            case .authorized:
-                Label("Start reminders enabled", systemImage: "bell.badge.fill")
-                    .foregroundStyle(.secondary)
-            case .notDetermined:
-                Button("Enable start reminders", systemImage: "bell.badge") {
-                    controller.requestNotificationAccess()
-                }
-                .buttonStyle(.bordered)
-                .accessibilityHint("Adds Done, Snooze, and Replan actions at scheduled start times")
-            case .denied:
-                Label("Enable notifications in Settings", systemImage: "bell.slash")
-                    .foregroundStyle(.orange)
-            }
-            if controller.notificationCleanupPending {
-                Button("Remove old reminders") {
-                    controller.retryNotificationCleanup()
-                }
-                .disabled(controller.isWorking)
-            }
-            if controller.notificationActionsPending {
-                Button("Finish reminder action") {
-                    controller.processNotificationResponses()
-                }
-                .disabled(controller.isWorking)
-            }
-    }
-
-    private var syncSetup: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 10) { syncSetupControls }
-            VStack(alignment: .leading, spacing: 10) { syncSetupControls }
-        }
-    }
-
-    @ViewBuilder private var syncSetupControls: some View {
-            switch controller.syncAvailability {
-            case .available:
-                Label(
-                    controller.syncNeedsAttention
-                        ? "iCloud sync needs attention"
-                        : "Tasks sync with iCloud",
-                    systemImage: controller.syncNeedsAttention
-                        ? "icloud.slash"
-                        : "icloud.and.arrow.up"
-                )
-                .foregroundStyle(
-                    controller.syncNeedsAttention ? Color.orange : Color.secondary
-                )
-            case .noAccount:
-                Label("Sign in to iCloud to sync", systemImage: "icloud.slash")
-                    .foregroundStyle(.orange)
-            case .restricted:
-                Label("iCloud sync is restricted", systemImage: "icloud.slash")
-                    .foregroundStyle(.orange)
-            case .unavailable:
-                Label("iCloud sync unavailable", systemImage: "icloud.slash")
-                    .foregroundStyle(.secondary)
-            }
-            Button("Sync now") {
-                controller.syncNow()
+        if controller.calendarCleanupPending {
+            Button("Remove old Hob blocks") {
+                controller.retryCalendarCleanup()
             }
             .disabled(controller.isWorking)
+        }
+    }
+
+    @ViewBuilder private var reminderMenuItems: some View {
+        switch controller.notificationAuthorization {
+        case .authorized:
+            Label("Enabled", systemImage: "checkmark.circle.fill")
+        case .notDetermined:
+            Button("Enable", systemImage: "bell.badge") {
+                controller.requestNotificationAccess()
+            }
+        case .denied:
+            Label("Needs access in Settings", systemImage: "exclamationmark.triangle")
+        }
+        if controller.notificationCleanupPending {
+            Button("Remove old reminders") {
+                controller.retryNotificationCleanup()
+            }
+            .disabled(controller.isWorking)
+        }
+        if controller.notificationActionsPending {
+            Button("Finish reminder action") {
+                controller.processNotificationResponses()
+            }
+            .disabled(controller.isWorking)
+        }
+    }
+
+    @ViewBuilder private var syncMenuItems: some View {
+        switch controller.syncAvailability {
+        case .available where controller.syncNeedsAttention:
+            Label("Needs attention", systemImage: "exclamationmark.triangle")
+        case .available:
+            Label("Connected", systemImage: "checkmark.circle.fill")
+        case .noAccount:
+            Label("Sign in to iCloud", systemImage: "icloud.slash")
+        case .restricted:
+            Label("Restricted", systemImage: "icloud.slash")
+        case .unavailable:
+            Label("Unavailable", systemImage: "icloud.slash")
+        }
+        Button("Sync now", systemImage: "arrow.clockwise") {
+            controller.syncNow()
+        }
+        .disabled(controller.isWorking)
     }
 
     private var introduction: some View {

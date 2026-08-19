@@ -191,6 +191,23 @@ def test_replanning_keeps_calendar_stable_until_the_diff_is_accepted():
     assert 'Button("Keep current schedule")' in workspace
 
 
+def test_workspace_keeps_connection_status_in_the_gear_menu():
+    workspace = (
+        FOUNDATION
+        / "Sources"
+        / "HobAppExperience"
+        / "HobWorkspaceView.swift"
+    ).read_text(encoding="utf-8")
+
+    assert 'Section("Calendar")' in workspace
+    assert 'Section("Reminders")' in workspace
+    assert 'Section("iCloud")' in workspace
+    assert '.accessibilityLabel("Connections and setup")' in workspace
+    assert "Calendar connected" not in workspace
+    assert "Start reminders enabled" not in workspace
+    assert "Tasks sync with iCloud" not in workspace
+
+
 def test_iphone_app_uses_the_same_native_workspace_and_local_model():
     spec = (IOS_PROJECT / "project.yml").read_text(encoding="utf-8")
     app = (IOS_PROJECT / "Sources" / "HobPhoneApp.swift").read_text(
