@@ -4,8 +4,54 @@ import SwiftUI
 import HobAppCore
 #endif
 
+enum HobTheme {
+    static let gold = Color(red: 0.95, green: 0.66, blue: 0.27)
+    static let copper = Color(red: 0.68, green: 0.29, blue: 0.08)
+
+    static func accent(for scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color(red: 0.78, green: 0.38, blue: 0.12) : copper
+    }
+
+    static func base(for scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(red: 0.045, green: 0.025, blue: 0.018)
+            : Color(red: 0.98, green: 0.96, blue: 0.92)
+    }
+
+    static func surface(for scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color.white.opacity(0.065)
+            : Color(red: 0.34, green: 0.15, blue: 0.06).opacity(0.065)
+    }
+
+    static func border(for scheme: ColorScheme) -> Color {
+        gold.opacity(scheme == .dark ? 0.20 : 0.14)
+    }
+}
+
+struct HobAppBackground: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        ZStack {
+            HobTheme.base(for: colorScheme)
+            RadialGradient(
+                colors: [
+                    HobTheme.copper.opacity(colorScheme == .dark ? 0.20 : 0.10),
+                    HobTheme.gold.opacity(colorScheme == .dark ? 0.055 : 0.035),
+                    .clear,
+                ],
+                center: .topTrailing,
+                startRadius: 0,
+                endRadius: 520
+            )
+        }
+    }
+}
+
 public struct HobWorkspaceView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.colorScheme) private var colorScheme
     @StateObject private var controller: HobWorkspaceController
     @AppStorage("hob.onboarding.completed.v1") private var onboardingCompleted = false
     @State private var showsOnboarding = false
@@ -39,6 +85,7 @@ public struct HobWorkspaceView: View {
                 .frame(maxWidth: 760, alignment: .leading)
                 .padding(24)
             }
+            .background { HobAppBackground().ignoresSafeArea() }
             .navigationTitle("Hob")
             .toolbar {
                 if !controller.tasks.isEmpty {
@@ -69,6 +116,7 @@ public struct HobWorkspaceView: View {
                 }
             }
         }
+        .tint(HobTheme.accent(for: colorScheme))
     }
 
     private var connectionsMenu: some View {
@@ -151,6 +199,17 @@ public struct HobWorkspaceView: View {
 
     private var introduction: some View {
         VStack(alignment: .leading, spacing: 6) {
+            Capsule()
+                .fill(
+                    LinearGradient(
+                        colors: [HobTheme.gold, HobTheme.copper],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .frame(width: 46, height: 5)
+                .padding(.bottom, 8)
+                .accessibilityHidden(true)
             Text("What needs to get done?")
                 .font(.largeTitle.bold())
             Text("Include deadlines, priority, and effort naturally. Hob will turn them into a realistic timeline.")
@@ -166,7 +225,16 @@ public struct HobWorkspaceView: View {
                 axis: .vertical
             )
             .lineLimit(3...7)
-            .textFieldStyle(.roundedBorder)
+            .textFieldStyle(.plain)
+            .padding(16)
+            .background(
+                HobTheme.surface(for: colorScheme),
+                in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(HobTheme.border(for: colorScheme), lineWidth: 1)
+            }
             .onSubmit { controller.submit() }
             Button {
                 controller.submit()
@@ -364,7 +432,10 @@ public struct HobWorkspaceView: View {
                     }
                 }
                 .padding(10)
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+                .background(
+                    HobTheme.surface(for: colorScheme),
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                )
                 .accessibilityElement(children: .combine)
             }
             ForEach(proposal.unscheduled) { task in
@@ -423,7 +494,11 @@ public struct HobWorkspaceView: View {
                     Text(task.status.capitalized)
                         .font(.caption.weight(.semibold))
                 }
-                .padding(.vertical, 4)
+                .padding(12)
+                .background(
+                    HobTheme.surface(for: colorScheme),
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                )
             }
         }
     }

@@ -5,6 +5,7 @@ import HobAppCore
 #endif
 
 struct HobFirstRunView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var controller: HobWorkspaceController
     let finish: () -> Void
 
@@ -43,9 +44,11 @@ struct HobFirstRunView: View {
             }
             .padding(28)
             .frame(maxWidth: 560, maxHeight: .infinity)
+            .background { HobAppBackground().ignoresSafeArea() }
             .navigationTitle("Set up Hob")
             .onAppear { loadRhythm() }
         }
+        .tint(HobTheme.accent(for: colorScheme))
     }
 
     private var welcome: some View {

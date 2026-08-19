@@ -341,11 +341,14 @@ public final class HobWorkspaceController: ObservableObject {
                 self.notice = self.syncUnavailableNotice
                 return
             }
+            let tasksBeforeSync = self.tasks
             await self.syncTasks()
-            self.notice = self.syncNeedsAttention
-                ? "iCloud sync needs attention."
-                : "Tasks synced with iCloud."
             await self.refresh()
+            if self.syncNeedsAttention {
+                self.notice = "iCloud sync needs attention."
+            } else if self.tasks != tasksBeforeSync {
+                self.notice = "Tasks updated from iCloud."
+            }
         }
     }
 
@@ -786,7 +789,7 @@ public final class HobWorkspaceController: ObservableObject {
     private var syncUnavailableNotice: String {
         switch syncAvailability {
         case .available:
-            return "Tasks synced with iCloud."
+            return "iCloud sync needs attention."
         case .noAccount:
             return "Sign in to iCloud to sync tasks."
         case .restricted:

@@ -206,6 +206,18 @@ def test_workspace_keeps_connection_status_in_the_gear_menu():
     assert "Calendar connected" not in workspace
     assert "Start reminders enabled" not in workspace
     assert "Tasks sync with iCloud" not in workspace
+    assert "struct HobAppBackground" in workspace
+    assert "HobTheme.gold" in workspace
+    assert "HobTheme.surface(for: colorScheme)" in workspace
+
+    controller = (
+        FOUNDATION
+        / "Sources"
+        / "HobAppExperience"
+        / "HobWorkspaceController.swift"
+    ).read_text(encoding="utf-8")
+    assert "Tasks synced with iCloud." not in controller
+    assert 'self.notice = "Tasks updated from iCloud."' in controller
 
 
 def test_iphone_app_uses_the_same_native_workspace_and_local_model():

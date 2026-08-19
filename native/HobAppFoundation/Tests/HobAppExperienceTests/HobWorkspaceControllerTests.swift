@@ -285,6 +285,31 @@ func manualSyncPullsRemoteTasksAndBuildsAProposal() async throws {
     #expect(controller.tasks == [task])
     #expect(controller.proposal?.blocks.map(\.task) == ["call Mom"])
     #expect(controller.syncNeedsAttention == false)
+    #expect(controller.notice == "Tasks updated from iCloud.")
+}
+
+@Test @MainActor
+func routineSyncIsSilentWhenNothingChanged() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("hob-quiet-sync-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let sync = StubSync()
+    let controller = HobWorkspaceController(
+        store: TaskStateStore(directoryURL: directory),
+        interpreter: StubInterpreter(actions: []),
+        calendarStore: StubCalendar(),
+        notificationStore: StubNotifications(),
+        syncStore: sync,
+        timezone: try #require(TimeZone(identifier: "America/New_York"))
+    )
+    try await waitUntilSettled(controller)
+
+    sync.availability = .available
+    controller.syncNow()
+    try await waitUntilIdle(controller)
+
+    #expect(controller.notice == nil)
+    #expect(controller.syncNeedsAttention == false)
 }
 
 private func notificationResponse(
