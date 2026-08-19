@@ -205,6 +205,12 @@ def test_iphone_app_uses_the_same_native_workspace_and_local_model():
         / "HobAppleIntelligence"
         / "FoundationModelInterpreter.swift"
     ).read_text(encoding="utf-8")
+    onboarding = (
+        FOUNDATION
+        / "Sources"
+        / "HobAppExperience"
+        / "HobFirstRunView.swift"
+    ).read_text(encoding="utf-8")
 
     assert "platform: iOS" in spec
     assert "product: HobAppExperience" in spec
@@ -216,6 +222,9 @@ def test_iphone_app_uses_the_same_native_workspace_and_local_model():
     assert "LanguageModelSession" in interpreter
     assert '"complete", "drop", "reschedule", "amend", "replan"' in interpreter
     assert 'RuntimeAction(type: "replan")' in interpreter
+    assert 'Label("Connected", systemImage: "checkmark.circle.fill")' in onboarding
+    assert 'Button("Check iCloud")' in onboarding
+    assert "if let notice = controller.notice" in onboarding
     assert (
         IOS_PROJECT / "Assets.xcassets" / "AppIcon.appiconset" / "Hob.png"
     ).is_file()

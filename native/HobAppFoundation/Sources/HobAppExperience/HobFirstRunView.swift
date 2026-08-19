@@ -89,7 +89,13 @@ struct HobFirstRunView: View {
                 }
             }
             setupRow(title: "iCloud", detail: syncDetail, symbol: "icloud") {
-                Button("Check") { controller.syncNow() }
+                if controller.syncAvailability == .available {
+                    Label("Connected", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                } else {
+                    Button("Check iCloud") { controller.syncNow() }
+                        .disabled(controller.isWorking)
+                }
             }
             setupRow(
                 title: "Calendar",
@@ -114,6 +120,16 @@ struct HobFirstRunView: View {
             Text("You can continue without Calendar or reminders.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+            if let notice = controller.notice {
+                Label(notice, systemImage: "checkmark.circle")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            if let error = controller.errorMessage {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                    .foregroundStyle(.red)
+            }
         }
     }
 
@@ -209,8 +225,8 @@ struct HobFirstRunView: View {
 
     private var syncDetail: String {
         switch controller.syncAvailability {
-        case .available: return "Private task sync is ready"
-        case .noAccount: return "Sign in to iCloud to sync devices"
+        case .available: return "Uses the iCloud account on this device"
+        case .noAccount: return "Sign in to iCloud in Settings to sync devices"
         case .restricted: return "Restricted on this device"
         case .unavailable: return "Unavailable right now"
         }
