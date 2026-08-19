@@ -15,10 +15,10 @@ upload.
 - Keyboard, VoiceOver labels, responsive layouts, and Dynamic Type layouts
 - Signed development builds provisioned for this Mac and iPhone
 - Mac app installed in `/Applications` and launched
+- iPhone app installed on the paired phone and launched
 
 ## Local gate
 
-- Install on the paired iPhone after it is unlocked
 - Make offline edits on both devices, reconnect, and verify convergence
 - Reboot the Mac and verify Hob returns in the menu bar
 - Run VoiceOver and large-text checks on both devices

@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Apple app
 
-Status: signed development builds run locally on iPhone and Mac. Nothing has
-been uploaded.
+Status: signed development builds are installed and run locally on iPhone and
+Mac. Nothing has been uploaded.
 
 ## Product
 
@@ -43,9 +43,8 @@ Telegram and Ollama remain part of Open Local. The Apple app needs neither.
 
 ## Next
 
-1. Install the signed development build on the paired iPhone.
-2. Rehearse offline edits, restart, VoiceOver, and Dynamic Type on both devices.
-3. Validate an archive only when Store distribution begins.
+1. Rehearse offline edits, restart, VoiceOver, and Dynamic Type on both devices.
+2. Validate an archive only when Store distribution begins.
 
 ## Release gate
 
