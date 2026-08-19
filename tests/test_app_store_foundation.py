@@ -225,6 +225,8 @@ def test_iphone_app_uses_the_same_native_workspace_and_local_model():
     assert 'Label("Connected", systemImage: "checkmark.circle.fill")' in onboarding
     assert 'Button("Check iCloud")' in onboarding
     assert "if let notice = controller.notice" in onboarding
+    assert "Already use Open Local?" not in onboarding
+    assert "Import Open Local Export" not in onboarding
     assert (
         IOS_PROJECT / "Assets.xcassets" / "AppIcon.appiconset" / "Hob.png"
     ).is_file()

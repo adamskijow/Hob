@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
 import SwiftUI
-import UniformTypeIdentifiers
 #if canImport(HobAppCore)
 import HobAppCore
 #endif
@@ -14,7 +13,6 @@ struct HobFirstRunView: View {
     @State private var workDays = "weekdays"
     @State private var defaultDuration = 30
     @State private var transition = 0
-    @State private var importsFile = false
 
     var body: some View {
         NavigationStack {
@@ -24,7 +22,6 @@ struct HobFirstRunView: View {
                     case 0: welcome
                     case 1: connections
                     case 2: rhythm
-                    case 3: migration
                     default: ready
                     }
                 }
@@ -33,14 +30,14 @@ struct HobFirstRunView: View {
                 HStack {
                     if step > 0 { Button("Back") { step -= 1 } }
                     Spacer()
-                    Button(step == 4 ? "Start using Hob" : "Continue") {
+                    Button(step == 3 ? "Start using Hob" : "Continue") {
                         if step == 2 { saveRhythm() }
-                        if step == 4 { finish() } else { step += 1 }
+                        if step == 3 { finish() } else { step += 1 }
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(
                         controller.isWorking
-                            || (step == 4 && !controller.modelReadiness.isReady)
+                            || (step == 3 && !controller.modelReadiness.isReady)
                     )
                 }
             }
@@ -48,15 +45,6 @@ struct HobFirstRunView: View {
             .frame(maxWidth: 560, maxHeight: .infinity)
             .navigationTitle("Set up Hob")
             .onAppear { loadRhythm() }
-            .fileImporter(
-                isPresented: $importsFile,
-                allowedContentTypes: [.json],
-                allowsMultipleSelection: false
-            ) { result in
-                if case let .success(urls) = result, let url = urls.first {
-                    controller.importOpenLocal(from: url)
-                }
-            }
         }
     }
 
@@ -157,33 +145,6 @@ struct HobFirstRunView: View {
                 Text("15 minutes").tag(15)
             }
             Text("Specific times and effort in your message override these defaults.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var migration: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Already use Open Local?").font(.title.bold())
-            Text("In the Open Local teapot menu, choose Export for Apple App. Import that JSON here before adding native tasks.")
-            Button("Import Open Local Export", systemImage: "square.and.arrow.down") {
-                importsFile = true
-            }
-            .buttonStyle(.bordered)
-            .disabled(!controller.tasks.isEmpty || controller.isWorking)
-            if !controller.tasks.isEmpty && controller.importReport == nil {
-                Text("Import is unavailable because this app already has tasks.")
-                    .foregroundStyle(.secondary)
-            }
-            if let report = controller.importReport {
-                Label("Imported \(report.tasks.count) tasks", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                if report.preservedDetailCount > 0 {
-                    Text("\(report.preservedDetailCount) advanced detail(s) are preserved with the tasks. Open Local remains unchanged.")
-                        .font(.callout)
-                }
-            }
-            Text("Task history and adopted Open Local plans stay in the export. Keep that file until you have checked the Apple app.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
