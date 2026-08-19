@@ -29,14 +29,20 @@ Telegram and Ollama remain part of Open Local. The Apple app needs neither.
   untouched until the customer accepts the diff.
 - Tasks converge across iPhone and Mac through a validated operation journal in
   the customer's private iCloud database. Offline edits sync after reconnecting.
+- First run checks Apple Intelligence, offers iCloud, Calendar, and reminders,
+  and saves working days, hours, task length, and transition time as real planner
+  constraints.
+- Open Local exports from its teapot menu. The Apple app validates the whole
+  file before importing into an empty task list, preserves advanced task fields,
+  and leaves Open Local untouched.
 - Invalid inputs and stale proposals fail closed.
 - The reviewer scenario—multiple tasks with effort, priority, deadlines, and a
   busy period—has an end-to-end regression.
 
 ## Next
 
-1. Add migration and first-run onboarding.
-2. Finish accessibility, signing, archive, and Store submission evidence.
+1. Finish accessibility and signed local-device rehearsals.
+2. Validate the archive and prepare Store submission evidence.
 
 ## Release gate
 

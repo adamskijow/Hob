@@ -472,6 +472,52 @@ public actor DurableTaskRuntime {
         state
     }
 
+    public func setPlanningPreferences(
+        _ preferences: RuntimePlanningPreferences
+    ) throws {
+        guard preferences.isValid else { throw RuntimeScheduleError.invalidRequest }
+        let candidate = combinedState(
+            runtimeState: runtime.persistentState,
+            inbox: state.inbox,
+            outbox: state.outbox,
+            nextSequence: state.nextSequence,
+            latestProposal: nil,
+            adoptedSchedule: state.adoptedSchedule,
+            planningPreferences: preferences
+        )
+        try store.save(candidate)
+        state = candidate
+    }
+
+    @discardableResult
+    public func importOpenLocal(_ data: Data) throws -> OpenLocalImportResult {
+        guard runtime.tasks.isEmpty else {
+            throw OpenLocalImportError.destinationNotEmpty
+        }
+        let imported = try OpenLocalExportImporter.parse(data)
+        let rebuilt = TaskRuntime(tasks: imported.tasks)
+        let operations = imported.tasks.map {
+            RuntimeTaskOperation(
+                id: "open-local-import:\($0.id)",
+                taskID: $0.id,
+                occurredAt: $0.updatedAt,
+                task: $0
+            )
+        }
+        let candidate = combinedState(
+            runtimeState: rebuilt.persistentState,
+            inbox: state.inbox,
+            outbox: state.outbox,
+            nextSequence: state.nextSequence,
+            adoptedSchedule: state.adoptedSchedule,
+            taskOperations: operations
+        )
+        try store.save(candidate)
+        runtime = rebuilt
+        state = candidate
+        return imported
+    }
+
     @discardableResult
     public func proposeSchedule(
         _ request: RuntimeScheduleRequest
@@ -817,7 +863,8 @@ public actor DurableTaskRuntime {
         calendarCleanupEventIDs: [String]? = nil,
         notificationCleanupIDs: [String]? = nil,
         pendingNotificationResponses: [RuntimeNotificationResponse]? = nil,
-        taskOperations: [RuntimeTaskOperation]? = nil
+        taskOperations: [RuntimeTaskOperation]? = nil,
+        planningPreferences: RuntimePlanningPreferences? = nil
     ) -> RuntimePersistentState {
         RuntimePersistentState(
             tasks: runtimeState.tasks,
@@ -833,7 +880,8 @@ public actor DurableTaskRuntime {
                 ?? state.notificationCleanupIDs,
             pendingNotificationResponses: pendingNotificationResponses
                 ?? state.pendingNotificationResponses,
-            taskOperations: taskOperations ?? state.taskOperations
+            taskOperations: taskOperations ?? state.taskOperations,
+            planningPreferences: planningPreferences ?? state.planningPreferences
         )
     }
 

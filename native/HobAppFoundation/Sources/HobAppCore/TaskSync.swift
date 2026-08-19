@@ -50,6 +50,7 @@ public struct RuntimeTaskOperation: Codable, Equatable, Identifiable, Sendable {
             && (value.durationMinutes.map { (5...480).contains($0) } ?? true)
             && (value.priority.map { ["high", "normal", "low"].contains($0) }
                 ?? true)
+            && (value.sourceArchive.map { $0.utf8.count <= 20_000 } ?? true)
             && (value.dueDate == nil || value.deadlineDate == nil
                 || value.dueDate! <= value.deadlineDate!)
     }

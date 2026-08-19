@@ -36,6 +36,9 @@ public final class HobWorkspaceController: ObservableObject {
     @Published public private(set) var notificationActionsPending = false
     @Published public private(set) var syncAvailability: RuntimeTaskSyncAvailability
     @Published public private(set) var syncNeedsAttention = false
+    @Published public private(set) var planningPreferences: RuntimePlanningPreferences = .default
+    @Published public private(set) var importReport: OpenLocalImportResult?
+    @Published public private(set) var modelReadiness: ModelReadinessState
 
     private let runtime: DurableTaskRuntime?
     private let interpreter: any RuntimeMessageInterpreting
@@ -45,26 +48,32 @@ public final class HobWorkspaceController: ObservableObject {
     private let gregorianCalendar: Calendar
     private let timezone: TimeZone
     private let now: @Sendable () -> Date
+    private let modelProbe: (@Sendable () async throws -> Void)?
 
     public convenience init() {
+        let appleInterpreter = AppleFoundationInterpreter()
         do {
             let directory = try SharedStorage.system.taskStateDirectory()
             self.init(
                 store: TaskStateStore(directoryURL: directory),
-                interpreter: AppleFoundationInterpreter(),
+                interpreter: appleInterpreter,
                 calendarStore: EventKitScheduleStore(),
                 notificationStore: LocalNotificationScheduler(),
-                syncStore: CloudKitTaskSyncStore()
+                syncStore: CloudKitTaskSyncStore(),
+                modelReadiness: appleInterpreter.isAvailable ? .notChecked : .unavailable,
+                modelProbe: { try await appleInterpreter.probe() }
             )
         } catch {
             self.init(
                 runtime: nil,
-                interpreter: AppleFoundationInterpreter(),
+                interpreter: appleInterpreter,
                 calendarStore: EventKitScheduleStore(),
                 notificationStore: LocalNotificationScheduler(),
                 syncStore: CloudKitTaskSyncStore(),
                 timezone: .current,
-                now: Date.init
+                now: Date.init,
+                modelReadiness: appleInterpreter.isAvailable ? .notChecked : .unavailable,
+                modelProbe: { try await appleInterpreter.probe() }
             )
             errorMessage = "Hob could not open its private task storage."
         }
@@ -77,7 +86,9 @@ public final class HobWorkspaceController: ObservableObject {
         notificationStore: any RuntimeNotificationScheduling,
         syncStore: any RuntimeTaskSyncing,
         timezone: TimeZone = .current,
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = Date.init,
+        modelReadiness: ModelReadinessState = .available,
+        modelProbe: (@Sendable () async throws -> Void)? = nil
     ) {
         let durable = try? DurableTaskRuntime(store: store)
         self.init(
@@ -87,7 +98,9 @@ public final class HobWorkspaceController: ObservableObject {
             notificationStore: notificationStore,
             syncStore: syncStore,
             timezone: timezone,
-            now: now
+            now: now,
+            modelReadiness: modelReadiness,
+            modelProbe: modelProbe
         )
         if durable == nil {
             errorMessage = "Hob could not safely read its task storage."
@@ -101,7 +114,9 @@ public final class HobWorkspaceController: ObservableObject {
         notificationStore: any RuntimeNotificationScheduling,
         syncStore: any RuntimeTaskSyncing,
         timezone: TimeZone,
-        now: @escaping @Sendable () -> Date
+        now: @escaping @Sendable () -> Date,
+        modelReadiness: ModelReadinessState,
+        modelProbe: (@Sendable () async throws -> Void)?
     ) {
         self.runtime = runtime
         self.interpreter = interpreter
@@ -113,6 +128,8 @@ public final class HobWorkspaceController: ObservableObject {
         self.syncAvailability = syncStore.availability
         self.timezone = timezone
         self.now = now
+        self.modelReadiness = modelReadiness
+        self.modelProbe = modelProbe
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timezone
         self.gregorianCalendar = calendar
@@ -332,6 +349,83 @@ public final class HobWorkspaceController: ObservableObject {
         }
     }
 
+    public func checkModelReadiness() {
+        guard let modelProbe else {
+            modelReadiness = .available
+            return
+        }
+        guard !isWorking else { return }
+        isWorking = true
+        errorMessage = nil
+        modelReadiness = .checking
+        Task {
+            do {
+                try await modelProbe()
+                modelReadiness = .available
+                notice = "Apple Intelligence is ready."
+            } catch {
+                modelReadiness = .unavailable
+                errorMessage = ModelReadinessState.unavailable.guidance
+            }
+            isWorking = false
+        }
+    }
+
+    public func updatePlanningPreferences(
+        workStart: String,
+        workEnd: String,
+        workDays: [Int],
+        defaultDurationMinutes: Int,
+        transitionBufferMinutes: Int
+    ) {
+        let preferences = RuntimePlanningPreferences(
+            workStart: workStart,
+            workEnd: workEnd,
+            workDays: workDays,
+            defaultDurationMinutes: defaultDurationMinutes,
+            transitionBufferMinutes: transitionBufferMinutes
+        )
+        run {
+            guard let runtime = self.runtime else { return }
+            try await runtime.setPlanningPreferences(preferences)
+            if self.tasks.contains(where: { $0.status == "open" }) {
+                _ = try await runtime.proposeSchedule(
+                    try self.scheduleRequest(at: self.now(), preferences: preferences)
+                )
+            }
+            self.notice = "Planning hours updated."
+            await self.refresh()
+        }
+    }
+
+    public func importOpenLocal(from url: URL) {
+        run {
+            guard let runtime = self.runtime else { return }
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            guard values.isRegularFile == true,
+                  let size = values.fileSize,
+                  size <= OpenLocalExportImporter.maximumBytes else {
+                throw OpenLocalImportError.tooLarge
+            }
+            let result = try await runtime.importOpenLocal(
+                Data(contentsOf: url, options: [.mappedIfSafe])
+            )
+            self.importReport = result
+            if result.tasks.contains(where: { $0.status == "open" }) {
+                _ = try await runtime.proposeSchedule(
+                    try self.scheduleRequest(at: self.now())
+                )
+            }
+            await self.syncTasks()
+            self.notice = result.preservedDetailCount == 0
+                ? "Imported \(result.tasks.count) Open Local tasks."
+                : "Imported \(result.tasks.count) tasks and preserved \(result.preservedDetailCount) advanced detail(s)."
+            await self.refresh()
+        }
+    }
+
     public func retryCalendarCleanup() {
         run {
             try await self.cleanupCalendarEventsIfNeeded()
@@ -395,6 +489,7 @@ public final class HobWorkspaceController: ObservableObject {
         calendarAuthorization = calendarStore.authorization
         notificationAuthorization = notificationStore.authorization
         syncAvailability = syncStore.availability
+        planningPreferences = snapshot.planningPreferences
     }
 
     private func run(
@@ -438,13 +533,19 @@ public final class HobWorkspaceController: ObservableObject {
                 errorMessage = "Hob could not schedule every reminder. No partial reminder set was kept."
             } catch RuntimeNotificationError.invalidRequest {
                 errorMessage = "That reminder is no longer valid."
+            } catch let error as OpenLocalImportError {
+                errorMessage = error.userMessage
             } catch {
                 errorMessage = "Hob could not finish that safely. Review the task list before retrying."
             }
         }
     }
 
-    private func scheduleRequest(at instant: Date) throws -> RuntimeScheduleRequest {
+    private func scheduleRequest(
+        at instant: Date,
+        preferences: RuntimePlanningPreferences? = nil
+    ) throws -> RuntimeScheduleRequest {
+        let preferences = preferences ?? planningPreferences
         let end = gregorianCalendar.date(
             byAdding: .day,
             value: 7,
@@ -462,6 +563,11 @@ public final class HobWorkspaceController: ObservableObject {
             generatedAt: timestamp(instant),
             startDate: day(instant),
             timezone: timezone.identifier,
+            workStart: preferences.workStart,
+            workEnd: preferences.workEnd,
+            defaultDurationMinutes: preferences.defaultDurationMinutes,
+            transitionBufferMinutes: preferences.transitionBufferMinutes,
+            workDays: preferences.workDays,
             busy: busy
         )
     }

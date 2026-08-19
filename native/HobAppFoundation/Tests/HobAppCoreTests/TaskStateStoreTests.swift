@@ -124,7 +124,11 @@ import Testing
         withIntermediateDirectories: true
     )
     let store = TaskStateStore(directoryURL: directory)
-    let future = RuntimePersistentState(version: 8, tasks: [], undoSnapshots: [])
+    let future = RuntimePersistentState(
+        version: RuntimePersistentState.currentVersion + 1,
+        tasks: [],
+        undoSnapshots: []
+    )
     try JSONEncoder().encode(future).write(to: store.stateURL)
     #expect(throws: TaskStateStoreError.unsupportedVersion) {
         try store.load()
@@ -335,6 +339,28 @@ import Testing
     #expect(migrated.inbox.isEmpty)
     #expect(migrated.outbox.isEmpty)
     #expect(migrated.nextSequence == 1)
+}
+
+@Test func versionSevenMigrationKeepsTheCloudSyncJournal() throws {
+    let task = state(task: "kept").tasks[0]
+    let operation = RuntimeTaskOperation(
+        id: "device-a:kept",
+        taskID: task.id,
+        occurredAt: task.updatedAt,
+        sequence: 4,
+        task: task
+    )
+    let old = RuntimePersistentState(
+        version: 7,
+        tasks: [task],
+        undoSnapshots: [],
+        taskOperations: [operation]
+    )
+
+    let migrated = try old.validated()
+    #expect(migrated.version == RuntimePersistentState.currentVersion)
+    #expect(migrated.taskOperations == [operation])
+    #expect(migrated.planningPreferences == .default)
 }
 
 @Test func pureReplanRequestsDoNotInventTaskMutationsOrUndoHistory() {

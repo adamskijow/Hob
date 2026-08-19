@@ -13,6 +13,7 @@ public struct RuntimeTask: Codable, Equatable, Sendable {
     public var status: String
     public let createdAt: String
     public var updatedAt: String
+    public var sourceArchive: String?
 
     public init(
         id: String,
@@ -25,7 +26,8 @@ public struct RuntimeTask: Codable, Equatable, Sendable {
         priority: String? = nil,
         status: String,
         createdAt: String,
-        updatedAt: String
+        updatedAt: String,
+        sourceArchive: String? = nil
     ) {
         self.id = id
         self.rawText = rawText
@@ -38,6 +40,7 @@ public struct RuntimeTask: Codable, Equatable, Sendable {
         self.status = status
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.sourceArchive = sourceArchive
     }
 }
 
@@ -256,7 +259,7 @@ public struct RuntimePipelineStatus: Codable, Equatable, Sendable {
 }
 
 public struct RuntimePersistentState: Codable, Equatable, Sendable {
-    public static let currentVersion = 7
+    public static let currentVersion = 8
 
     public let version: Int
     public let tasks: [RuntimeTask]
@@ -270,6 +273,7 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
     public let notificationCleanupIDs: [String]
     public let pendingNotificationResponses: [RuntimeNotificationResponse]
     public let taskOperations: [RuntimeTaskOperation]
+    public let planningPreferences: RuntimePlanningPreferences
 
     public init(
         version: Int = RuntimePersistentState.currentVersion,
@@ -283,7 +287,8 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         calendarCleanupEventIDs: [String] = [],
         notificationCleanupIDs: [String] = [],
         pendingNotificationResponses: [RuntimeNotificationResponse] = [],
-        taskOperations: [RuntimeTaskOperation]? = nil
+        taskOperations: [RuntimeTaskOperation]? = nil,
+        planningPreferences: RuntimePlanningPreferences = .default
     ) {
         self.version = version
         self.tasks = tasks
@@ -304,6 +309,7 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
                 task: $0
             )
         }
+        self.planningPreferences = planningPreferences
     }
 
     public static let empty = RuntimePersistentState(tasks: [], undoSnapshots: [])
@@ -341,16 +347,19 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
                 adoptedSchedule: version >= 3 ? adoptedSchedule : nil,
                 calendarCleanupEventIDs: version >= 5
                     ? calendarCleanupEventIDs : [],
-                notificationCleanupIDs: [],
-                pendingNotificationResponses: [],
-                taskOperations: tasks.map {
+                notificationCleanupIDs: version >= 6
+                    ? notificationCleanupIDs : [],
+                pendingNotificationResponses: version >= 6
+                    ? pendingNotificationResponses : [],
+                taskOperations: version >= 7 ? taskOperations : tasks.map {
                     RuntimeTaskOperation(
                         id: "baseline-\($0.id)",
                         taskID: $0.id,
                         occurredAt: $0.updatedAt,
                         task: $0
                     )
-                }
+                },
+                planningPreferences: .default
             )
         } else {
             migrated = self
@@ -379,6 +388,7 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
               Set(migrated.taskOperations.map(\.id)).count
                 == migrated.taskOperations.count,
               migrated.taskOperations.allSatisfy(\.isValid),
+              migrated.planningPreferences.isValid,
               migrated.nextSequence > 0 else {
             throw RuntimeStateError.invalidState
         }
@@ -413,6 +423,7 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         case notificationCleanupIDs
         case pendingNotificationResponses
         case taskOperations
+        case planningPreferences
     }
 
     public init(from decoder: Decoder) throws {
@@ -460,6 +471,10 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
                 task: $0
             )
         }
+        planningPreferences = try container.decodeIfPresent(
+            RuntimePlanningPreferences.self,
+            forKey: .planningPreferences
+        ) ?? .default
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -479,6 +494,7 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
             forKey: .pendingNotificationResponses
         )
         try container.encode(taskOperations, forKey: .taskOperations)
+        try container.encode(planningPreferences, forKey: .planningPreferences)
     }
 
     private static func validatePipeline(_ state: RuntimePersistentState) throws {
@@ -621,6 +637,7 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
                   validDate(task.deadlineDate),
                   (task.durationMinutes.map { (5...480).contains($0) } ?? true),
                   (task.priority.map { ["high", "normal", "low"].contains($0) } ?? true),
+                  (task.sourceArchive.map { $0.utf8.count <= 20_000 } ?? true),
                   task.dueDate == nil || task.deadlineDate == nil
                     || task.dueDate! <= task.deadlineDate! else {
                 throw RuntimeStateError.invalidState

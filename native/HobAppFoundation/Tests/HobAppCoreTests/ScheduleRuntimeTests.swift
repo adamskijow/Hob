@@ -2,6 +2,7 @@
 import Foundation
 import Testing
 @testable import HobAppCore
+import HobAppStorage
 
 @Test func reviewerScenarioBecomesAFeasibleMultiDayTimeline() throws {
     let tasks = [
@@ -120,4 +121,92 @@ import Testing
             )
         )
     }
+}
+
+@Test func planningPreferencesSkipDaysOffAndApplyDefaults() throws {
+    let task = RuntimeTask(
+        id: "weekend-task",
+        rawText: "write report",
+        task: "write report",
+        dueDate: nil,
+        dueTime: nil,
+        status: "open",
+        createdAt: "2026-08-21T18:00:00-04:00",
+        updatedAt: "2026-08-21T18:00:00-04:00"
+    )
+    let proposal = try RuntimeSchedulePlanner.propose(
+        tasks: [task],
+        request: RuntimeScheduleRequest(
+            proposalID: "working-rhythm",
+            generatedAt: "2026-08-21T18:00:00-04:00",
+            startDate: "2026-08-21",
+            timezone: "America/New_York",
+            workStart: "10:00",
+            workEnd: "18:00",
+            defaultDurationMinutes: 60,
+            transitionBufferMinutes: 10,
+            workDays: [1, 2, 3, 4, 5]
+        )
+    )
+
+    #expect(proposal.blocks.first?.startAt == "2026-08-24T10:00:00-04:00")
+    #expect(proposal.blocks.first?.durationMinutes == 60)
+}
+
+@Test func openLocalExportImportsAtomicallyAndPreservesAdvancedDetails() async throws {
+    let data = Data(#"""
+    {
+      "schema_version": 11,
+      "items": [{
+        "id": "legacy-1",
+        "raw_text": "Call Mom tomorrow",
+        "task": "Call Mom",
+        "due_date": "2026-08-19",
+        "due_time": null,
+        "status": "open",
+        "source": "capture",
+        "created_at": "2026-08-18T09:00:00-04:00",
+        "updated_at": "2026-08-18T09:00:00-04:00",
+        "priority": "high",
+        "note": "Ask about the trip",
+        "duration_minutes": 15
+      }],
+      "action_log": [],
+      "digests": [],
+      "meta": {},
+      "plan_runs": [],
+      "plan_sessions": []
+    }
+    """#.utf8)
+    let parsed = try OpenLocalExportImporter.parse(data)
+    #expect(parsed.tasks.map(\.task) == ["Call Mom"])
+    #expect(parsed.preservedDetailCount == 1)
+    #expect(parsed.tasks.first?.sourceArchive?.contains("Ask about the trip") == true)
+
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("hob-import-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let runtime = try DurableTaskRuntime(
+        store: TaskStateStore(directoryURL: directory)
+    )
+    _ = try await runtime.importOpenLocal(data)
+    let reopened = try TaskStateStore(directoryURL: directory).load()
+    #expect(reopened.tasks.map(\.id) == ["legacy-1"])
+    #expect(reopened.taskOperations.map(\.id) == ["open-local-import:legacy-1"])
+    await #expect(throws: OpenLocalImportError.destinationNotEmpty) {
+        _ = try await runtime.importOpenLocal(data)
+    }
+}
+
+@Test func invalidOpenLocalExportChangesNothing() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("hob-bad-import-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let runtime = try DurableTaskRuntime(
+        store: TaskStateStore(directoryURL: directory)
+    )
+    await #expect(throws: OpenLocalImportError.invalidExport) {
+        _ = try await runtime.importOpenLocal(Data("{}".utf8))
+    }
+    #expect(await runtime.snapshot().tasks.isEmpty)
 }

@@ -7,6 +7,8 @@ import HobAppCore
 public struct HobWorkspaceView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var controller: HobWorkspaceController
+    @AppStorage("hob.onboarding.completed.v1") private var onboardingCompleted = false
+    @State private var showsOnboarding = false
 
     public init() {
         _controller = StateObject(wrappedValue: HobWorkspaceController())
@@ -48,9 +50,21 @@ public struct HobWorkspaceView: View {
                     }
                     .disabled(controller.isWorking)
                 }
+                Button("Setup", systemImage: "gearshape") {
+                    showsOnboarding = true
+                }
             }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { controller.syncNow() }
+            }
+            .onAppear {
+                if !onboardingCompleted { showsOnboarding = true }
+            }
+            .sheet(isPresented: $showsOnboarding) {
+                HobFirstRunView(controller: controller) {
+                    onboardingCompleted = true
+                    showsOnboarding = false
+                }
             }
         }
     }

@@ -2,6 +2,7 @@
 import AppKit
 import HobServiceControl
 import SwiftUI
+import UniformTypeIdentifiers
 
 private struct LocalInstall: Sendable {
     let projectPath: String
@@ -73,6 +74,44 @@ private struct HealthCheckClient: Sendable {
     }
 }
 
+private struct PortableExportClient: Sendable {
+    let install: LocalInstall
+
+    func run(destination: URL) -> String {
+        guard !install.projectPath.isEmpty,
+              FileManager.default.fileExists(atPath: install.uvPath) else {
+            return "Export is unavailable. Reinstall the menu-bar companion."
+        }
+        let process = Process()
+        let output = Pipe()
+        let errors = Pipe()
+        process.executableURL = URL(fileURLWithPath: install.uvPath)
+        process.arguments = [
+            "run", "--directory", install.projectPath,
+            "python", "app.py", "export", destination.path,
+        ]
+        var environment = ProcessInfo.processInfo.environment
+        environment["HOB_DB_PATH"] = install.databasePath
+        process.environment = environment
+        process.standardOutput = output
+        process.standardError = errors
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return "Hob could not start the export."
+        }
+        guard process.terminationStatus == 0 else {
+            let detail = String(
+                decoding: errors.fileHandleForReading.readDataToEndOfFile(),
+                as: UTF8.self
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            return detail.isEmpty ? "Hob could not export its data." : detail
+        }
+        return "Saved an Apple app export. Open Local is unchanged."
+    }
+}
+
 @MainActor
 private final class HobMenuController: ObservableObject {
     @Published private(set) var snapshot = LocalServiceSnapshot(
@@ -85,6 +124,7 @@ private final class HobMenuController: ObservableObject {
 
     private let service: LaunchdServiceClient<ProcessCommandRunner>
     private let healthClient: HealthCheckClient
+    private let exportClient: PortableExportClient
     let install: LocalInstall
 
     init() {
@@ -98,6 +138,7 @@ private final class HobMenuController: ObservableObject {
             runner: ProcessCommandRunner()
         )
         self.healthClient = HealthCheckClient(install: install)
+        self.exportClient = PortableExportClient(install: install)
         refresh()
     }
 
@@ -154,6 +195,25 @@ private final class HobMenuController: ObservableObject {
         let url = URL(fileURLWithPath: install.databasePath)
             .deletingLastPathComponent()
         NSWorkspace.shared.open(url)
+    }
+
+    func exportForAppleApp() {
+        guard !isWorking else { return }
+        let panel = NSSavePanel()
+        panel.title = "Export Hob for the Apple App"
+        panel.nameFieldStringValue = "hob-open-local-export.json"
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        isWorking = true
+        message = nil
+        let exportClient = exportClient
+        Task {
+            message = await Task.detached(priority: .userInitiated) {
+                exportClient.run(destination: destination)
+            }.value
+            isWorking = false
+        }
     }
 
     private func perform(
@@ -273,6 +333,11 @@ private struct HobMenuView: View {
             Button("Show Hob Data Folder") {
                 controller.openDataFolder()
             }
+
+            Button("Export for Apple App…") {
+                controller.exportForAppleApp()
+            }
+            .disabled(controller.isWorking)
 
             Divider()
 

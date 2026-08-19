@@ -1,6 +1,50 @@
 // SPDX-License-Identifier: MIT
 import Foundation
 
+public struct RuntimePlanningPreferences: Codable, Equatable, Sendable {
+    public let workStart: String
+    public let workEnd: String
+    public let workDays: [Int]
+    public let defaultDurationMinutes: Int
+    public let transitionBufferMinutes: Int
+
+    public init(
+        workStart: String = "09:00",
+        workEnd: String = "17:30",
+        workDays: [Int] = [1, 2, 3, 4, 5],
+        defaultDurationMinutes: Int = 30,
+        transitionBufferMinutes: Int = 0
+    ) {
+        self.workStart = workStart
+        self.workEnd = workEnd
+        self.workDays = workDays.sorted()
+        self.defaultDurationMinutes = defaultDurationMinutes
+        self.transitionBufferMinutes = transitionBufferMinutes
+    }
+
+    public static let `default` = RuntimePlanningPreferences()
+
+    public var isValid: Bool {
+        validClock(workStart)
+            && validClock(workEnd)
+            && workStart < workEnd
+            && !workDays.isEmpty
+            && Set(workDays).count == workDays.count
+            && workDays.allSatisfy { (1...7).contains($0) }
+            && (5...480).contains(defaultDurationMinutes)
+            && (0...120).contains(transitionBufferMinutes)
+    }
+
+    private func validClock(_ value: String) -> Bool {
+        let parts = value.split(separator: ":", omittingEmptySubsequences: false)
+        return parts.count == 2
+            && parts[0].count == 2
+            && parts[1].count == 2
+            && Int(parts[0]).map { (0...23).contains($0) } == true
+            && Int(parts[1]).map { (0...59).contains($0) } == true
+    }
+}
+
 public struct RuntimeBusyInterval: Codable, Equatable, Sendable {
     public let startAt: String
     public let endAt: String
@@ -21,6 +65,7 @@ public struct RuntimeScheduleRequest: Codable, Equatable, Sendable {
     public let workEnd: String
     public let defaultDurationMinutes: Int
     public let transitionBufferMinutes: Int
+    public let workDays: [Int]
     public let busy: [RuntimeBusyInterval]
 
     public init(
@@ -33,6 +78,7 @@ public struct RuntimeScheduleRequest: Codable, Equatable, Sendable {
         workEnd: String = "17:30",
         defaultDurationMinutes: Int = 30,
         transitionBufferMinutes: Int = 0,
+        workDays: [Int] = [1, 2, 3, 4, 5],
         busy: [RuntimeBusyInterval] = []
     ) {
         self.proposalID = proposalID
@@ -44,6 +90,7 @@ public struct RuntimeScheduleRequest: Codable, Equatable, Sendable {
         self.workEnd = workEnd
         self.defaultDurationMinutes = defaultDurationMinutes
         self.transitionBufferMinutes = transitionBufferMinutes
+        self.workDays = workDays.sorted()
         self.busy = busy
     }
 }
@@ -394,6 +441,8 @@ public enum RuntimeSchedulePlanner {
             var placed: RuntimeScheduleBlock?
             for offset in 0..<request.horizonDays {
                 guard let day = calendar.date(byAdding: .day, value: offset, to: startDay),
+                      request.workDays.contains(calendar.component(.weekday, from: day) == 1
+                        ? 7 : calendar.component(.weekday, from: day) - 1),
                       eligible(task, on: day, startDay: startDay, zone: zone) else { continue }
                 if let deadline = task.deadlineDate.flatMap({ parseDay($0, zone: zone) }),
                    day > deadline { break }
@@ -482,6 +531,9 @@ public enum RuntimeSchedulePlanner {
             && (1...14).contains(request.horizonDays)
             && (5...480).contains(request.defaultDurationMinutes)
             && (0...120).contains(request.transitionBufferMinutes)
+            && !request.workDays.isEmpty
+            && Set(request.workDays).count == request.workDays.count
+            && request.workDays.allSatisfy { (1...7).contains($0) }
             && request.workStart < request.workEnd
             && request.busy.count <= 10_000
             && busyIsValid
