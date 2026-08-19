@@ -21,15 +21,15 @@ Setup remains available from the workspace toolbar.
 - Existing native tasks block import, preventing an accidental merge.
 - Advanced task fields travel with each imported task as bounded source data.
 - Open Local and its export remain unchanged.
-- The v7 CloudKit journal survives the v8 preference migration.
+- The v7 sync journal survives the v8 preference migration.
 
 ## Evidence
 
-- 44 native tests, including invalid import, repeat import, advanced-field
+- 47 native tests, including invalid import, repeat import, advanced-field
   preservation, preference scheduling, and v7 journal migration
 - Mac and iPhone simulator builds
 - Open Local menu tests and optimized build
 - 115/115 real-model interpreter cases and 4/4 analysis cases
 
-Signed-device onboarding, VoiceOver, and two-device CloudKit rehearsal remain
+Signed-device onboarding, VoiceOver, and two-device iCloud rehearsal remain
 release gates.

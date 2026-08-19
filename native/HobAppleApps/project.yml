@@ -12,6 +12,7 @@ targets:
     platform: iOS
     sources:
       - Sources
+      - Assets.xcassets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.josephadamski.hob
@@ -20,6 +21,8 @@ targets:
         MARKETING_VERSION: "0.1"
         SWIFT_VERSION: 6.0
         CODE_SIGN_ENTITLEMENTS: Hob.entitlements
+        DEVELOPMENT_TEAM: JSW8SD9LSC
+        TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: Info.plist
     dependencies:

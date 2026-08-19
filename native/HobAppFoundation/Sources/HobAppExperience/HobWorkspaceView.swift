@@ -57,6 +57,13 @@ public struct HobWorkspaceView: View {
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { controller.syncNow() }
             }
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: NSUbiquitousKeyValueStore.didChangeExternallyNotification
+                )
+            ) { _ in
+                controller.syncNow()
+            }
             .onAppear {
                 if !onboardingCompleted { showsOnboarding = true }
             }
@@ -70,7 +77,13 @@ public struct HobWorkspaceView: View {
     }
 
     private var calendarSetup: some View {
-        HStack(spacing: 10) {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) { calendarSetupControls }
+            VStack(alignment: .leading, spacing: 10) { calendarSetupControls }
+        }
+    }
+
+    @ViewBuilder private var calendarSetupControls: some View {
             switch controller.calendarAuthorization {
             case .fullAccess:
                 Label("Calendar connected", systemImage: "calendar.badge.checkmark")
@@ -91,11 +104,16 @@ public struct HobWorkspaceView: View {
                 }
                 .disabled(controller.isWorking)
             }
-        }
     }
 
     private var notificationSetup: some View {
-        HStack(spacing: 10) {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) { notificationSetupControls }
+            VStack(alignment: .leading, spacing: 10) { notificationSetupControls }
+        }
+    }
+
+    @ViewBuilder private var notificationSetupControls: some View {
             switch controller.notificationAuthorization {
             case .authorized:
                 Label("Start reminders enabled", systemImage: "bell.badge.fill")
@@ -122,11 +140,16 @@ public struct HobWorkspaceView: View {
                 }
                 .disabled(controller.isWorking)
             }
-        }
     }
 
     private var syncSetup: some View {
-        HStack(spacing: 10) {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) { syncSetupControls }
+            VStack(alignment: .leading, spacing: 10) { syncSetupControls }
+        }
+    }
+
+    @ViewBuilder private var syncSetupControls: some View {
             switch controller.syncAvailability {
             case .available:
                 Label(
@@ -154,7 +177,6 @@ public struct HobWorkspaceView: View {
                 controller.syncNow()
             }
             .disabled(controller.isWorking)
-        }
     }
 
     private var introduction: some View {
@@ -188,6 +210,7 @@ public struct HobWorkspaceView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(!controller.canSubmit)
+            .keyboardShortcut(.return, modifiers: [.command])
             .accessibilityHint("Interprets the message, saves its tasks, and builds a schedule proposal")
         }
     }
@@ -354,25 +377,25 @@ public struct HobWorkspaceView: View {
     private func scheduleBlocks(_ proposal: RuntimeScheduleProposal) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(proposal.blocks) { block in
-                HStack(alignment: .top, spacing: 12) {
-                    Text(timeRange(block))
-                        .font(.system(.body, design: .monospaced).weight(.semibold))
-                        .frame(width: 145, alignment: .leading)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(block.task).fontWeight(.semibold)
-                        Text("\(block.durationMinutes) minutes")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: 12) {
+                        blockTime(block)
+                        blockDescription(block)
+                        Spacer()
+                        priorityIcon(block)
                     }
-                    Spacer()
-                    if block.priority == "high" {
-                        Image(systemName: "exclamationmark.circle.fill")
-                            .foregroundStyle(.orange)
-                            .accessibilityLabel("High priority")
+                    VStack(alignment: .leading, spacing: 5) {
+                        blockTime(block)
+                        HStack(alignment: .top) {
+                            blockDescription(block)
+                            Spacer()
+                            priorityIcon(block)
+                        }
                     }
                 }
                 .padding(10)
                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+                .accessibilityElement(children: .combine)
             }
             ForEach(proposal.unscheduled) { task in
                 Label("\(task.task): \(task.reason)", systemImage: "calendar.badge.exclamationmark")
@@ -386,6 +409,28 @@ public struct HobWorkspaceView: View {
                 }
                 .font(.callout)
             }
+        }
+    }
+
+    private func blockTime(_ block: RuntimeScheduleBlock) -> some View {
+        Text(timeRange(block))
+            .font(.body.monospaced().weight(.semibold))
+    }
+
+    private func blockDescription(_ block: RuntimeScheduleBlock) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(block.task).fontWeight(.semibold)
+            Text("\(block.durationMinutes) minutes")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private func priorityIcon(_ block: RuntimeScheduleBlock) -> some View {
+        if block.priority == "high" {
+            Image(systemName: "exclamationmark.circle.fill")
+                .foregroundStyle(.orange)
+                .accessibilityLabel("High priority")
         }
     }
 
@@ -427,10 +472,9 @@ public struct HobWorkspaceView: View {
               let end = ISO8601DateFormatter().date(from: block.endAt) else {
             return block.startAt
         }
-        let day = DateFormatter()
-        day.dateFormat = "EEE"
-        let time = DateFormatter()
-        time.timeStyle = .short
-        return "\(day.string(from: start)) \(time.string(from: start))–\(time.string(from: end))"
+        let day = start.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
+        let startTime = start.formatted(date: .omitted, time: .shortened)
+        let endTime = end.formatted(date: .omitted, time: .shortened)
+        return "\(day), \(startTime)–\(endTime)"
     }
 }

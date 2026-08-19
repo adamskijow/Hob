@@ -12,9 +12,9 @@ identity, scheduling, persistence, sync, and undo.
 The Apple app does not require Telegram, Ollama, a daemon, or Terminal. Open
 Local remains available during migration.
 
-Private CloudKit syncs a versioned operation journal. EventKit supplies opaque
-busy intervals and receives only user-adopted Hob blocks. Model output never
-writes tasks, Calendar, or sync state directly.
+Private iCloud key-value storage syncs a bounded, per-device operation journal.
+EventKit supplies opaque busy intervals and receives only user-adopted Hob
+blocks. Model output never writes tasks, Calendar, or sync state directly.
 
 ## Delivery
 

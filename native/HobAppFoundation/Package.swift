@@ -64,7 +64,7 @@ let package = Package(
         ),
         .testTarget(
             name: "HobAppCoreTests",
-            dependencies: ["HobAppCore", "HobAppStorage"]
+            dependencies: ["HobAppCore", "HobAppStorage", "HobCloudSync"]
         ),
         .testTarget(
             name: "HobAppExperienceTests",

@@ -38,11 +38,14 @@ struct HobFirstRunView: View {
                         if step == 4 { finish() } else { step += 1 }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(controller.isWorking)
+                    .disabled(
+                        controller.isWorking
+                            || (step == 4 && !controller.modelReadiness.isReady)
+                    )
                 }
             }
             .padding(28)
-            .frame(minWidth: 340, idealWidth: 560, minHeight: 440)
+            .frame(maxWidth: 560, maxHeight: .infinity)
             .navigationTitle("Set up Hob")
             .onAppear { loadRhythm() }
             .fileImporter(
@@ -66,7 +69,7 @@ struct HobFirstRunView: View {
             Text("A plan you can actually follow").font(.largeTitle.bold())
             Text("Describe the work. Hob uses Apple Intelligence on this device, finds room around your Calendar, and lets you approve every schedule change.")
             Label("Messages and Calendar details stay on this device.", systemImage: "lock.shield")
-            Label("Tasks sync through your private iCloud database.", systemImage: "icloud")
+            Label("Tasks sync privately through your iCloud account.", systemImage: "icloud")
         }
     }
 
@@ -180,6 +183,10 @@ struct HobFirstRunView: View {
             Text("Try: “Finish taxes by Friday, high priority, about 90 minutes.”")
             Text("Hob proposes a timeline first. Your Calendar changes only when you approve it.")
                 .foregroundStyle(.secondary)
+            if !controller.modelReadiness.isReady {
+                Label("Apple Intelligence must be ready before Hob can interpret tasks.", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            }
         }
     }
 
@@ -189,15 +196,15 @@ struct HobFirstRunView: View {
         symbol: String,
         @ViewBuilder actions: () -> Actions
     ) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: symbol).frame(width: 24)
-            VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: symbol).frame(width: 24)
                 Text(title).fontWeight(.semibold)
-                Text(detail).font(.callout).foregroundStyle(.secondary)
             }
-            Spacer()
+            Text(detail).font(.callout).foregroundStyle(.secondary)
             actions()
         }
+        .accessibilityElement(children: .contain)
     }
 
     private var syncDetail: String {

@@ -15,11 +15,9 @@ def test_app_store_entitlements_are_minimal_and_sandboxed():
 
     assert entitlements == {
         "com.apple.security.app-sandbox": True,
-        "com.apple.security.application-groups": ["group.com.josephadamski.hob"],
-        "com.apple.developer.icloud-container-identifiers": [
-            "iCloud.com.josephadamski.hob"
-        ],
-        "com.apple.developer.icloud-services": ["CloudKit"],
+        "com.apple.developer.ubiquity-kvstore-identifier": (
+            "$(TeamIdentifierPrefix)com.josephadamski.hob"
+        ),
         "com.apple.security.network.client": True,
         "com.apple.security.personal-information.calendars": True,
     }
@@ -86,8 +84,19 @@ def test_xcode_shell_consumes_store_bundle_and_sandbox_configuration():
     assert "ENABLE_APP_SANDBOX = YES" in project
     assert "HobMacShell.entitlements" in project
     assert "HobAppFoundation/AppStore/Info.plist" in project
-    assert "Contents/Library/LoginItems" in project
-    assert "HobAgent.app in Embed Login Items" in project
+    assert "Assets.xcassets in Resources" in project
+    assert "ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon" in project
+    assert (
+        ROOT
+        / "native"
+        / "HobMacApp"
+        / "Assets.xcassets"
+        / "AppIcon.appiconset"
+        / "Contents.json"
+    ).is_file()
+    app_target = project.split("/* Hob */ = {", 1)[1].split("};", 1)[0]
+    assert "Embed Login Items" not in app_target
+    assert "HobAgent" not in app_target
     assert (XCODE_PROJECT / "xcshareddata" / "xcschemes" / "Hob.xcscheme").is_file()
 
 
@@ -199,12 +208,17 @@ def test_iphone_app_uses_the_same_native_workspace_and_local_model():
 
     assert "platform: iOS" in spec
     assert "product: HobAppExperience" in spec
+    assert "TARGETED_DEVICE_FAMILY: \"1\"" in spec
+    assert "Assets.xcassets" in spec
     assert "HobWorkspaceView()" in app
     assert "HobAppFoundation" in project
     assert "SystemLanguageModel.default" in interpreter
     assert "LanguageModelSession" in interpreter
     assert '"complete", "drop", "reschedule", "amend", "replan"' in interpreter
     assert 'RuntimeAction(type: "replan")' in interpreter
+    assert (
+        IOS_PROJECT / "Assets.xcassets" / "AppIcon.appiconset" / "Hob.png"
+    ).is_file()
 
     with (IOS_PROJECT / "Info.plist").open("rb") as fh:
         info = plistlib.load(fh)
@@ -213,33 +227,44 @@ def test_iphone_app_uses_the_same_native_workspace_and_local_model():
     assert "adds only schedules you adopt" in info[
         "NSCalendarsFullAccessUsageDescription"
     ]
-    assert entitlements["com.apple.developer.icloud-container-identifiers"] == [
-        "iCloud.com.josephadamski.hob"
-    ]
-    assert entitlements["com.apple.developer.icloud-services"] == ["CloudKit"]
+    assert entitlements == {
+        "com.apple.developer.ubiquity-kvstore-identifier": (
+            "$(TeamIdentifierPrefix)com.josephadamski.hob"
+        )
+    }
 
 
-def test_private_cloudkit_sync_uses_a_validated_operation_journal():
+def test_private_icloud_sync_uses_a_bounded_validated_operation_journal():
     package = (FOUNDATION / "Package.swift").read_text(encoding="utf-8")
     sync = (
         FOUNDATION
         / "Sources"
         / "HobCloudSync"
-        / "CloudKitTaskSyncStore.swift"
+        / "ICloudTaskSyncStore.swift"
     ).read_text(encoding="utf-8")
     core = (
         FOUNDATION / "Sources" / "HobAppCore" / "TaskSync.swift"
     ).read_text(encoding="utf-8")
     project = (XCODE_PROJECT / "project.pbxproj").read_text(encoding="utf-8")
+    workspace = (
+        FOUNDATION
+        / "Sources"
+        / "HobAppExperience"
+        / "HobWorkspaceView.swift"
+    ).read_text(encoding="utf-8")
 
     assert 'name: "HobCloudSync"' in package
-    assert "container.privateCloudDatabase" in sync
-    assert 'recordType = "HobTaskOperation"' in sync
+    assert "NSUbiquitousKeyValueStore.default" in sync
+    assert 'keyPrefix = "hob.task-operations.v1."' in sync
+    assert "maximumShardBytes = 400_000" in sync
+    assert "maximumTotalBytes = 900_000" in sync
+    assert "maximumShards = 16" in sync
     assert "RuntimeTaskOperationMerge.merge" in sync
     assert "RuntimeTaskOperationMerge" in core
     assert "TaskSync.swift in Sources" in project
     assert "TaskSync.swift in Agent Sources" in project
-    assert "CloudKitTaskSyncStore.swift in Sources" in project
+    assert "ICloudTaskSyncStore.swift in Sources" in project
+    assert "NSUbiquitousKeyValueStore.didChangeExternallyNotification" in workspace
 
 
 def test_agent_uses_fail_closed_private_durable_task_storage():
@@ -287,34 +312,25 @@ def test_store_app_exposes_content_free_health_and_confirmed_recovery():
     assert "recoverFromBackup()" in controller
 
 
-def test_background_helper_is_sandboxed_and_shares_only_required_storage():
-    with (FOUNDATION / "AppStore" / "HobAgent.entitlements").open("rb") as fh:
-        entitlements = plistlib.load(fh)
-    with (FOUNDATION / "AppStore" / "HobAgent-Info.plist").open("rb") as fh:
-        info = plistlib.load(fh)
+def test_native_app_does_not_embed_the_retired_background_helper():
+    project = (XCODE_PROJECT / "project.pbxproj").read_text(encoding="utf-8")
+    app_target = project.split("/* Hob */ = {", 1)[1].split("};", 1)[0]
 
-    assert entitlements == {
-        "com.apple.security.app-sandbox": True,
-        "com.apple.security.application-groups": ["group.com.josephadamski.hob"],
-        "com.apple.security.network.client": True,
-    }
-    assert info["CFBundleIdentifier"] == "com.josephadamski.hob.agent"
-    assert info["LSBackgroundOnly"] is True
-    assert "com.apple.security.network.server" not in entitlements
+    assert "HobAgent" not in app_target
+    assert "Embed Login Items" not in app_target
 
 
-def test_service_registration_is_explicit_and_reversible():
+def test_native_app_startup_is_automatic_and_reversible():
     controller = (
         FOUNDATION
         / "Sources"
         / "HobMacShell"
-        / "BackgroundServiceController.swift"
+        / "LaunchAtLoginController.swift"
     ).read_text(encoding="utf-8")
 
-    assert ".loginItem(identifier: helperIdentifier)" in controller
+    assert "SMAppService = .mainApp" in controller
+    assert "if status == .notRegistered { enable() }" in controller
     assert "try service.register()" in controller
     assert "try service.unregister()" in controller
     assert "openSystemSettingsLoginItems" in controller
-    assert "could not register" in controller
-    assert "guard runtimeAvailable" in controller
-    assert "runtimeAvailable: Bool = false" in controller
+    assert "could not turn on startup" in controller

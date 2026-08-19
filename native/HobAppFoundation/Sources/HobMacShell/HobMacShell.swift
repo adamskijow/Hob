@@ -13,7 +13,7 @@ import SwiftUI
 
 @main
 struct HobMacShell: App {
-    @StateObject private var backgroundService = BackgroundServiceController()
+    @StateObject private var launchAtLogin = LaunchAtLoginController()
     @StateObject private var foundationModel = FoundationModelController()
     @StateObject private var taskStorage = TaskStorageController()
 
@@ -22,7 +22,7 @@ struct HobMacShell: App {
             edition: .appStore,
             modelBackend: .appleFoundationModels,
             ownerPaired: false,
-            backgroundServiceApproved: backgroundService.isDeliveryReady,
+            backgroundServiceApproved: true,
             modelAvailable: foundationModel.state.isReady,
             storageAvailable: [.new, .ready].contains(
                 taskStorage.inspection.condition
@@ -41,7 +41,7 @@ struct HobMacShell: App {
         Window("Hob Setup", id: "setup") {
             SetupHomeView(
                 readiness: readiness,
-                backgroundService: backgroundService,
+                launchAtLogin: launchAtLogin,
                 foundationModel: foundationModel,
                 taskStorage: taskStorage
             )
@@ -66,8 +66,8 @@ struct HobMacShell: App {
                     .tabItem { Label("Privacy", systemImage: "lock.shield") }
                 TaskStorageView(controller: taskStorage)
                     .tabItem { Label("Storage", systemImage: "externaldrive") }
-                BackgroundServiceView(controller: backgroundService)
-                    .tabItem { Label("Background", systemImage: "clock.arrow.circlepath") }
+                LaunchAtLoginView(controller: launchAtLogin)
+                    .tabItem { Label("Startup", systemImage: "power") }
             }
             .frame(minWidth: 620, minHeight: 420)
         }
@@ -107,7 +107,7 @@ private struct HobMenu: View {
 private struct SetupHomeView: View {
     @Environment(\.scenePhase) private var scenePhase
     let readiness: AppReadiness
-    @ObservedObject var backgroundService: BackgroundServiceController
+    @ObservedObject var launchAtLogin: LaunchAtLoginController
     @ObservedObject var foundationModel: FoundationModelController
     @ObservedObject var taskStorage: TaskStorageController
 
@@ -137,8 +137,8 @@ private struct SetupHomeView: View {
                 GroupBox("On-device intelligence") {
                     ModelReadinessContent(controller: foundationModel)
                 }
-                GroupBox("Background delivery") {
-                    BackgroundServiceContent(controller: backgroundService)
+                GroupBox("After a restart") {
+                    LaunchAtLoginContent(controller: launchAtLogin)
                 }
                 GroupBox("Local task safety") {
                     TaskStorageContent(controller: taskStorage)
@@ -151,7 +151,7 @@ private struct SetupHomeView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
-                backgroundService.refresh()
+                launchAtLogin.refresh()
                 taskStorage.refresh()
             }
         }
@@ -274,13 +274,13 @@ private struct ModelReadinessContent: View {
     }
 }
 
-private struct BackgroundServiceView: View {
-    @ObservedObject var controller: BackgroundServiceController
+private struct LaunchAtLoginView: View {
+    @ObservedObject var controller: LaunchAtLoginController
 
     var body: some View {
         Form {
-            Section("Background delivery") {
-                BackgroundServiceContent(controller: controller)
+            Section("Startup") {
+                LaunchAtLoginContent(controller: controller)
             }
         }
         .formStyle(.grouped)
@@ -289,53 +289,32 @@ private struct BackgroundServiceView: View {
 
 }
 
-private struct BackgroundServiceContent: View {
-    @ObservedObject var controller: BackgroundServiceController
+private struct LaunchAtLoginContent: View {
+    @ObservedObject var controller: LaunchAtLoginController
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            LabeledContent("Status", value: controller.state.title)
-            Text(controller.state.guidance)
-                .foregroundStyle(.secondary)
-            Text("Hob runs in the background only after you choose Turn On. You can turn it off here or in System Settings at any time.")
-                .font(.callout)
-            if !controller.runtimeAvailable {
-                Label(
-                    "The signed helper is bundled, but background delivery stays locked until the Hob task runtime is connected.",
-                    systemImage: "hammer"
+            Toggle(
+                "Open Hob at login",
+                isOn: Binding(
+                    get: { controller.isEnabled },
+                    set: { controller.setEnabled($0) }
                 )
+            )
+            Text(controller.guidance)
                 .foregroundStyle(.secondary)
-            }
             if let error = controller.lastError {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.red)
             }
-            serviceActions
+            if controller.status == .requiresApproval {
+                Button("Open Login Items Settings") { controller.openSettings() }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 6)
     }
 
-    @ViewBuilder private var serviceActions: some View {
-        switch controller.state {
-        case .notRegistered:
-            Button("Turn On Background Delivery") { controller.enable() }
-                .disabled(!controller.runtimeAvailable)
-        case .enabled:
-            Button("Turn Off Background Delivery", role: .destructive) {
-                controller.disable()
-            }
-        case .requiresApproval:
-            Button("Open Login Items Settings") { controller.openApprovalSettings() }
-            Button("Cancel Background Registration", role: .destructive) {
-                controller.disable()
-            }
-        case .notFound:
-            Button("Check Again") { controller.refresh() }
-        case .unknown:
-            Button("Refresh Status") { controller.refresh() }
-        }
-    }
 }
 
 private struct OnboardingView: View {
@@ -374,7 +353,7 @@ private struct PrivacyView: View {
                 Text("Model prompts and Calendar details stay on this device.")
             }
             Section("iCloud") {
-                Text("Tasks sync through your private iCloud database.")
+                Text("Tasks sync privately through your iCloud account.")
             }
         }
         .formStyle(.grouped)

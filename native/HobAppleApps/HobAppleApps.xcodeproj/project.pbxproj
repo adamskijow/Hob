@@ -9,10 +9,12 @@
 /* Begin PBXBuildFile section */
 		7F01CD42625895582606AF8E /* HobAppExperience in Frameworks */ = {isa = PBXBuildFile; productRef = 29DC69B634BCFC2FEC558464 /* HobAppExperience */; };
 		CA14298821862DF50ECE4A11 /* HobPhoneApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A4677A7ED8BB0BD0F0D5EAB /* HobPhoneApp.swift */; };
+		ECFA9970838099CE66A0605F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 19FB1E383205C6351F0E7A3A /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		0A4677A7ED8BB0BD0F0D5EAB /* HobPhoneApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HobPhoneApp.swift; sourceTree = "<group>"; };
+		19FB1E383205C6351F0E7A3A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		8E4842C9A62E41146D06AA2B /* HobAppFoundation */ = {isa = PBXFileReference; lastKnownFileType = folder; name = HobAppFoundation; path = ../HobAppFoundation; sourceTree = SOURCE_ROOT; };
 		BA4B211894558044AD8412A4 /* HobiOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = HobiOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -40,6 +42,7 @@
 		46B0F4C04C5220177165A747 = {
 			isa = PBXGroup;
 			children = (
+				19FB1E383205C6351F0E7A3A /* Assets.xcassets */,
 				C273059233B236B5C83930A2 /* Packages */,
 				93D9A24205CA19E7758A0779 /* Sources */,
 				410AC54DE84E581C2F6E8BA1 /* Products */,
@@ -70,6 +73,7 @@
 			buildConfigurationList = 18E4241A18C440CD2AB924CD /* Build configuration list for PBXNativeTarget "HobiOS" */;
 			buildPhases = (
 				96F943BC6F6EAFDDB1C9A42D /* Sources */,
+				AD74554201FBA0C8595B3D05 /* Resources */,
 				4C0C7E9CBE4B626C3691AC05 /* Frameworks */,
 			);
 			buildRules = (
@@ -93,6 +97,9 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					ED7859FEE268C9BC46A3CA9D = {
+						DevelopmentTeam = JSW8SD9LSC;
+					};
 				};
 			};
 			buildConfigurationList = F28EC2802F9FD4C04CA27E31 /* Build configuration list for PBXProject "HobAppleApps" */;
@@ -116,6 +123,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		AD74554201FBA0C8595B3D05 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				ECFA9970838099CE66A0605F /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		96F943BC6F6EAFDDB1C9A42D /* Sources */ = {
@@ -192,6 +210,7 @@
 				CODE_SIGN_ENTITLEMENTS = Hob.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = JSW8SD9LSC;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -203,7 +222,7 @@
 				PRODUCT_NAME = Hob;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
@@ -277,6 +296,7 @@
 				CODE_SIGN_ENTITLEMENTS = Hob.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = JSW8SD9LSC;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -288,7 +308,7 @@
 				PRODUCT_NAME = Hob;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};

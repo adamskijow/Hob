@@ -7,13 +7,11 @@ public enum SharedStorageError: Error, Equatable, Sendable {
 }
 
 public struct SharedStorage: Sendable {
-    public static let appGroupIdentifier = "group.com.josephadamski.hob"
-
-    private let resolveContainer: @Sendable (String) -> URL?
+    private let resolveContainer: @Sendable () -> URL?
     private let createDirectory: @Sendable (URL) throws -> Void
 
     public init(
-        resolveContainer: @escaping @Sendable (String) -> URL?,
+        resolveContainer: @escaping @Sendable () -> URL?,
         createDirectory: @escaping @Sendable (URL) throws -> Void
     ) {
         self.resolveContainer = resolveContainer
@@ -21,10 +19,11 @@ public struct SharedStorage: Sendable {
     }
 
     public static let system = SharedStorage(
-        resolveContainer: { identifier in
-            FileManager.default.containerURL(
-                forSecurityApplicationGroupIdentifier: identifier
-            )
+        resolveContainer: {
+            FileManager.default.urls(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask
+            ).first
         },
         createDirectory: { url in
             try FileManager.default.createDirectory(
@@ -35,13 +34,10 @@ public struct SharedStorage: Sendable {
     )
 
     public func applicationSupportDirectory(create: Bool = true) throws -> URL {
-        guard let container = resolveContainer(Self.appGroupIdentifier) else {
+        guard let container = resolveContainer() else {
             throw SharedStorageError.containerUnavailable
         }
-        let directory = container
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Application Support", isDirectory: true)
-            .appendingPathComponent("Hob", isDirectory: true)
+        let directory = container.appendingPathComponent("Hob", isDirectory: true)
         if create {
             do {
                 try createDirectory(directory)

@@ -59,7 +59,7 @@ public final class HobWorkspaceController: ObservableObject {
                 interpreter: appleInterpreter,
                 calendarStore: EventKitScheduleStore(),
                 notificationStore: LocalNotificationScheduler(),
-                syncStore: CloudKitTaskSyncStore(),
+                syncStore: ICloudTaskSyncStore(),
                 modelReadiness: appleInterpreter.isAvailable ? .notChecked : .unavailable,
                 modelProbe: { try await appleInterpreter.probe() }
             )
@@ -69,7 +69,7 @@ public final class HobWorkspaceController: ObservableObject {
                 interpreter: appleInterpreter,
                 calendarStore: EventKitScheduleStore(),
                 notificationStore: LocalNotificationScheduler(),
-                syncStore: CloudKitTaskSyncStore(),
+                syncStore: ICloudTaskSyncStore(),
                 timezone: .current,
                 now: Date.init,
                 modelReadiness: appleInterpreter.isAvailable ? .notChecked : .unavailable,

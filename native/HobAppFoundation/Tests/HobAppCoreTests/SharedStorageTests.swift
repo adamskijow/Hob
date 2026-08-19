@@ -3,23 +3,21 @@ import Foundation
 import Testing
 @testable import HobAppCore
 
-@Test func sharedStorageUsesOnlyTheAppGroupContainer() throws {
-    let container = URL(fileURLWithPath: "/private/tmp/hob-app-group", isDirectory: true)
+@Test func sharedStorageUsesPrivateApplicationSupport() throws {
+    let container = URL(fileURLWithPath: "/private/tmp/application-support", isDirectory: true)
     let storage = SharedStorage(
-        resolveContainer: { identifier in
-            identifier == SharedStorage.appGroupIdentifier ? container : nil
-        },
+        resolveContainer: { container },
         createDirectory: { _ in }
     )
 
-    #expect(try storage.databaseURL().path == "/private/tmp/hob-app-group/Library/Application Support/Hob/hob.db")
-    #expect(try storage.agentHealthURL().path == "/private/tmp/hob-app-group/Library/Application Support/Hob/agent-health.json")
-    #expect(try storage.taskStateDirectory().path == "/private/tmp/hob-app-group/Library/Application Support/Hob/Runtime")
+    #expect(try storage.databaseURL().path == "/private/tmp/application-support/Hob/hob.db")
+    #expect(try storage.agentHealthURL().path == "/private/tmp/application-support/Hob/agent-health.json")
+    #expect(try storage.taskStateDirectory().path == "/private/tmp/application-support/Hob/Runtime")
 }
 
-@Test func missingAppGroupFailsClosed() {
+@Test func missingApplicationSupportFailsClosed() {
     let storage = SharedStorage(
-        resolveContainer: { _ in nil },
+        resolveContainer: { nil },
         createDirectory: { _ in }
     )
 
@@ -31,7 +29,7 @@ import Testing
 @Test func directoryCreationFailureIsStableAndPrivacySafe() {
     struct FilesystemFailure: Error {}
     let storage = SharedStorage(
-        resolveContainer: { _ in URL(fileURLWithPath: "/private/private-task-path") },
+        resolveContainer: { URL(fileURLWithPath: "/private/private-task-path") },
         createDirectory: { _ in throw FilesystemFailure() }
     )
 
