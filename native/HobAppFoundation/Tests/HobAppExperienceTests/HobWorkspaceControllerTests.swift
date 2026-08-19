@@ -99,6 +99,35 @@ private final class StubNotifications: RuntimeNotificationScheduling {
     }
 }
 
+@MainActor
+private final class StubSync: RuntimeTaskSyncing {
+    var availability: RuntimeTaskSyncAvailability
+    var remoteOperations: [RuntimeTaskOperation]
+
+    init(
+        availability: RuntimeTaskSyncAvailability = .unavailable,
+        remoteOperations: [RuntimeTaskOperation] = []
+    ) {
+        self.availability = availability
+        self.remoteOperations = remoteOperations
+    }
+
+    func refreshAvailability() async -> RuntimeTaskSyncAvailability {
+        availability
+    }
+
+    func exchange(
+        localOperations: [RuntimeTaskOperation]
+    ) async throws -> [RuntimeTaskOperation] {
+        let merged = try RuntimeTaskOperationMerge.merge(
+            local: localOperations,
+            remote: remoteOperations
+        )
+        remoteOperations = merged
+        return merged
+    }
+}
+
 @Test @MainActor
 func naturalMessageBuildsAndAdoptsAPersistentSchedule() async throws {
     let directory = FileManager.default.temporaryDirectory
@@ -131,6 +160,7 @@ func naturalMessageBuildsAndAdoptsAPersistentSchedule() async throws {
         ]),
         calendarStore: calendar,
         notificationStore: notifications,
+        syncStore: StubSync(),
         timezone: try #require(TimeZone(identifier: "America/New_York")),
         now: { now }
     )
@@ -207,6 +237,54 @@ func naturalMessageBuildsAndAdoptsAPersistentSchedule() async throws {
     let afterActions = try TaskStateStore(directoryURL: directory).load()
     #expect(afterActions.pendingNotificationResponses.isEmpty)
     #expect(afterActions.notificationCleanupIDs.isEmpty)
+}
+
+@Test @MainActor
+func manualSyncPullsRemoteTasksAndBuildsAProposal() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("hob-sync-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let now = try #require(ISO8601DateFormatter().date(
+        from: "2026-06-29T08:00:00-04:00"
+    ))
+    let timestamp = "2026-06-29T07:00:00-04:00"
+    let task = RuntimeTask(
+        id: "task-remote",
+        rawText: "call Mom",
+        task: "call Mom",
+        dueDate: "2026-06-29",
+        dueTime: nil,
+        durationMinutes: 15,
+        priority: "normal",
+        status: "open",
+        createdAt: timestamp,
+        updatedAt: timestamp
+    )
+    let sync = StubSync(remoteOperations: [RuntimeTaskOperation(
+        id: "remote-capture:task-remote",
+        taskID: task.id,
+        occurredAt: timestamp,
+        task: task
+    )])
+    let controller = HobWorkspaceController(
+        store: TaskStateStore(directoryURL: directory),
+        interpreter: StubInterpreter(actions: []),
+        calendarStore: StubCalendar(),
+        notificationStore: StubNotifications(),
+        syncStore: sync,
+        timezone: try #require(TimeZone(identifier: "America/New_York")),
+        now: { now }
+    )
+    try await Task.sleep(for: .milliseconds(20))
+    try await waitUntilIdle(controller)
+
+    sync.availability = .available
+    controller.syncNow()
+    try await waitUntilIdle(controller)
+
+    #expect(controller.tasks == [task])
+    #expect(controller.proposal?.blocks.map(\.task) == ["call Mom"])
+    #expect(controller.syncNeedsAttention == false)
 }
 
 private func notificationResponse(

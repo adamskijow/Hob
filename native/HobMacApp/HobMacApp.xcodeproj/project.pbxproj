@@ -37,6 +37,9 @@
 		I10000000000000000000001 /* NotificationScheduling.swift in Sources */ = {isa = PBXBuildFile; fileRef = I20000000000000000000001 /* NotificationScheduling.swift */; };
 		I10000000000000000000002 /* NotificationScheduling.swift in Agent Sources */ = {isa = PBXBuildFile; fileRef = I20000000000000000000001 /* NotificationScheduling.swift */; };
 		I10000000000000000000003 /* LocalNotificationScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = I20000000000000000000002 /* LocalNotificationScheduler.swift */; };
+		J10000000000000000000001 /* TaskSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = J20000000000000000000001 /* TaskSync.swift */; };
+		J10000000000000000000002 /* TaskSync.swift in Agent Sources */ = {isa = PBXBuildFile; fileRef = J20000000000000000000001 /* TaskSync.swift */; };
+		J10000000000000000000003 /* CloudKitTaskSyncStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = J20000000000000000000002 /* CloudKitTaskSyncStore.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -112,6 +115,8 @@
 		H20000000000000000000001 /* HobTeapotIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = HobTeapotIcon.swift; path = ../HobAppFoundation/Sources/HobAppExperience/HobTeapotIcon.swift; sourceTree = "<group>"; };
 		I20000000000000000000001 /* NotificationScheduling.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NotificationScheduling.swift; path = ../HobAppFoundation/Sources/HobAppCore/NotificationScheduling.swift; sourceTree = "<group>"; };
 		I20000000000000000000002 /* LocalNotificationScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LocalNotificationScheduler.swift; path = ../HobAppFoundation/Sources/HobNotifications/LocalNotificationScheduler.swift; sourceTree = "<group>"; };
+		J20000000000000000000001 /* TaskSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TaskSync.swift; path = ../HobAppFoundation/Sources/HobAppCore/TaskSync.swift; sourceTree = "<group>"; };
+		J20000000000000000000002 /* CloudKitTaskSyncStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CloudKitTaskSyncStore.swift; path = ../HobAppFoundation/Sources/HobCloudSync/CloudKitTaskSyncStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -173,6 +178,8 @@
 				H20000000000000000000001 /* HobTeapotIcon.swift */,
 				I20000000000000000000001 /* NotificationScheduling.swift */,
 				I20000000000000000000002 /* LocalNotificationScheduler.swift */,
+				J20000000000000000000001 /* TaskSync.swift */,
+				J20000000000000000000002 /* CloudKitTaskSyncStore.swift */,
 			);
 			name = Sources;
 			sourceTree = "<group>";
@@ -340,6 +347,8 @@
 				H10000000000000000000001 /* HobTeapotIcon.swift in Sources */,
 				I10000000000000000000001 /* NotificationScheduling.swift in Sources */,
 				I10000000000000000000003 /* LocalNotificationScheduler.swift in Sources */,
+				J10000000000000000000001 /* TaskSync.swift in Sources */,
+				J10000000000000000000003 /* CloudKitTaskSyncStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -354,6 +363,7 @@
 				E10000000000000000000001 /* TaskStateStore.swift in Agent Sources */,
 				F10000000000000000000002 /* ScheduleRuntime.swift in Agent Sources */,
 				I10000000000000000000002 /* NotificationScheduling.swift in Agent Sources */,
+				J10000000000000000000002 /* TaskSync.swift in Agent Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

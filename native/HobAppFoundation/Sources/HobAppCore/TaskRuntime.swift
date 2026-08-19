@@ -256,7 +256,7 @@ public struct RuntimePipelineStatus: Codable, Equatable, Sendable {
 }
 
 public struct RuntimePersistentState: Codable, Equatable, Sendable {
-    public static let currentVersion = 6
+    public static let currentVersion = 7
 
     public let version: Int
     public let tasks: [RuntimeTask]
@@ -269,6 +269,7 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
     public let calendarCleanupEventIDs: [String]
     public let notificationCleanupIDs: [String]
     public let pendingNotificationResponses: [RuntimeNotificationResponse]
+    public let taskOperations: [RuntimeTaskOperation]
 
     public init(
         version: Int = RuntimePersistentState.currentVersion,
@@ -281,7 +282,8 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         adoptedSchedule: RuntimeAdoptedSchedule? = nil,
         calendarCleanupEventIDs: [String] = [],
         notificationCleanupIDs: [String] = [],
-        pendingNotificationResponses: [RuntimeNotificationResponse] = []
+        pendingNotificationResponses: [RuntimeNotificationResponse] = [],
+        taskOperations: [RuntimeTaskOperation]? = nil
     ) {
         self.version = version
         self.tasks = tasks
@@ -294,6 +296,14 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         self.calendarCleanupEventIDs = calendarCleanupEventIDs
         self.notificationCleanupIDs = notificationCleanupIDs
         self.pendingNotificationResponses = pendingNotificationResponses
+        self.taskOperations = taskOperations ?? tasks.map {
+            RuntimeTaskOperation(
+                id: "baseline-\($0.id)",
+                taskID: $0.id,
+                occurredAt: $0.updatedAt,
+                task: $0
+            )
+        }
     }
 
     public static let empty = RuntimePersistentState(tasks: [], undoSnapshots: [])
@@ -332,7 +342,15 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
                 calendarCleanupEventIDs: version >= 5
                     ? calendarCleanupEventIDs : [],
                 notificationCleanupIDs: [],
-                pendingNotificationResponses: []
+                pendingNotificationResponses: [],
+                taskOperations: tasks.map {
+                    RuntimeTaskOperation(
+                        id: "baseline-\($0.id)",
+                        taskID: $0.id,
+                        occurredAt: $0.updatedAt,
+                        task: $0
+                    )
+                }
             )
         } else {
             migrated = self
@@ -357,10 +375,19 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
               Set(migrated.pendingNotificationResponses.map(\.id)).count
                 == migrated.pendingNotificationResponses.count,
               migrated.pendingNotificationResponses.allSatisfy(\.isValid),
+              migrated.taskOperations.count <= 50_000,
+              Set(migrated.taskOperations.map(\.id)).count
+                == migrated.taskOperations.count,
+              migrated.taskOperations.allSatisfy(\.isValid),
               migrated.nextSequence > 0 else {
             throw RuntimeStateError.invalidState
         }
         try Self.validate(migrated.tasks)
+        guard (try? RuntimeTaskOperationMerge.tasks(
+            from: migrated.taskOperations
+        )) == migrated.tasks.sorted(by: { $0.id < $1.id }) else {
+            throw RuntimeStateError.invalidState
+        }
         for snapshot in migrated.undoSnapshots {
             guard snapshot.count <= 10_000 else { throw RuntimeStateError.invalidState }
             try Self.validate(snapshot)
@@ -385,6 +412,7 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         case calendarCleanupEventIDs
         case notificationCleanupIDs
         case pendingNotificationResponses
+        case taskOperations
     }
 
     public init(from decoder: Decoder) throws {
@@ -421,6 +449,17 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
             [RuntimeNotificationResponse].self,
             forKey: .pendingNotificationResponses
         ) ?? []
+        taskOperations = try container.decodeIfPresent(
+            [RuntimeTaskOperation].self,
+            forKey: .taskOperations
+        ) ?? tasks.map {
+            RuntimeTaskOperation(
+                id: "baseline-\($0.id)",
+                taskID: $0.id,
+                occurredAt: $0.updatedAt,
+                task: $0
+            )
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -439,6 +478,7 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
             pendingNotificationResponses,
             forKey: .pendingNotificationResponses
         )
+        try container.encode(taskOperations, forKey: .taskOperations)
     }
 
     private static func validatePipeline(_ state: RuntimePersistentState) throws {
@@ -666,7 +706,13 @@ public struct TaskRuntime: Sendable {
             guard let snapshot = undoSnapshots.popLast() else {
                 return outcome(.noChange)
             }
-            tasks = snapshot
+            let current = Dictionary(uniqueKeysWithValues: tasks.map { ($0.id, $0) })
+            tasks = snapshot.map { restored in
+                guard current[restored.id] != restored else { return restored }
+                var updated = restored
+                updated.updatedAt = now
+                return updated
+            }
             return outcome(.applied, kinds: ["undo"])
         }
         if actions.contains(where: { $0.type == "replan" }) {
@@ -773,9 +819,22 @@ public struct TaskRuntime: Sendable {
             if let dueDate, let deadlineDate, dueDate > deadlineDate {
                 return .clarification
             }
-            defer { nextID += 1 }
+            let assignedID: String
+            if let requested = action.target {
+                let clean = requested.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard requested == clean,
+                      !requested.isEmpty,
+                      requested.utf8.count <= 128,
+                      !tasks.contains(where: { $0.id == requested }) else {
+                    return .rejected
+                }
+                assignedID = requested
+            } else {
+                assignedID = "a\(nextID)"
+                nextID += 1
+            }
             return .success(.capture(RuntimeTask(
-                id: "a\(nextID)",
+                id: assignedID,
                 rawText: raw,
                 task: task,
                 dueDate: dueDate,

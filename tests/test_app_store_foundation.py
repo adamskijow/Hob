@@ -16,6 +16,10 @@ def test_app_store_entitlements_are_minimal_and_sandboxed():
     assert entitlements == {
         "com.apple.security.app-sandbox": True,
         "com.apple.security.application-groups": ["group.com.josephadamski.hob"],
+        "com.apple.developer.icloud-container-identifiers": [
+            "iCloud.com.josephadamski.hob"
+        ],
+        "com.apple.developer.icloud-services": ["CloudKit"],
         "com.apple.security.network.client": True,
         "com.apple.security.personal-information.calendars": True,
     }
@@ -204,9 +208,38 @@ def test_iphone_app_uses_the_same_native_workspace_and_local_model():
 
     with (IOS_PROJECT / "Info.plist").open("rb") as fh:
         info = plistlib.load(fh)
+    with (IOS_PROJECT / "Hob.entitlements").open("rb") as fh:
+        entitlements = plistlib.load(fh)
     assert "adds only schedules you adopt" in info[
         "NSCalendarsFullAccessUsageDescription"
     ]
+    assert entitlements["com.apple.developer.icloud-container-identifiers"] == [
+        "iCloud.com.josephadamski.hob"
+    ]
+    assert entitlements["com.apple.developer.icloud-services"] == ["CloudKit"]
+
+
+def test_private_cloudkit_sync_uses_a_validated_operation_journal():
+    package = (FOUNDATION / "Package.swift").read_text(encoding="utf-8")
+    sync = (
+        FOUNDATION
+        / "Sources"
+        / "HobCloudSync"
+        / "CloudKitTaskSyncStore.swift"
+    ).read_text(encoding="utf-8")
+    core = (
+        FOUNDATION / "Sources" / "HobAppCore" / "TaskSync.swift"
+    ).read_text(encoding="utf-8")
+    project = (XCODE_PROJECT / "project.pbxproj").read_text(encoding="utf-8")
+
+    assert 'name: "HobCloudSync"' in package
+    assert "container.privateCloudDatabase" in sync
+    assert 'recordType = "HobTaskOperation"' in sync
+    assert "RuntimeTaskOperationMerge.merge" in sync
+    assert "RuntimeTaskOperationMerge" in core
+    assert "TaskSync.swift in Sources" in project
+    assert "TaskSync.swift in Agent Sources" in project
+    assert "CloudKitTaskSyncStore.swift in Sources" in project
 
 
 def test_agent_uses_fail_closed_private_durable_task_storage():

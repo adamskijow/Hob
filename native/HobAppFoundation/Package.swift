@@ -11,6 +11,7 @@ let package = Package(
         .library(name: "HobAppleIntelligence", targets: ["HobAppleIntelligence"]),
         .library(name: "HobCalendar", targets: ["HobCalendar"]),
         .library(name: "HobNotifications", targets: ["HobNotifications"]),
+        .library(name: "HobCloudSync", targets: ["HobCloudSync"]),
         .library(name: "HobAppExperience", targets: ["HobAppExperience"]),
         .executable(name: "HobMacShell", targets: ["HobMacShell"]),
         .executable(name: "HobAgent", targets: ["HobAgent"]),
@@ -35,10 +36,14 @@ let package = Package(
             dependencies: ["HobAppCore"]
         ),
         .target(
+            name: "HobCloudSync",
+            dependencies: ["HobAppCore"]
+        ),
+        .target(
             name: "HobAppExperience",
             dependencies: [
                 "HobAppCore", "HobAppStorage", "HobAppleIntelligence",
-                "HobCalendar", "HobNotifications",
+                "HobCalendar", "HobNotifications", "HobCloudSync",
             ]
         ),
         .executableTarget(
@@ -46,6 +51,7 @@ let package = Package(
             dependencies: [
                 "HobAppCore", "HobAppStorage", "HobAppleIntelligence",
                 "HobAppExperience", "HobCalendar", "HobNotifications",
+                "HobCloudSync",
             ]
         ),
         .executableTarget(

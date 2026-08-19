@@ -692,6 +692,40 @@ public actor DurableTaskRuntime {
         state = candidate
     }
 
+    public func taskOperationJournal() -> [RuntimeTaskOperation] {
+        state.taskOperations
+    }
+
+    @discardableResult
+    public func mergeTaskOperations(
+        _ remote: [RuntimeTaskOperation]
+    ) throws -> Bool {
+        let merged = try RuntimeTaskOperationMerge.merge(
+            local: state.taskOperations,
+            remote: remote
+        )
+        guard merged.count <= 50_000 else {
+            throw RuntimePipelineError.queueFull
+        }
+        let tasks = try RuntimeTaskOperationMerge.tasks(from: merged)
+        let changed = tasks != runtime.tasks
+        guard changed || merged != state.taskOperations else { return false }
+        let rebuilt = TaskRuntime(tasks: tasks)
+        let candidate = combinedState(
+            runtimeState: rebuilt.persistentState,
+            inbox: state.inbox,
+            outbox: state.outbox,
+            nextSequence: state.nextSequence,
+            latestProposal: changed ? nil : state.latestProposal,
+            adoptedSchedule: state.adoptedSchedule,
+            taskOperations: merged
+        )
+        try store.save(candidate)
+        runtime = rebuilt
+        state = candidate
+        return changed
+    }
+
     public func pipelineStatus() -> RuntimePipelineStatus {
         state.pipelineStatus
     }
@@ -714,6 +748,7 @@ public actor DurableTaskRuntime {
         var candidate = runtime
         let before = runtime.tasks
         let response = candidate.process(inbound.request)
+        let after = candidate.tasks
         let summary = RuntimeDeliverySummary(
             disposition: response.outcome.disposition,
             appliedKinds: response.outcome.appliedKinds,
@@ -740,7 +775,13 @@ public actor DurableTaskRuntime {
             runtime: candidate,
             inbox: inbox,
             outbox: outbox,
-            invalidateProposal: candidate.tasks != runtime.tasks
+            invalidateProposal: after != before,
+            taskOperations: state.taskOperations + taskOperations(
+                request: inbound.request,
+                sequence: inbound.sequence,
+                before: before,
+                after: after
+            )
         )
         return response
     }
@@ -749,7 +790,8 @@ public actor DurableTaskRuntime {
         runtime candidate: TaskRuntime,
         inbox: [RuntimeInboundRecord],
         outbox: [RuntimeOutboundRecord],
-        invalidateProposal: Bool = false
+        invalidateProposal: Bool = false,
+        taskOperations: [RuntimeTaskOperation]? = nil
     ) throws {
         let candidateState = combinedState(
             runtimeState: candidate.persistentState,
@@ -757,7 +799,8 @@ public actor DurableTaskRuntime {
             outbox: outbox,
             nextSequence: state.nextSequence,
             latestProposal: invalidateProposal ? nil : state.latestProposal,
-            adoptedSchedule: state.adoptedSchedule
+            adoptedSchedule: state.adoptedSchedule,
+            taskOperations: taskOperations
         )
         try store.save(candidateState)
         runtime = candidate
@@ -773,7 +816,8 @@ public actor DurableTaskRuntime {
         adoptedSchedule: RuntimeAdoptedSchedule? = nil,
         calendarCleanupEventIDs: [String]? = nil,
         notificationCleanupIDs: [String]? = nil,
-        pendingNotificationResponses: [RuntimeNotificationResponse]? = nil
+        pendingNotificationResponses: [RuntimeNotificationResponse]? = nil,
+        taskOperations: [RuntimeTaskOperation]? = nil
     ) -> RuntimePersistentState {
         RuntimePersistentState(
             tasks: runtimeState.tasks,
@@ -788,8 +832,29 @@ public actor DurableTaskRuntime {
             notificationCleanupIDs: notificationCleanupIDs
                 ?? state.notificationCleanupIDs,
             pendingNotificationResponses: pendingNotificationResponses
-                ?? state.pendingNotificationResponses
+                ?? state.pendingNotificationResponses,
+            taskOperations: taskOperations ?? state.taskOperations
         )
+    }
+
+    private func taskOperations(
+        request: RuntimeTurnRequest,
+        sequence: Int,
+        before: [RuntimeTask],
+        after: [RuntimeTask]
+    ) -> [RuntimeTaskOperation] {
+        let beforeByID = Dictionary(uniqueKeysWithValues: before.map { ($0.id, $0) })
+        let afterByID = Dictionary(uniqueKeysWithValues: after.map { ($0.id, $0) })
+        return Set(beforeByID.keys).union(afterByID.keys).sorted().compactMap { taskID in
+            guard beforeByID[taskID] != afterByID[taskID] else { return nil }
+            return RuntimeTaskOperation(
+                id: "\(request.requestID):\(taskID)",
+                taskID: taskID,
+                occurredAt: request.now,
+                sequence: sequence,
+                task: afterByID[taskID]
+            )
+        }
     }
 
     private func response(for outbound: RuntimeOutboundRecord) -> RuntimeTurnResponse {

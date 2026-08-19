@@ -119,3 +119,7 @@ anchor.
 Ollama and task storage are local by default. Telegram messages transit
 Telegram. Remote Ollama requires explicit HTTPS consent. The Telegram adapter
 is replaceable without changing the core.
+
+The Apple app runs its model locally and syncs task operations through the
+customer's private iCloud database. Calendar details and model prompts stay on
+the device.

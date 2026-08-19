@@ -373,8 +373,8 @@ private struct PrivacyView: View {
             Section("What stays local") {
                 Text("Model prompts and Calendar details stay on this device.")
             }
-            Section("Current native increment") {
-                Text("Local planning, Calendar adoption, reminders, and reviewed replans are built. iCloud sync is next.")
+            Section("iCloud") {
+                Text("Tasks sync through your private iCloud database.")
             }
         }
         .formStyle(.grouped)

@@ -5,6 +5,7 @@ import HobAppCore
 #endif
 
 public struct HobWorkspaceView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var controller: HobWorkspaceController
 
     public init() {
@@ -22,6 +23,7 @@ public struct HobWorkspaceView: View {
                     introduction
                     calendarSetup
                     notificationSetup
+                    syncSetup
                     composer
                     feedback
                     if let schedule = controller.adoptedSchedule,
@@ -46,6 +48,9 @@ public struct HobWorkspaceView: View {
                     }
                     .disabled(controller.isWorking)
                 }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { controller.syncNow() }
             }
         }
     }
@@ -103,6 +108,38 @@ public struct HobWorkspaceView: View {
                 }
                 .disabled(controller.isWorking)
             }
+        }
+    }
+
+    private var syncSetup: some View {
+        HStack(spacing: 10) {
+            switch controller.syncAvailability {
+            case .available:
+                Label(
+                    controller.syncNeedsAttention
+                        ? "iCloud sync needs attention"
+                        : "Tasks sync with iCloud",
+                    systemImage: controller.syncNeedsAttention
+                        ? "icloud.slash"
+                        : "icloud.and.arrow.up"
+                )
+                .foregroundStyle(
+                    controller.syncNeedsAttention ? Color.orange : Color.secondary
+                )
+            case .noAccount:
+                Label("Sign in to iCloud to sync", systemImage: "icloud.slash")
+                    .foregroundStyle(.orange)
+            case .restricted:
+                Label("iCloud sync is restricted", systemImage: "icloud.slash")
+                    .foregroundStyle(.orange)
+            case .unavailable:
+                Label("iCloud sync unavailable", systemImage: "icloud.slash")
+                    .foregroundStyle(.secondary)
+            }
+            Button("Sync now") {
+                controller.syncNow()
+            }
+            .disabled(controller.isWorking)
         }
     }
 

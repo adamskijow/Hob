@@ -124,7 +124,7 @@ import Testing
         withIntermediateDirectories: true
     )
     let store = TaskStateStore(directoryURL: directory)
-    let future = RuntimePersistentState(version: 7, tasks: [], undoSnapshots: [])
+    let future = RuntimePersistentState(version: 8, tasks: [], undoSnapshots: [])
     try JSONEncoder().encode(future).write(to: store.stateURL)
     #expect(throws: TaskStateStoreError.unsupportedVersion) {
         try store.load()
@@ -506,6 +506,80 @@ import Testing
     }
     try await restarted.acknowledgeNotificationResponse(responseID: response.id)
     #expect(await restarted.snapshot().pendingNotificationResponses.isEmpty)
+}
+
+@Test func offlineTaskJournalsConvergeAcrossTwoDevices() async throws {
+    let directoryA = temporaryDirectory()
+    let directoryB = temporaryDirectory()
+    defer {
+        try? FileManager.default.removeItem(at: directoryA)
+        try? FileManager.default.removeItem(at: directoryB)
+    }
+    let storeA = TaskStateStore(directoryURL: directoryA)
+    let storeB = TaskStateStore(directoryURL: directoryB)
+    let deviceA = try DurableTaskRuntime(store: storeA)
+    let deviceB = try DurableTaskRuntime(store: storeB)
+
+    _ = try await deviceA.process(request(
+        id: "device-a-capture",
+        message: "finish taxes",
+        actions: [RuntimeAction(
+            type: "capture",
+            task: "finish taxes",
+            raw: "finish taxes",
+            target: "task-taxes"
+        )]
+    ))
+    _ = try await deviceB.process(request(
+        id: "device-b-capture",
+        message: "call Mom",
+        actions: [RuntimeAction(
+            type: "capture",
+            task: "call Mom",
+            raw: "call Mom",
+            target: "task-call-mom"
+        )]
+    ))
+
+    let firstExchange = try RuntimeTaskOperationMerge.merge(
+        local: await deviceA.taskOperationJournal(),
+        remote: await deviceB.taskOperationJournal()
+    )
+    try await deviceA.mergeTaskOperations(firstExchange)
+    try await deviceB.mergeTaskOperations(Array(firstExchange.reversed()))
+    #expect(await deviceA.snapshot().tasks == deviceB.snapshot().tasks)
+    #expect(await deviceA.snapshot().tasks.map(\.task) == ["call Mom", "finish taxes"])
+
+    let later = "2026-06-29T10:00:00-04:00"
+    _ = try await deviceA.process(RuntimeTurnRequest(
+        requestID: "device-a-complete",
+        message: "taxes are done",
+        now: later,
+        timezone: "America/New_York",
+        actions: [RuntimeAction(type: "complete", target: "task-taxes")]
+    ))
+    _ = try await deviceB.process(RuntimeTurnRequest(
+        requestID: "device-b-drop",
+        message: "drop taxes",
+        now: later,
+        timezone: "America/New_York",
+        actions: [RuntimeAction(type: "drop", target: "task-taxes")]
+    ))
+    let secondExchange = try RuntimeTaskOperationMerge.merge(
+        local: await deviceA.taskOperationJournal(),
+        remote: await deviceB.taskOperationJournal()
+    )
+    try await deviceA.mergeTaskOperations(secondExchange)
+    try await deviceB.mergeTaskOperations(secondExchange.shuffled())
+
+    let finalA = await deviceA.snapshot().tasks
+    let finalB = await deviceB.snapshot().tasks
+    #expect(finalA == finalB)
+    #expect(finalA.first { $0.id == "task-taxes" }?.status == "dropped")
+    let restartedA = try DurableTaskRuntime(store: storeA)
+    let restartedB = try DurableTaskRuntime(store: storeB)
+    #expect(await restartedA.snapshot().tasks == finalA)
+    #expect(await restartedB.snapshot().tasks == finalB)
 }
 
 @Test func storageInspectionIsActionableAndStatusContainsNoUserContent() async throws {

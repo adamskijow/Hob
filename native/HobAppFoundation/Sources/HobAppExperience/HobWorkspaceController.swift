@@ -16,6 +16,9 @@ import HobCalendar
 #if canImport(HobNotifications)
 import HobNotifications
 #endif
+#if canImport(HobCloudSync)
+import HobCloudSync
+#endif
 
 @MainActor
 public final class HobWorkspaceController: ObservableObject {
@@ -31,11 +34,14 @@ public final class HobWorkspaceController: ObservableObject {
     @Published public private(set) var notificationAuthorization: RuntimeNotificationAuthorization
     @Published public private(set) var notificationCleanupPending = false
     @Published public private(set) var notificationActionsPending = false
+    @Published public private(set) var syncAvailability: RuntimeTaskSyncAvailability
+    @Published public private(set) var syncNeedsAttention = false
 
     private let runtime: DurableTaskRuntime?
     private let interpreter: any RuntimeMessageInterpreting
     private let calendarStore: any RuntimeCalendarScheduling
     private let notificationStore: any RuntimeNotificationScheduling
+    private let syncStore: any RuntimeTaskSyncing
     private let gregorianCalendar: Calendar
     private let timezone: TimeZone
     private let now: @Sendable () -> Date
@@ -47,7 +53,8 @@ public final class HobWorkspaceController: ObservableObject {
                 store: TaskStateStore(directoryURL: directory),
                 interpreter: AppleFoundationInterpreter(),
                 calendarStore: EventKitScheduleStore(),
-                notificationStore: LocalNotificationScheduler()
+                notificationStore: LocalNotificationScheduler(),
+                syncStore: CloudKitTaskSyncStore()
             )
         } catch {
             self.init(
@@ -55,6 +62,7 @@ public final class HobWorkspaceController: ObservableObject {
                 interpreter: AppleFoundationInterpreter(),
                 calendarStore: EventKitScheduleStore(),
                 notificationStore: LocalNotificationScheduler(),
+                syncStore: CloudKitTaskSyncStore(),
                 timezone: .current,
                 now: Date.init
             )
@@ -67,6 +75,7 @@ public final class HobWorkspaceController: ObservableObject {
         interpreter: any RuntimeMessageInterpreting,
         calendarStore: any RuntimeCalendarScheduling = EventKitScheduleStore(),
         notificationStore: any RuntimeNotificationScheduling,
+        syncStore: any RuntimeTaskSyncing,
         timezone: TimeZone = .current,
         now: @escaping @Sendable () -> Date = Date.init
     ) {
@@ -76,6 +85,7 @@ public final class HobWorkspaceController: ObservableObject {
             interpreter: interpreter,
             calendarStore: calendarStore,
             notificationStore: notificationStore,
+            syncStore: syncStore,
             timezone: timezone,
             now: now
         )
@@ -89,6 +99,7 @@ public final class HobWorkspaceController: ObservableObject {
         interpreter: any RuntimeMessageInterpreting,
         calendarStore: any RuntimeCalendarScheduling,
         notificationStore: any RuntimeNotificationScheduling,
+        syncStore: any RuntimeTaskSyncing,
         timezone: TimeZone,
         now: @escaping @Sendable () -> Date
     ) {
@@ -98,6 +109,8 @@ public final class HobWorkspaceController: ObservableObject {
         self.calendarAuthorization = calendarStore.authorization
         self.notificationStore = notificationStore
         self.notificationAuthorization = notificationStore.authorization
+        self.syncStore = syncStore
+        self.syncAvailability = syncStore.availability
         self.timezone = timezone
         self.now = now
         var calendar = Calendar(identifier: .gregorian)
@@ -108,10 +121,13 @@ public final class HobWorkspaceController: ObservableObject {
         }
         Task {
             notificationAuthorization = await notificationStore.refreshAuthorization()
+            syncAvailability = await syncStore.refreshAvailability()
             await refresh()
             if calendarCleanupPending || notificationCleanupPending
                 || notificationActionsPending {
                 resumePendingWork()
+            } else if syncAvailability == .available {
+                syncNow()
             }
         }
     }
@@ -137,11 +153,16 @@ public final class HobWorkspaceController: ObservableObject {
             let instant = self.now()
             let timestamp = self.timestamp(instant)
             let current = await runtime.snapshot().tasks
-            let actions = try await self.interpreter.interpret(
+            let interpreted = try await self.interpreter.interpret(
                 message: text,
                 now: timestamp,
                 timezone: self.timezone.identifier,
                 tasks: current
+            )
+            let actions = self.stableActions(
+                interpreted,
+                tasks: current,
+                at: instant
             )
             let requestID = UUID().uuidString
             let response = try await runtime.process(RuntimeTurnRequest(
@@ -162,6 +183,7 @@ public final class HobWorkspaceController: ObservableObject {
                 _ = try await runtime.proposeSchedule(
                     try self.scheduleRequest(at: instant)
                 )
+                await self.syncTasks()
                 if response.outcome.appliedKinds == ["replan"] {
                     self.notice = "Built a new plan from what changed."
                 } else if response.outcome.appliedKinds.allSatisfy({ $0 == "capture" }) {
@@ -294,6 +316,22 @@ public final class HobWorkspaceController: ObservableObject {
         }
     }
 
+    public func syncNow() {
+        run {
+            self.syncAvailability = await self.syncStore.refreshAvailability()
+            guard self.syncAvailability == .available else {
+                self.syncNeedsAttention = true
+                self.notice = self.syncUnavailableNotice
+                return
+            }
+            await self.syncTasks()
+            self.notice = self.syncNeedsAttention
+                ? "iCloud sync needs attention."
+                : "Tasks synced with iCloud."
+            await self.refresh()
+        }
+    }
+
     public func retryCalendarCleanup() {
         run {
             try await self.cleanupCalendarEventsIfNeeded()
@@ -338,6 +376,9 @@ public final class HobWorkspaceController: ObservableObject {
             self.notice = response.outcome.disposition == .applied
                 ? "Last task change undone."
                 : "There is no task change to undo."
+            if response.outcome.disposition == .applied {
+                await self.syncTasks()
+            }
             await self.refresh()
         }
     }
@@ -353,6 +394,7 @@ public final class HobWorkspaceController: ObservableObject {
         notificationActionsPending = !snapshot.pendingNotificationResponses.isEmpty
         calendarAuthorization = calendarStore.authorization
         notificationAuthorization = notificationStore.authorization
+        syncAvailability = syncStore.availability
     }
 
     private func run(
@@ -461,6 +503,7 @@ public final class HobWorkspaceController: ObservableObject {
         run(processPendingResponsesAfterward: false) {
             guard let runtime = self.runtime else { return }
             try await self.drainNotificationResponses(runtime: runtime)
+            await self.syncTasks()
             await self.refresh()
         }
     }
@@ -473,6 +516,7 @@ public final class HobWorkspaceController: ObservableObject {
             }
             try await self.cleanupNotificationsIfNeeded()
             try await self.drainNotificationResponses(runtime: runtime)
+            await self.syncTasks()
             await self.refresh()
         }
     }
@@ -562,6 +606,44 @@ public final class HobWorkspaceController: ObservableObject {
         return formatter.string(from: value)
     }
 
+    private func stableActions(
+        _ actions: [RuntimeAction],
+        tasks: [RuntimeTask],
+        at instant: Date
+    ) -> [RuntimeAction] {
+        let open = tasks.filter { $0.status == "open" }.sorted { $0.id < $1.id }
+        let milliseconds = Int64(instant.timeIntervalSince1970 * 1_000)
+        return actions.enumerated().map { index, action in
+            let target: String?
+            if action.type == "capture" {
+                target = action.target ?? [
+                    "task",
+                    String(milliseconds),
+                    String(format: "%02d", index),
+                    UUID().uuidString.lowercased(),
+                ].joined(separator: "-")
+            } else if let raw = action.target,
+                      let position = Int(raw),
+                      open.indices.contains(position - 1) {
+                target = open[position - 1].id
+            } else {
+                target = action.target
+            }
+            return RuntimeAction(
+                type: action.type,
+                task: action.task,
+                raw: action.raw,
+                target: target,
+                when: action.when,
+                deadline: action.deadline,
+                time: action.time,
+                durationMinutes: action.durationMinutes,
+                priority: action.priority,
+                confidence: action.confidence
+            )
+        }
+    }
+
     private func day(_ value: Date) -> String {
         let formatter = DateFormatter()
         formatter.calendar = gregorianCalendar
@@ -569,5 +651,42 @@ public final class HobWorkspaceController: ObservableObject {
         formatter.timeZone = timezone
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: value)
+    }
+
+    private func syncTasks() async {
+        guard syncAvailability == .available,
+              let runtime else { return }
+        do {
+            let local = await runtime.taskOperationJournal()
+            let merged = try await syncStore.exchange(localOperations: local)
+            let changed = try await runtime.mergeTaskOperations(merged)
+            if changed {
+                try await cleanupCalendarEventsIfNeeded()
+                try await cleanupNotificationsIfNeeded()
+                let snapshot = await runtime.snapshot()
+                if snapshot.tasks.contains(where: { $0.status == "open" }) {
+                    _ = try await runtime.proposeSchedule(
+                        try scheduleRequest(at: now())
+                    )
+                }
+            }
+            syncNeedsAttention = false
+            await refresh()
+        } catch {
+            syncNeedsAttention = true
+        }
+    }
+
+    private var syncUnavailableNotice: String {
+        switch syncAvailability {
+        case .available:
+            return "Tasks synced with iCloud."
+        case .noAccount:
+            return "Sign in to iCloud to sync tasks."
+        case .restricted:
+            return "iCloud task sync is restricted on this device."
+        case .unavailable:
+            return "iCloud task sync is unavailable. Try again later."
+        }
     }
 }
