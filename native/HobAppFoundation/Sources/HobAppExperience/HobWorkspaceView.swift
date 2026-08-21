@@ -265,22 +265,32 @@ public struct HobWorkspaceView: View {
     }
 
     private func proposalView(_ proposal: RuntimeScheduleProposal) -> some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 14) {
-                scheduleHeader("Proposed schedule", proposal: proposal)
-                scheduleBlocks(proposal)
-                Button("Add to Calendar") {
-                    controller.adoptProposal()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(
-                    proposal.blocks.isEmpty
-                        || controller.isWorking
-                        || controller.calendarAuthorization != .fullAccess
-                )
-                .accessibilityHint("Adds every displayed time block to your default calendar")
+        VStack(alignment: .leading, spacing: 10) {
+            scheduleHeader("Schedule", proposal: proposal)
+            scheduleBlocks(proposal)
+            Button {
+                controller.adoptProposal()
+            } label: {
+                Label("Add to Calendar", systemImage: "calendar.badge.plus")
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(
+                proposal.blocks.isEmpty
+                    || controller.isWorking
+                    || controller.calendarAuthorization != .fullAccess
+            )
+            .accessibilityHint("Adds every displayed time block to your default calendar")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(
+            HobTheme.surface(for: colorScheme),
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(HobTheme.border(for: colorScheme), lineWidth: 1)
         }
     }
 
@@ -405,35 +415,39 @@ public struct HobWorkspaceView: View {
         _ title: String,
         proposal: RuntimeScheduleProposal
     ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.title2.bold())
-            Text("\(proposal.blocks.count) block(s) · \(proposal.unscheduled.count) left unscheduled")
+        HStack(alignment: .firstTextBaseline) {
+            Text(title).font(.headline)
+            Spacer()
+            Text(scheduleSummary(proposal))
+                .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private func scheduleSummary(_ proposal: RuntimeScheduleProposal) -> String {
+        let blocks = "\(proposal.blocks.count) \(proposal.blocks.count == 1 ? "block" : "blocks")"
+        guard !proposal.unscheduled.isEmpty else { return blocks }
+        let open = "\(proposal.unscheduled.count) unscheduled"
+        return "\(blocks) · \(open)"
     }
 
     private func scheduleBlocks(_ proposal: RuntimeScheduleProposal) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(proposal.blocks) { block in
-                ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .top, spacing: 12) {
-                        blockTime(block)
-                        blockDescription(block)
-                        Spacer()
-                        priorityIcon(block)
+                HStack(alignment: .top, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(block.task)
+                            .font(.subheadline.weight(.semibold))
+                        Text("\(timeRange(block)) · \(block.durationMinutes)m")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    VStack(alignment: .leading, spacing: 5) {
-                        blockTime(block)
-                        HStack(alignment: .top) {
-                            blockDescription(block)
-                            Spacer()
-                            priorityIcon(block)
-                        }
-                    }
+                    Spacer(minLength: 4)
+                    priorityIcon(block)
                 }
-                .padding(10)
+                .padding(9)
                 .background(
-                    HobTheme.surface(for: colorScheme),
+                    HobTheme.surface(for: colorScheme).opacity(0.75),
                     in: RoundedRectangle(cornerRadius: 12, style: .continuous)
                 )
                 .accessibilityElement(children: .combine)
@@ -450,20 +464,6 @@ public struct HobWorkspaceView: View {
                 }
                 .font(.callout)
             }
-        }
-    }
-
-    private func blockTime(_ block: RuntimeScheduleBlock) -> some View {
-        Text(timeRange(block))
-            .font(.body.monospaced().weight(.semibold))
-    }
-
-    private func blockDescription(_ block: RuntimeScheduleBlock) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(block.task).fontWeight(.semibold)
-            Text("\(block.durationMinutes) minutes")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
     }
 
