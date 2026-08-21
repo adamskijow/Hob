@@ -57,21 +57,31 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             User message: \(clean)
             """
             do {
-                let response = try await session.respond(
-                    to: prompt,
-                    generating: GeneratedCaptureTurn.self
-                )
-                let actions = try response.content.tasks.map {
-                    try Self.action(
-                        from: $0,
+                do {
+                    return try await Self.generateActions(
+                        session: session,
+                        prompt: prompt,
+                        originalMessage: clean,
+                        openTaskCount: open.count
+                    )
+                } catch {
+                    let repairPrompt = """
+                    Interpret the original request again. The previous structured
+                    result was invalid. Return exactly one action for each distinct
+                    task the person mentioned. Never emit alternative times or
+                    duplicate a task. A phrase such as "at 230" names one clock
+                    time; choose its single most plausible AM/PM meaning from the
+                    current instant and task context, then return 24-hour HH:MM.
+
+                    \(prompt)
+                    """
+                    return try await Self.generateActions(
+                        session: session,
+                        prompt: repairPrompt,
                         originalMessage: clean,
                         openTaskCount: open.count
                     )
                 }
-                guard !actions.isEmpty, actions.count <= 16 else {
-                    throw RuntimeInterpretationError.invalidOutput
-                }
-                return actions
             } catch let error as RuntimeInterpretationError {
                 throw error
             } catch {
@@ -87,20 +97,24 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     genuinely new tasks. Match completion, drop, move, or rename statements to
     the numbered open task. Use replan when circumstances changed but no task
     itself changed. Never turn an explanation about an open task into a new task.
-    Separate several explicit actions when present.
+    Separate several explicit actions when present. Produce exactly one action
+    per distinct task. Never enumerate alternative interpretations or times.
     A schedule day says when the person intends to do the task. A deadline is
     introduced by wording such as "by Friday" or "due Friday". Never convert a
     deadline into a schedule day. Return semantic date kinds; code owns date math.
-    Use duration 0 when unstated. Use time "none" when unstated. Use priority
-    normal unless the person clearly says high/urgent or low. Do not answer the
-    person and do not invent tasks, changes, or constraints.
+    Interpret conversational clock times from the current instant and ordinary
+    context. For example, a daytime appointment "at 230" normally means 14:30,
+    while an explicitly overnight context may mean 02:30. Return time in 24-hour
+    HH:MM form. Use duration 0 when unstated. Use time "none" when unstated. Use
+    priority normal unless the person clearly says high/urgent or low. Do not
+    answer the person and do not invent tasks, changes, or constraints.
     """
 
     #if canImport(FoundationModels)
     @available(iOS 26.0, macOS 26.0, *)
     @Generable(description: "All explicit task or planning actions in one message")
     struct GeneratedCaptureTurn {
-        @Guide(description: "One entry per distinct task", .count(1...16))
+        @Guide(description: "Exactly one entry per distinct task; never include alternatives or duplicates", .count(1...16))
         var tasks: [GeneratedCaptureTask]
     }
 
@@ -164,8 +178,35 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         )
         var priority: String
 
-        @Guide(description: "Explicit 24-hour HH:MM start time, or none")
+        @Guide(description: "Explicit 24-hour HH:MM start time, or none; resolve shorthand such as 230 from context")
         var time: String
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func generateActions(
+        session: LanguageModelSession,
+        prompt: String,
+        originalMessage: String,
+        openTaskCount: Int
+    ) async throws -> [RuntimeAction] {
+        let response = try await session.respond(
+            to: prompt,
+            generating: GeneratedCaptureTurn.self
+        )
+        let actions = try response.content.tasks.map {
+            try action(
+                from: $0,
+                originalMessage: originalMessage,
+                openTaskCount: openTaskCount
+            )
+        }
+        guard !actions.isEmpty, actions.count <= 16 else {
+            throw RuntimeInterpretationError.invalidOutput
+        }
+        guard RuntimeGeneratedActions.areDistinct(actions) else {
+            throw RuntimeInterpretationError.invalidOutput
+        }
+        return actions
     }
 
     @available(iOS 26.0, macOS 26.0, *)
@@ -192,6 +233,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 }
                 return RuntimeAction(type: "amend", task: task, target: target)
             case "reschedule":
+                let time = try normalizedTime(generated.time)
                 return RuntimeAction(
                     type: "reschedule",
                     target: target,
@@ -200,7 +242,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                         weekday: generated.scheduleWeekday,
                         which: generated.scheduleWhich
                     ),
-                    time: generated.time == "none" ? nil : generated.time,
+                    time: time,
                     confidence: 1
                 )
             default:
@@ -219,10 +261,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         } else {
             throw RuntimeInterpretationError.invalidOutput
         }
-        let time = generated.time == "none" ? nil : generated.time
-        if let time, !validTime(time) {
-            throw RuntimeInterpretationError.invalidOutput
-        }
+        let time = try normalizedTime(generated.time)
         return RuntimeAction(
             type: "capture",
             task: task,
@@ -262,12 +301,14 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         return RuntimeDateIntent(kind: "weekday", which: which, day: weekday)
     }
 
-    private static func validTime(_ value: String) -> Bool {
-        let pieces = value.split(separator: ":", omittingEmptySubsequences: false)
-        return pieces.count == 2
-            && pieces[0].count == 2
-            && pieces[1].count == 2
-            && Int(pieces[0]).map { (0...23).contains($0) } == true
-            && Int(pieces[1]).map { (0...59).contains($0) } == true
+    private static func normalizedTime(_ value: String) throws -> String? {
+        if value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == "none" {
+            return nil
+        }
+        guard let normalized = RuntimeGeneratedClock.normalize(value) else {
+            throw RuntimeInterpretationError.invalidOutput
+        }
+        return normalized
     }
 }
