@@ -10,7 +10,7 @@ Foundation Models interpret language on-device. Tested code owns dates,
 identity, scheduling, persistence, sync, and undo.
 
 The Apple app does not require Telegram, Ollama, a daemon, or Terminal. Open
-Local remains available during migration.
+Local is retired from daily use but remains available for migration and history.
 
 Private iCloud key-value storage syncs a bounded, per-device operation journal.
 EventKit supplies opaque busy intervals and receives only user-adopted Hob

@@ -1,112 +1,93 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Handoff
 
-## Current state
+## Start here
 
-- Release: `v0.9.13`
-- Runtime schema: 11
-- Python suite: 474 tests at release
-- Native suites: 40 tests at release
-- Real-model gate: 113 interpreter cases plus the analysis gate on
-  `qwen2.5:14b-instruct`
-- Platforms: released Open Local macOS edition; App Store edition in development
+Hob is now a native iPhone and Mac planner. It uses Apple Foundation Models,
+EventKit, local storage, notifications, and private iCloud sync. Telegram,
+Ollama, Hearth, and the Python daemon belong to the retired Open Local edition.
 
-The live Open Local install runs under `com.local.hob`. Hearth runs Ollama under
-`com.hearth.headless`. Both return at login. `scripts/hobctl status` is the
-privacy-safe health check.
+Nothing has been uploaded to TestFlight or either App Store.
 
-## Product boundary
+## Exact state
 
-Hob is a single-owner task agent over Telegram. Free-form language reaches the
-local model. Code owns identity, dates, arithmetic, prompt context, consent,
-atomic mutation, delivery, and undo.
+- Branch: `main`
+- Current commit before this docs update: `8018506`
+- Native app version: `0.1` build `1`
+- Latest public tag: `v0.9.13`, for the legacy Open Local edition
+- Tests: 484 Python and 51 native
+- CI: green on Ubuntu and macOS at `8018506`
+- iPhone: signed current build installed; launch it manually if the phone was locked
+- Mac: signed app installed at `/Applications/Hob.app`; rebuild it after shared UI changes
+- Legacy `com.local.hob` and `com.local.hob.menu` login agents: disabled and retired
+- Hob's old `qwen2.5:14b-instruct` Ollama model: removed; other models untouched
 
-Do not add phrase lists, keyword routers, or raw-text semantic repairs. Slash
-commands, callback payloads, reactions, IDs, and ordinals are closed protocols.
+Retired launch-agent files are under
+`~/Library/Application Support/Hob/retired-open-local-20260821/`.
 
-The Open Local edition stores the Telegram token in Keychain, pairs the owner
-locally, keeps local files owner-only, and uses an explicit HTTPS opt-in for
-remote Ollama. Calendar access returns opaque busy intervals through a signed
-read-only EventKit bridge.
+## Recent work
 
-## Recent release
+- Moved connection status into the gear menu and quieted routine iCloud sync.
+- Removed Open Local import from first-run onboarding.
+- Added safe conversational clock normalization and duplicate-action rejection.
+- Verified `Take Willow to get her haircut at 230` produces one model action at
+  `14:30` in a live Foundation Models smoke test.
+- Compacted the proposed schedule card and installed that build on the iPhone.
 
-`v0.9.13` closed the security audit findings:
+## Next bug
 
-- one private-owner boundary across Telegram text, media, callbacks, and
-  reactions;
-- local owner pairing for fresh installs;
-- chat-scoped reply references and bounded completed delivery history;
-- private databases, sidecars, locks, backup/export/recovery files, and logs;
-- 5 MiB log rotation with three backups;
-- argv-safe Keychain writes;
-- explicit HTTPS consent for remote Ollama;
-- pinned CI actions, locked installs, dependency audit, and Dependabot;
-- Hearth login supervision verified after restart.
+The latest screenshot still displayed that `230` task at `9:00 AM`. The model
+smoke test returned `14:30`, and the scheduler fixes tasks that retain
+`RuntimeTask.dueTime`. Trace the value through:
 
-Evidence: [`docs/audits/v0.9.13.md`](docs/audits/v0.9.13.md).
+1. `FoundationModelInterpreter`
+2. `RuntimeAction.time`
+3. `RuntimeTask.dueTime`
+4. persisted and iCloud-merged task state
+5. `RuntimeScheduleEngine`
+6. the rendered proposal
 
-## 1.0 priorities
+Add an end-to-end regression using the exact sentence. Do not solve it with a
+phrase list. Free-form meaning belongs to Foundation Models; code validates and
+applies typed output.
 
-The current gate is [`docs/audits/v1.0-acceptance.md`](docs/audits/v1.0-acceptance.md).
-Highest-risk gaps:
+## Product rules
 
-1. Confirm the local timezone during first-run setup.
-2. Add privacy-safe queue retry, quarantine, and recovery for permanent inbox or
-   outbox failures.
-3. Define and test DST behavior across planning, reminders, recurrence,
-   Calendar, sessions, digest, and recap.
-4. Prove the supported model baseline. Documentation defaults to 7B; release
-   evidence currently covers 14B.
-5. Rehearse clean install, update, rollback, backup/restore, logout/login,
-   reboot, sleep/wake, and Calendar denial/revocation.
-6. Complete keyboard, text-only, VoiceOver, date/time comprehension, and command
-   discoverability checks.
-7. Measure long-run database size, latency, queue drain, and history retention.
-8. Complete seven consecutive days of privacy-safe daily-use evidence.
+- One shared Swift behavior core and SwiftUI experience on iPhone and Mac.
+- Model output proposes typed actions. Code owns identity, dates, validation,
+  persistence, sync, Calendar writes, notifications, and undo.
+- Invalid or duplicate model output fails closed.
+- Calendar changes require an explicit customer action.
+- iCloud data must remain bounded and valid through offline convergence.
+- Keep copy brief and the primary workspace visually quiet.
+- Preserve Dynamic Type and VoiceOver while reducing layout bulk.
 
-The App Store edition also needs its Telegram edge, full behavior parity,
-no-Terminal onboarding, distribution signing, privacy metadata, accessibility,
-archive validation, and App Review.
+## Verification
 
-## Development loop
+The active Xcode selector points at Command Line Tools. Prefix native commands:
 
 ```sh
-uv sync --locked
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --package-path native/HobAppFoundation
 uv run pytest
-HOB_MODEL=qwen2.5:14b-instruct uv run python -m evals.interpreter_eval
-HOB_MODEL=qwen2.5:14b-instruct uv run python -m evals.analysis_eval
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
+  -project native/HobAppleApps/HobAppleApps.xcodeproj \
+  -scheme HobiOS -sdk iphonesimulator \
+  -destination 'generic/platform=iOS Simulator' \
+  CODE_SIGNING_ALLOWED=NO build
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
+  -project native/HobMacApp/HobMacApp.xcodeproj \
+  -scheme Hob CODE_SIGNING_ALLOWED=NO build
 ```
 
-CI also builds both Swift packages, the EventKit bridge, and the App Store shell
-on macOS.
+CI runs the same native builds plus the legacy regression suite. Commit, push,
+and wait for both CI jobs.
 
-For interpreter work:
+## Release boundary
 
-1. Reproduce the message against the real model.
-2. Keep semantics in typed model output.
-3. Validate IDs, context, dates, bounds, and effects in code.
-4. Add a deterministic regression and a real-model case.
-5. Install with `scripts/install_macos.sh` and verify `scripts/hobctl status`.
+Keep builds on the paired Mac and iPhone. Do not upload, archive for
+distribution, create TestFlight builds, or submit to a Store without fresh user
+approval.
 
-## Operations
-
-```sh
-scripts/hobctl status
-scripts/hobctl restart
-uv run python app.py doctor
-uv run python app.py backup /safe/hob.db
-```
-
-Never print task text, Telegram tokens, Hearth credentials, message IDs, or
-Calendar titles in audit evidence. Preserve the live database and unrelated
-working-tree changes.
-
-## Docs
-
-- User setup and operations: [`README.md`](README.md)
-- Feature behavior: [`docs/features.md`](docs/features.md)
-- Architecture: [`docs/architecture.md`](docs/architecture.md)
-- Deployment: [`docs/deployment.md`](docs/deployment.md)
-- App Store track: [`docs/app-store.md`](docs/app-store.md)
-- Historical release evidence: [`docs/audits/`](docs/audits/)
+Before 1.0: close the time-preservation bug, rehearse two-device offline sync,
+test restart and notification actions, finish VoiceOver and large-text checks,
+then prepare Store metadata and distribution signing.

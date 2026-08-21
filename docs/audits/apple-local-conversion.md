@@ -1,26 +1,24 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Apple local conversion
 
-Date: 2026-08-18. Scope: Mac and paired iPhone only. No TestFlight or Store
-upload.
+Updated: 2026-08-21. Scope: paired Mac and iPhone. No upload.
 
 ## Complete
 
-- One Swift experience and behavior core on iPhone and Mac
-- On-device language interpretation, deterministic scheduling, and local state
-- Calendar adoption, start reminders, replanning, undo, and recovery
-- First-run model check, preferences, permissions, and Open Local import
-- Private iCloud sync with bounded, validated per-device journals
-- Mac menu-bar app, automatic login startup, and teapot icon
-- Keyboard, VoiceOver labels, responsive layouts, and Dynamic Type layouts
-- Signed development builds provisioned for this Mac and iPhone
-- Mac app installed in `/Applications` and launched
-- iPhone app installed on the paired phone and launched
+- One shared Swift behavior core and workspace
+- Local Apple model, typed tasks, deterministic scheduling, and undo
+- Calendar adoption, reminders, replanning, cancellation, and recovery
+- First-run model, iCloud, Calendar, reminder, and work-profile setup
+- Private bounded iCloud task journal
+- Mac menu bar and signed local builds on both devices
+- Retired Telegram login agents and removed Hob's old Ollama model
 
-## Local gate
+## Open
 
-- Make offline edits on both devices, reconnect, and verify convergence
-- Reboot the Mac and verify Hob returns in the menu bar
-- Run VoiceOver and large-text checks on both devices
+- Fixed-time preservation from natural capture through proposal display
+- Signed two-device offline convergence rehearsal
+- Mac reboot and login startup rehearsal
+- VoiceOver, large text, contrast, and keyboard checks
+- Notification actions across restart and sleep
 
-Distribution remains out of scope until these checks pass.
+Distribution stays out of scope until the user asks for it.

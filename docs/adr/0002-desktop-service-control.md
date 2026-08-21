@@ -1,7 +1,8 @@
 <!-- SPDX-License-Identifier: MIT -->
 # ADR 0002: native desktop service control
 
-Status: accepted, 2026-07-25.
+Status: accepted for the retired Open Local edition. Native direction is in
+[ADR 0003](0003-universal-apple-app.md).
 
 ## Decision
 

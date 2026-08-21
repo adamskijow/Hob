@@ -1,50 +1,40 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Development
 
-Install the locked environment and run the Python suite:
+The host currently selects Command Line Tools. Prefix native commands with the
+full Xcode developer directory.
 
-```
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --package-path native/HobAppFoundation
 uv sync --locked
 uv run pytest
 ```
 
-On macOS, test the native core and build both app surfaces:
+Build iPhone:
 
-```
-swift test --package-path native/HobAppFoundation
-xcodebuild -project native/HobMacApp/HobMacApp.xcodeproj -scheme Hob CODE_SIGNING_ALLOWED=NO build
-xcodebuild -project native/HobAppleApps/HobAppleApps.xcodeproj -scheme HobiOS -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
-```
-
-Build and smoke-test Calendar separately:
-
-```
-scripts/build_calendar_bridge.sh
-uv run python app.py calendar status
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
+  -project native/HobAppleApps/HobAppleApps.xcodeproj \
+  -scheme HobiOS -sdk iphonesimulator \
+  -destination 'generic/platform=iOS Simulator' \
+  CODE_SIGNING_ALLOWED=NO build
 ```
 
-Calendar authorization requires a local user action:
+Build Mac:
 
-```
-uv run python app.py calendar authorize
-```
-
-Tests use a fake clock, in-memory store, and fake LLM. Recovery tests inject
-failures, reopen databases, and migrate released schema fixtures. CI checks the
-lockfile, frozen dependencies, Python runtime, native packages, EventKit bridge,
-App Store shell, and test suite on Ubuntu and macOS.
-
-After interpreter or prompt changes, run the real-model corpus:
-
-```
-HOB_MODEL=qwen2.5:14b-instruct uv run python -m evals.interpreter_eval
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
+  -project native/HobMacApp/HobMacApp.xcodeproj \
+  -scheme Hob CODE_SIGNING_ALLOWED=NO build
 ```
 
-The analysis gate checks planning explanation, a what-if, and unchanged durable
-state:
+For a language bug, reproduce it against Foundation Models, inspect typed
+output, trace it through storage and scheduling, then add an end-to-end
+regression. Never repair free text with a phrase list.
 
-```
-HOB_MODEL=qwen2.5:14b-instruct uv run python -m evals.analysis_eval
-```
+Signed installs use local development identities and profiles. Do not commit
+profile names, UUIDs, device identifiers, or signing material. Do not upload a
+build without explicit approval.
 
-`tzdata` installs only on Windows through its platform marker.
+CI builds the shared package, both Apple shells, EventKit bridge, retired menu
+bar package, and Python suite on macOS and Ubuntu.
