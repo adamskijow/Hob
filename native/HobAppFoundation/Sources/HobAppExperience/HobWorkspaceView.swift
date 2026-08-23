@@ -62,6 +62,7 @@ public struct HobWorkspaceView: View {
     @State private var showsOnboarding = false
     @State private var selectedTab: WorkspaceTab = .today
     @State private var selectedDigestItem: RuntimeMorningDigestItem?
+    @State private var editedDigestTitle = ""
 
     public init() {
         _controller = StateObject(wrappedValue: HobWorkspaceController())
@@ -301,6 +302,7 @@ public struct HobWorkspaceView: View {
                 } else {
                     ForEach(Array(digest.items.prefix(6).enumerated()), id: \.element.id) { index, item in
                         Button {
+                            editedDigestTitle = item.task
                             selectedDigestItem = item
                         } label: {
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -339,21 +341,49 @@ public struct HobWorkspaceView: View {
                     .stroke(HobTheme.border(for: colorScheme), lineWidth: 1)
             }
             .accessibilityElement(children: .contain)
-            .confirmationDialog(
-                selectedDigestItem?.task ?? "Task",
-                isPresented: Binding(
-                    get: { selectedDigestItem != nil },
-                    set: { if !$0 { selectedDigestItem = nil } }
-                ),
-                titleVisibility: .visible,
-                presenting: selectedDigestItem
-            ) { item in
-                Button("Mark Done") {
+            .sheet(item: $selectedDigestItem) { item in
+                taskActionsSheet(item)
+            }
+        }
+    }
+
+    private func taskActionsSheet(_ item: RuntimeMorningDigestItem) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text("Task")
+                    .font(.title2.bold())
+                Spacer()
+                Button("Close", systemImage: "xmark") {
+                    selectedDigestItem = nil
+                }
+                .labelStyle(.iconOnly)
+            }
+            TextField("Task", text: $editedDigestTitle, axis: .vertical)
+                .lineLimit(1...3)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Button("Mark Done", systemImage: "checkmark.circle.fill") {
                     controller.markDone(taskID: item.taskID)
                     selectedDigestItem = nil
                 }
+                .buttonStyle(.bordered)
+                Spacer()
+                Button("Save") {
+                    controller.renameTask(taskID: item.taskID, to: editedDigestTitle)
+                    selectedDigestItem = nil
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(
+                    editedDigestTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || editedDigestTitle.trimmingCharacters(in: .whitespacesAndNewlines) == item.task
+                        || controller.isWorking
+                )
             }
         }
+        .padding(24)
+        .frame(maxWidth: 480)
+        .presentationDetents([.height(230)])
+        .presentationDragIndicator(.visible)
     }
 
     private var composer: some View {

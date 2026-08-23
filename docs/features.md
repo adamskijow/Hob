@@ -22,8 +22,8 @@ until **Add to Calendar** is selected.
 The Today tab keeps the current day's plan visible as a living morning digest.
 It refreshes after captures, replans, completions, and iCloud sync. Detailed
 proposals and the task inventory live in the Schedule tab. Select a Today item
-to mark it done; the plan, notification digest, and synced task state update
-together.
+to edit its name or mark it done; the plan, notification digest, and synced task
+state update together.
 
 ## Execution and replanning
 

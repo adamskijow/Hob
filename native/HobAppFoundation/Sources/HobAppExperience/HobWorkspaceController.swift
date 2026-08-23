@@ -224,6 +224,61 @@ public final class HobWorkspaceController: ObservableObject {
         }
     }
 
+    public func renameTask(taskID: String, to title: String) {
+        let updatedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !updatedTitle.isEmpty else { return }
+        guard updatedTitle.utf8.count <= 10_000 else {
+            errorMessage = "That task name is too long."
+            return
+        }
+        run {
+            guard let runtime = self.runtime else { return }
+            let snapshot = await runtime.snapshot()
+            guard let task = snapshot.tasks.first(where: {
+                $0.id == taskID && $0.status == "open"
+            }) else {
+                self.notice = "That task is already closed."
+                await self.refresh()
+                return
+            }
+            guard task.task != updatedTitle else {
+                self.notice = "No changes to save."
+                return
+            }
+            let instant = self.now()
+            let completedAt = self.timestamp(instant)
+            let requestID = UUID().uuidString
+            let response = try await runtime.process(RuntimeTurnRequest(
+                requestID: requestID,
+                message: "Edited from Today",
+                now: completedAt,
+                timezone: self.timezone.identifier,
+                actions: [RuntimeAction(
+                    type: "amend",
+                    task: updatedTitle,
+                    target: taskID
+                )]
+            ))
+            try? await runtime.markDelivered(
+                dedupeKey: "turn:\(requestID)",
+                at: completedAt
+            )
+            guard response.outcome.disposition == .applied else {
+                self.notice = "That task could not be updated."
+                await self.refresh()
+                return
+            }
+            try await self.cleanupCalendarEventsIfNeeded()
+            try await self.cleanupNotificationsIfNeeded()
+            _ = try await runtime.proposeSchedule(
+                try self.scheduleRequest(at: instant)
+            )
+            await self.syncTasks()
+            self.notice = "Updated: \(updatedTitle)."
+            await self.refresh()
+        }
+    }
+
     public func submit() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSubmit, !text.isEmpty else { return }

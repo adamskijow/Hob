@@ -299,12 +299,21 @@ func todayTaskCanBeMarkedDoneAndUndone() async throws {
     try await waitUntilIdle(controller)
     let taskID = try #require(controller.morningDigest?.items.first?.taskID)
 
+    controller.renameTask(taskID: taskID, to: "Book Willow haircut")
+    try await waitUntilIdle(controller)
+
+    #expect(controller.tasks.first?.task == "Book Willow haircut")
+    #expect(controller.morningDigest?.items.map(\.task) == ["Book Willow haircut"])
+    #expect(controller.notice == "Updated: Book Willow haircut.")
+    #expect(notifications.morningDigests.first?.items.map(\.task) == ["Book Willow haircut"])
+    #expect(try TaskStateStore(directoryURL: directory).load().tasks.first?.task == "Book Willow haircut")
+
     controller.markDone(taskID: taskID)
     try await waitUntilIdle(controller)
 
     #expect(controller.tasks.first?.status == "done")
     #expect(controller.morningDigest?.items.isEmpty == true)
-    #expect(controller.notice == "Done: get Willow haircut.")
+    #expect(controller.notice == "Done: Book Willow haircut.")
     #expect(notifications.morningDigests.allSatisfy { $0.items.isEmpty })
     #expect(try TaskStateStore(directoryURL: directory).load().tasks.first?.status == "done")
 
@@ -312,7 +321,7 @@ func todayTaskCanBeMarkedDoneAndUndone() async throws {
     try await waitUntilIdle(controller)
 
     #expect(controller.tasks.first?.status == "open")
-    #expect(controller.morningDigest?.items.map(\.task) == ["get Willow haircut"])
+    #expect(controller.morningDigest?.items.map(\.task) == ["Book Willow haircut"])
 }
 
 @Test @MainActor

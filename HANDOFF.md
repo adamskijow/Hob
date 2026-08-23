@@ -28,7 +28,8 @@ Retired launch-agent files are under
 ## Recent work
 
 - Added a living Today digest shared by iPhone and Mac.
-- Made Today items actionable with durable Mark Done and Undo support.
+- Made Today items editable and actionable with durable Save, Mark Done, and
+  Undo support.
 - Added optional iPhone morning notifications, on by default at 7:00 AM, with
   seven days refreshed after task or schedule changes.
 - Moved detailed proposals and tasks into a Schedule tab.
