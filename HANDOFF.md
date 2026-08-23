@@ -15,7 +15,7 @@ Nothing has been uploaded to TestFlight or either App Store.
 - Current commit before this docs update: `8018506`
 - Native app version: `0.1` build `1`
 - Latest public tag: `v0.9.13`, for the legacy Open Local edition
-- Tests: 484 Python and 51 native
+- Tests: 484 Python and 54 native
 - CI: green on Ubuntu and macOS at `8018506`
 - iPhone: signed current build installed; launch it manually if the phone was locked
 - Mac: signed app installed at `/Applications/Hob.app`; rebuild it after shared UI changes
@@ -27,6 +27,10 @@ Retired launch-agent files are under
 
 ## Recent work
 
+- Added a living Today digest shared by iPhone and Mac.
+- Added optional iPhone morning notifications, on by default at 7:00 AM, with
+  seven days refreshed after task or schedule changes.
+- Moved detailed proposals and tasks into a Schedule tab.
 - Moved connection status into the gear menu and quieted routine iCloud sync.
 - Removed Open Local import from first-run onboarding.
 - Added safe conversational clock normalization and duplicate-action rejection.

@@ -50,11 +50,17 @@ struct HobAppBackground: View {
 }
 
 public struct HobWorkspaceView: View {
+    private enum WorkspaceTab: Hashable {
+        case today
+        case schedule
+    }
+
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.colorScheme) private var colorScheme
     @StateObject private var controller: HobWorkspaceController
     @AppStorage("hob.onboarding.completed.v1") private var onboardingCompleted = false
     @State private var showsOnboarding = false
+    @State private var selectedTab: WorkspaceTab = .today
 
     public init() {
         _controller = StateObject(wrappedValue: HobWorkspaceController())
@@ -65,62 +71,99 @@ public struct HobWorkspaceView: View {
     }
 
     public var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
+        TabView(selection: $selectedTab) {
+            NavigationStack {
+                workspaceScroll {
                     introduction
+                    morningDigest
                     composer
                     feedback
-                    if let schedule = controller.adoptedSchedule,
-                       let proposal = controller.proposal,
-                       let diff = controller.scheduleDiff {
-                        replanView(schedule, proposal: proposal, diff: diff)
-                    } else if let schedule = controller.adoptedSchedule {
-                        adopted(schedule)
-                    } else if let proposal = controller.proposal {
-                        proposalView(proposal)
-                    }
+                }
+                .navigationTitle("Hob")
+                .toolbar { workspaceToolbar }
+            }
+            .tabItem { Label("Today", systemImage: "sun.max.fill") }
+            .tag(WorkspaceTab.today)
+
+            NavigationStack {
+                workspaceScroll {
+                    scheduleContent
                     taskList
                 }
-                .frame(maxWidth: 760, alignment: .leading)
-                .padding(24)
+                .navigationTitle("Schedule")
+                .toolbar { workspaceToolbar }
             }
-            .background { HobAppBackground().ignoresSafeArea() }
-            .navigationTitle("Hob")
-            .toolbar {
-                if !controller.tasks.isEmpty {
-                    Button("Undo", systemImage: "arrow.uturn.backward") {
-                        controller.undoLastChange()
-                    }
-                    .disabled(controller.isWorking)
-                }
-                connectionsMenu
-            }
-            .onChange(of: scenePhase) { _, phase in
-                if phase == .active { controller.syncNow() }
-            }
-            .onReceive(
-                NotificationCenter.default.publisher(
-                    for: NSUbiquitousKeyValueStore.didChangeExternallyNotification
-                )
-            ) { _ in
-                controller.syncNow()
-            }
-            .onAppear {
-                if !onboardingCompleted { showsOnboarding = true }
-            }
-            .sheet(isPresented: $showsOnboarding) {
-                HobFirstRunView(controller: controller) {
-                    onboardingCompleted = true
-                    showsOnboarding = false
-                }
-            }
+            .tabItem { Label("Schedule", systemImage: "calendar") }
+            .tag(WorkspaceTab.schedule)
         }
         .tint(HobTheme.accent(for: colorScheme))
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { controller.syncNow() }
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: NSUbiquitousKeyValueStore.didChangeExternallyNotification
+            )
+        ) { _ in
+            controller.syncNow()
+        }
+        .onAppear {
+            if !onboardingCompleted { showsOnboarding = true }
+        }
+        .sheet(isPresented: $showsOnboarding) {
+            HobFirstRunView(controller: controller) {
+                onboardingCompleted = true
+                showsOnboarding = false
+            }
+        }
+    }
+
+    private func workspaceScroll<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                content()
+            }
+            .frame(maxWidth: 760, alignment: .leading)
+            .padding(24)
+        }
+        .background { HobAppBackground().ignoresSafeArea() }
+    }
+
+    @ToolbarContentBuilder private var workspaceToolbar: some ToolbarContent {
+        ToolbarItemGroup {
+            if !controller.tasks.isEmpty {
+                Button("Undo", systemImage: "arrow.uturn.backward") {
+                    controller.undoLastChange()
+                }
+                .disabled(controller.isWorking)
+            }
+            connectionsMenu
+        }
+    }
+
+    @ViewBuilder private var scheduleContent: some View {
+        if let schedule = controller.adoptedSchedule,
+           let proposal = controller.proposal,
+           let diff = controller.scheduleDiff {
+            replanView(schedule, proposal: proposal, diff: diff)
+        } else if let schedule = controller.adoptedSchedule {
+            adopted(schedule)
+        } else if let proposal = controller.proposal {
+            proposalView(proposal)
+        } else {
+            ContentUnavailableView(
+                "No schedule yet",
+                systemImage: "calendar",
+                description: Text("Add work from Today and Hob will plan it here.")
+            )
+        }
     }
 
     private var connectionsMenu: some View {
         Menu {
+            Section("Morning") { morningMenuItems }
             Section("Calendar") { calendarMenuItems }
             Section("Reminders") { reminderMenuItems }
             Section("iCloud") { syncMenuItems }
@@ -132,6 +175,34 @@ public struct HobWorkspaceView: View {
             Image(systemName: "gearshape")
         }
         .accessibilityLabel("Connections and setup")
+    }
+
+    @ViewBuilder private var morningMenuItems: some View {
+        Toggle(
+            "Daily digest",
+            isOn: Binding(
+                get: { controller.morningDigestEnabled },
+                set: { controller.setMorningDigestEnabled($0) }
+            )
+        )
+        Picker(
+            "Time",
+            selection: Binding(
+                get: { controller.morningDigestTime },
+                set: { controller.setMorningDigestTime($0) }
+            )
+        ) {
+            Text("6:00 AM").tag("06:00")
+            Text("7:00 AM").tag("07:00")
+            Text("8:00 AM").tag("08:00")
+            Text("9:00 AM").tag("09:00")
+        }
+        if controller.morningDigestEnabled,
+           controller.notificationAuthorization != .authorized {
+            Label("Enable notifications below", systemImage: "bell.slash")
+        } else if controller.morningDigestNeedsAttention {
+            Label("Needs attention", systemImage: "exclamationmark.triangle")
+        }
     }
 
     @ViewBuilder private var calendarMenuItems: some View {
@@ -214,6 +285,47 @@ public struct HobWorkspaceView: View {
                 .font(.largeTitle.bold())
             Text("Include deadlines, priority, and effort naturally. Hob will turn them into a realistic timeline.")
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var morningDigest: some View {
+        if let digest = controller.morningDigest {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Morning. Here is today:", systemImage: "sunrise.fill")
+                    .font(.headline)
+                    .foregroundStyle(.tint)
+                if digest.items.isEmpty {
+                    Text("Nothing on deck today.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(digest.items.prefix(6).enumerated()), id: \.element.id) { index, item in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text("\(index + 1)")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .frame(width: 16, alignment: .trailing)
+                            Text(item.summary)
+                                .font(.subheadline)
+                        }
+                    }
+                    if digest.items.count > 6 {
+                        Text("+\(digest.items.count - 6) more")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(
+                HobTheme.surface(for: colorScheme),
+                in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(HobTheme.border(for: colorScheme), lineWidth: 1)
+            }
+            .accessibilityElement(children: .contain)
         }
     }
 

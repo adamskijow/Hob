@@ -34,6 +34,10 @@ public final class HobWorkspaceController: ObservableObject {
     @Published public private(set) var notificationAuthorization: RuntimeNotificationAuthorization
     @Published public private(set) var notificationCleanupPending = false
     @Published public private(set) var notificationActionsPending = false
+    @Published public private(set) var morningDigest: RuntimeMorningDigest?
+    @Published public private(set) var morningDigestEnabled: Bool
+    @Published public private(set) var morningDigestTime: String
+    @Published public private(set) var morningDigestNeedsAttention = false
     @Published public private(set) var syncAvailability: RuntimeTaskSyncAvailability
     @Published public private(set) var syncNeedsAttention = false
     @Published public private(set) var planningPreferences: RuntimePlanningPreferences = .default
@@ -49,6 +53,12 @@ public final class HobWorkspaceController: ObservableObject {
     private let timezone: TimeZone
     private let now: @Sendable () -> Date
     private let modelProbe: (@Sendable () async throws -> Void)?
+    private let defaults: UserDefaults
+
+    private enum DefaultsKey {
+        static let morningDigestEnabled = "hob.morning.digest.enabled"
+        static let morningDigestTime = "hob.morning.digest.time"
+    }
 
     public convenience init() {
         let appleInterpreter = AppleFoundationInterpreter()
@@ -60,6 +70,7 @@ public final class HobWorkspaceController: ObservableObject {
                 calendarStore: EventKitScheduleStore(),
                 notificationStore: LocalNotificationScheduler(),
                 syncStore: ICloudTaskSyncStore(),
+                defaults: .standard,
                 modelReadiness: appleInterpreter.isAvailable ? .notChecked : .unavailable,
                 modelProbe: { try await appleInterpreter.probe() }
             )
@@ -70,6 +81,7 @@ public final class HobWorkspaceController: ObservableObject {
                 calendarStore: EventKitScheduleStore(),
                 notificationStore: LocalNotificationScheduler(),
                 syncStore: ICloudTaskSyncStore(),
+                defaults: .standard,
                 timezone: .current,
                 now: Date.init,
                 modelReadiness: appleInterpreter.isAvailable ? .notChecked : .unavailable,
@@ -85,6 +97,7 @@ public final class HobWorkspaceController: ObservableObject {
         calendarStore: any RuntimeCalendarScheduling = EventKitScheduleStore(),
         notificationStore: any RuntimeNotificationScheduling,
         syncStore: any RuntimeTaskSyncing,
+        defaults: UserDefaults = .standard,
         timezone: TimeZone = .current,
         now: @escaping @Sendable () -> Date = Date.init,
         modelReadiness: ModelReadinessState = .available,
@@ -97,6 +110,7 @@ public final class HobWorkspaceController: ObservableObject {
             calendarStore: calendarStore,
             notificationStore: notificationStore,
             syncStore: syncStore,
+            defaults: defaults,
             timezone: timezone,
             now: now,
             modelReadiness: modelReadiness,
@@ -113,6 +127,7 @@ public final class HobWorkspaceController: ObservableObject {
         calendarStore: any RuntimeCalendarScheduling,
         notificationStore: any RuntimeNotificationScheduling,
         syncStore: any RuntimeTaskSyncing,
+        defaults: UserDefaults,
         timezone: TimeZone,
         now: @escaping @Sendable () -> Date,
         modelReadiness: ModelReadinessState,
@@ -126,6 +141,14 @@ public final class HobWorkspaceController: ObservableObject {
         self.notificationAuthorization = notificationStore.authorization
         self.syncStore = syncStore
         self.syncAvailability = syncStore.availability
+        self.defaults = defaults
+        self.morningDigestEnabled = defaults.object(
+            forKey: DefaultsKey.morningDigestEnabled
+        ) == nil || defaults.bool(forKey: DefaultsKey.morningDigestEnabled)
+        let savedDigestTime = defaults.string(forKey: DefaultsKey.morningDigestTime)
+        self.morningDigestTime = savedDigestTime.flatMap {
+            Self.validMorningDigestTimes.contains($0) ? $0 : nil
+        } ?? "07:00"
         self.timezone = timezone
         self.now = now
         self.modelReadiness = modelReadiness
@@ -159,6 +182,21 @@ public final class HobWorkspaceController: ObservableObject {
               let proposal,
               current.id != proposal.id else { return nil }
         return RuntimeScheduleDiff(current: current, proposed: proposal)
+    }
+
+    public static let validMorningDigestTimes = ["06:00", "07:00", "08:00", "09:00"]
+
+    public func setMorningDigestEnabled(_ enabled: Bool) {
+        morningDigestEnabled = enabled
+        defaults.set(enabled, forKey: DefaultsKey.morningDigestEnabled)
+        Task { await refreshMorningDigestNotifications() }
+    }
+
+    public func setMorningDigestTime(_ time: String) {
+        guard Self.validMorningDigestTimes.contains(time) else { return }
+        morningDigestTime = time
+        defaults.set(time, forKey: DefaultsKey.morningDigestTime)
+        Task { await refreshMorningDigestNotifications() }
     }
 
     public func submit() {
@@ -309,7 +347,7 @@ public final class HobWorkspaceController: ObservableObject {
                     throw error
                 }
             }
-            self.notice = "Start reminders enabled."
+            self.notice = "Morning digest and start reminders enabled."
             await self.refresh()
         }
     }
@@ -493,6 +531,58 @@ public final class HobWorkspaceController: ObservableObject {
         notificationAuthorization = notificationStore.authorization
         syncAvailability = syncStore.availability
         planningPreferences = snapshot.planningPreferences
+        let activeProposal = snapshot.adoptedSchedule?.proposal ?? snapshot.latestProposal
+        morningDigest = RuntimeMorningDigestBuilder.build(
+            for: now(),
+            tasks: snapshot.tasks,
+            proposal: activeProposal,
+            timezone: timezone
+        )
+        await refreshMorningDigestNotifications(
+            tasks: snapshot.tasks,
+            proposal: activeProposal
+        )
+    }
+
+    private func refreshMorningDigestNotifications(
+        tasks: [RuntimeTask]? = nil,
+        proposal: RuntimeScheduleProposal? = nil
+    ) async {
+        guard morningDigestEnabled,
+              notificationStore.authorization == .authorized else {
+            await notificationStore.cancelMorningDigests()
+            morningDigestNeedsAttention = false
+            return
+        }
+        let resolvedTasks: [RuntimeTask]
+        let resolvedProposal: RuntimeScheduleProposal?
+        if let tasks {
+            resolvedTasks = tasks
+            resolvedProposal = proposal
+        } else if let runtime {
+            let snapshot = await runtime.snapshot()
+            resolvedTasks = snapshot.tasks
+            resolvedProposal = snapshot.adoptedSchedule?.proposal ?? snapshot.latestProposal
+        } else {
+            await notificationStore.cancelMorningDigests()
+            return
+        }
+        do {
+            try await notificationStore.replaceMorningDigests(
+                RuntimeMorningDigestBuilder.upcoming(
+                    from: now(),
+                    days: 7,
+                    tasks: resolvedTasks,
+                    proposal: resolvedProposal,
+                    timezone: timezone
+                ),
+                time: morningDigestTime,
+                now: now()
+            )
+            morningDigestNeedsAttention = false
+        } catch {
+            morningDigestNeedsAttention = true
+        }
     }
 
     private func run(

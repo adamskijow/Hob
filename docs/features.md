@@ -19,12 +19,21 @@ Hob builds a timeline from:
 The proposal shows scheduled and unscheduled work. Calendar remains unchanged
 until **Add to Calendar** is selected.
 
+The Today tab keeps the current day's plan visible as a living morning digest.
+It refreshes after captures, replans, completions, and iCloud sync. Detailed
+proposals and the task inventory live in the Schedule tab.
+
 ## Execution and replanning
 
 Accepted blocks can create local start reminders. Reminder actions support
 Done, Snooze, and Replan. Hob can compare an adopted schedule with a new
 proposal before updating Calendar. Cancellation removes Hob's Calendar events
 and reminders durably.
+
+The iPhone can also send the current digest each morning. It is on by default
+at 7:00 AM; the gear menu can change the time or turn it off. Hob refreshes the
+next seven notifications whenever the app updates its plan. The Mac shows the
+same Today view without sending a second alert.
 
 ## State and sync
 

@@ -55,6 +55,9 @@ private final class StubNotifications: RuntimeNotificationScheduling {
     var scheduledIDs: [String] = []
     var cancelledIDs: [String] = []
     var snoozed: [(RuntimeNotificationResponse, Int)] = []
+    var morningDigests: [RuntimeMorningDigest] = []
+    var morningTime: String?
+    var morningCancellations = 0
     private var handler: (@MainActor @Sendable (
         RuntimeNotificationResponse
     ) async -> Void)?
@@ -80,6 +83,20 @@ private final class StubNotifications: RuntimeNotificationScheduling {
         minutes: Int
     ) async throws {
         snoozed.append((response, minutes))
+    }
+
+    func replaceMorningDigests(
+        _ digests: [RuntimeMorningDigest],
+        time: String,
+        now: Date
+    ) async throws {
+        morningDigests = digests
+        morningTime = time
+    }
+
+    func cancelMorningDigests() async {
+        morningCancellations += 1
+        morningDigests = []
     }
 
     func cancel(notificationIDs: [String]) {
@@ -138,6 +155,9 @@ func naturalMessageBuildsAndAdoptsAPersistentSchedule() async throws {
     ))
     let calendar = StubCalendar()
     let notifications = StubNotifications()
+    let defaults = try #require(UserDefaults(
+        suiteName: "hob-workspace-tests-\(UUID().uuidString)"
+    ))
     let controller = HobWorkspaceController(
         store: TaskStateStore(directoryURL: directory),
         interpreter: StubInterpreter(actions: [
@@ -161,6 +181,7 @@ func naturalMessageBuildsAndAdoptsAPersistentSchedule() async throws {
         calendarStore: calendar,
         notificationStore: notifications,
         syncStore: StubSync(),
+        defaults: defaults,
         timezone: try #require(TimeZone(identifier: "America/New_York")),
         now: { now }
     )
@@ -173,6 +194,9 @@ func naturalMessageBuildsAndAdoptsAPersistentSchedule() async throws {
     #expect(controller.proposal?.blocks.count == 2)
     #expect(controller.proposal?.blocks.first?.startAt == "2026-06-29T10:00:00-04:00")
     #expect(controller.adoptedSchedule == nil)
+    #expect(controller.morningDigest?.items.map(\.task) == ["finish taxes"])
+    #expect(notifications.morningTime == "07:00")
+    #expect(notifications.morningDigests.count == 7)
 
     controller.adoptProposal()
     try await waitUntilIdle(controller)

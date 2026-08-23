@@ -44,6 +44,8 @@
 		K10000000000000000000002 /* OpenLocalImport.swift in Agent Sources */ = {isa = PBXBuildFile; fileRef = K20000000000000000000001 /* OpenLocalImport.swift */; };
 		K10000000000000000000003 /* HobFirstRunView.swift in Sources */ = {isa = PBXBuildFile; fileRef = K20000000000000000000002 /* HobFirstRunView.swift */; };
 		L10000000000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = L20000000000000000000001 /* Assets.xcassets */; };
+		M10000000000000000000001 /* MorningDigest.swift in Sources */ = {isa = PBXBuildFile; fileRef = M20000000000000000000001 /* MorningDigest.swift */; };
+		M10000000000000000000002 /* MorningDigest.swift in Agent Sources */ = {isa = PBXBuildFile; fileRef = M20000000000000000000001 /* MorningDigest.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -124,6 +126,7 @@
 		K20000000000000000000001 /* OpenLocalImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = OpenLocalImport.swift; path = ../HobAppFoundation/Sources/HobAppCore/OpenLocalImport.swift; sourceTree = "<group>"; };
 		K20000000000000000000002 /* HobFirstRunView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = HobFirstRunView.swift; path = ../HobAppFoundation/Sources/HobAppExperience/HobFirstRunView.swift; sourceTree = "<group>"; };
 		L20000000000000000000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		M20000000000000000000001 /* MorningDigest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MorningDigest.swift; path = ../HobAppFoundation/Sources/HobAppCore/MorningDigest.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -189,6 +192,7 @@
 				J20000000000000000000002 /* ICloudTaskSyncStore.swift */,
 				K20000000000000000000001 /* OpenLocalImport.swift */,
 				K20000000000000000000002 /* HobFirstRunView.swift */,
+				M20000000000000000000001 /* MorningDigest.swift */,
 			);
 			name = Sources;
 			sourceTree = "<group>";
@@ -360,6 +364,7 @@
 				J10000000000000000000003 /* ICloudTaskSyncStore.swift in Sources */,
 				K10000000000000000000001 /* OpenLocalImport.swift in Sources */,
 				K10000000000000000000003 /* HobFirstRunView.swift in Sources */,
+				M10000000000000000000001 /* MorningDigest.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -376,6 +381,7 @@
 				I10000000000000000000002 /* NotificationScheduling.swift in Agent Sources */,
 				J10000000000000000000002 /* TaskSync.swift in Agent Sources */,
 				K10000000000000000000002 /* OpenLocalImport.swift in Agent Sources */,
+				M10000000000000000000002 /* MorningDigest.swift in Agent Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

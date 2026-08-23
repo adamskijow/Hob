@@ -29,6 +29,8 @@ tests, and migration. It is retired from daily use.
   natural message.
 - Builds a feasible schedule around working hours and opaque Calendar busy
   intervals.
+- Keeps today's plan on the main screen and sends the same optional morning
+  digest to the iPhone.
 - Adds an accepted schedule to Calendar and can cancel or replan it.
 - Sends optional start reminders with Done, Snooze, and Replan actions.
 - Persists tasks, proposals, adoption, undo, and cleanup across restarts.

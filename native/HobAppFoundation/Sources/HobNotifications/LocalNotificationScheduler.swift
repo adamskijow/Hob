@@ -9,6 +9,7 @@ import HobAppCore
 public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
     fileprivate enum Identifier {
         static let category = "HOB_SCHEDULE_BLOCK"
+        static let morningPrefix = "hob.morning."
         static let done = "HOB_DONE"
         static let snooze = "HOB_SNOOZE"
         static let replan = "HOB_REPLAN"
@@ -120,6 +121,82 @@ public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
         }
     }
 
+    public func replaceMorningDigests(
+        _ digests: [RuntimeMorningDigest],
+        time: String,
+        now: Date
+    ) async throws {
+        #if os(iOS)
+        guard authorization == .authorized else {
+            throw RuntimeNotificationError.permissionDenied
+        }
+        guard digests.count <= 14,
+              Set(digests.map(\.date)).count == digests.count,
+              let clock = Self.clock(time),
+              digests.allSatisfy({
+                  TimeZone(identifier: $0.timezone) != nil
+                      && $0.items.count <= 10_000
+                      && $0.notificationBody.utf8.count <= 4_000
+              }) else {
+            throw RuntimeNotificationError.invalidRequest
+        }
+
+        await cancelMorningDigests()
+        var scheduled: [String] = []
+        do {
+            for digest in digests {
+                guard let timezone = TimeZone(identifier: digest.timezone),
+                      let fire = Self.instant(
+                        date: digest.date,
+                        hour: clock.hour,
+                        minute: clock.minute,
+                        timezone: timezone
+                      ) else {
+                    throw RuntimeNotificationError.invalidRequest
+                }
+                guard fire > now else { continue }
+                let identifier = Identifier.morningPrefix + digest.date
+                let content = UNMutableNotificationContent()
+                content.title = "Morning. Here is today."
+                content.body = digest.notificationBody
+                content.sound = .default
+                var calendar = Calendar(identifier: .gregorian)
+                calendar.timeZone = timezone
+                let components = calendar.dateComponents(
+                    [.calendar, .timeZone, .year, .month, .day, .hour, .minute],
+                    from: fire
+                )
+                try await center.add(UNNotificationRequest(
+                    identifier: identifier,
+                    content: content,
+                    trigger: UNCalendarNotificationTrigger(
+                        dateMatching: components,
+                        repeats: false
+                    )
+                ))
+                scheduled.append(identifier)
+            }
+        } catch let error as RuntimeNotificationError {
+            center.removePendingNotificationRequests(withIdentifiers: scheduled)
+            throw error
+        } catch {
+            center.removePendingNotificationRequests(withIdentifiers: scheduled)
+            throw RuntimeNotificationError.schedulingFailed
+        }
+        #else
+        await cancelMorningDigests()
+        #endif
+    }
+
+    public func cancelMorningDigests() async {
+        let pending = await center.pendingNotificationRequests()
+        let identifiers = pending.map(\.identifier).filter {
+            $0.hasPrefix(Identifier.morningPrefix)
+        }
+        center.removePendingNotificationRequests(withIdentifiers: identifiers)
+        center.removeDeliveredNotifications(withIdentifiers: identifiers)
+    }
+
     public func cancel(notificationIDs: [String]) {
         center.removePendingNotificationRequests(withIdentifiers: notificationIDs)
         center.removeDeliveredNotifications(withIdentifiers: notificationIDs)
@@ -191,6 +268,38 @@ public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
         @unknown default:
             return .denied
         }
+    }
+
+    private static func clock(_ value: String) -> (hour: Int, minute: Int)? {
+        let pieces = value.split(separator: ":", omittingEmptySubsequences: false)
+        guard pieces.count == 2,
+              pieces[0].count == 2,
+              pieces[1].count == 2,
+              let hour = Int(pieces[0]),
+              let minute = Int(pieces[1]),
+              (0...23).contains(hour),
+              (0...59).contains(minute) else { return nil }
+        return (hour, minute)
+    }
+
+    private static func instant(
+        date: String,
+        hour: Int,
+        minute: Int,
+        timezone: TimeZone
+    ) -> Date? {
+        let pieces = date.split(separator: "-").compactMap { Int($0) }
+        guard pieces.count == 3 else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timezone
+        return calendar.date(from: DateComponents(
+            timeZone: timezone,
+            year: pieces[0],
+            month: pieces[1],
+            day: pieces[2],
+            hour: hour,
+            minute: minute
+        ))
     }
 }
 

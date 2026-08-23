@@ -99,9 +99,10 @@ struct HobFirstRunView: View {
                 }
             }
             setupRow(
-                title: "Reminders",
+                title: "Notifications",
                 detail: controller.notificationAuthorization == .authorized
-                    ? "Enabled" : "Optional start alerts with Done, Snooze, and Replan",
+                    ? "Morning digest and start reminders enabled"
+                    : "A morning digest plus optional task reminders",
                 symbol: "bell"
             ) {
                 if controller.notificationAuthorization == .notDetermined {
