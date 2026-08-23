@@ -11,31 +11,33 @@
   <img src="https://img.shields.io/badge/iPhone%20%2B%20Mac-black?logo=apple&logoColor=white" alt="iPhone and Mac">
 </p>
 
-Hob turns ordinary language into a realistic schedule. It runs locally on
-iPhone and Mac with Apple Foundation Models and keeps tasks in sync through the
-customer's private iCloud account.
+Hob is a local-first planner for iPhone and Mac. Describe work naturally and
+Hob builds a realistic timeline around your calendar. Apple's Foundation Models
+framework interprets messages on the device; tasks sync through your private
+iCloud account.
 
 ## Current build
 
-The native app is installed locally on the development Mac and paired iPhone.
-Nothing has been uploaded to TestFlight or an App Store.
-
-The previous Telegram and Ollama edition remains in the repository for history,
-tests, and migration. It is retired from daily use.
+Signed development builds run on the paired iPhone and Mac. TestFlight and App
+Store distribution remain 1.0 release gates. The retired Telegram and Ollama
+edition stays in the repository for migration and regression coverage.
 
 ## What it does
 
-- Captures several tasks, dates, times, deadlines, priority, and effort from one
-  natural message.
-- Builds a feasible schedule around working hours and opaque Calendar busy
-  intervals.
-- Keeps today's plan on the main screen and sends the same optional morning
-  digest to the iPhone.
-- Adds an accepted schedule to Calendar and can cancel or replan it.
+- Captures tasks, dates, deadlines, priority, and effort from one message.
+- Plans work around working hours and Calendar availability.
+- Keeps today current and sends an optional matching morning notification.
+- Adds an approved plan to Calendar, then supports cancellation and replanning.
 - Sends optional start reminders with Done, Snooze, and Replan actions.
-- Persists tasks, proposals, adoption, undo, and cleanup across restarts.
-- Syncs bounded task operations between iPhone and Mac through private iCloud.
-- Keeps model prompts and Calendar details on the device.
+- Syncs tasks privately between iPhone and Mac through iCloud.
+- Preserves schedules, undo, and recovery state across restarts.
+- Keeps message interpretation and Calendar details on the device.
+
+## Requirements
+
+- iOS 26 or macOS 26
+- Apple Intelligence enabled and available
+- iCloud for cross-device task sync
 
 ## Build and test
 
