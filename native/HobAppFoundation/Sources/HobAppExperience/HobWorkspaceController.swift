@@ -199,6 +199,31 @@ public final class HobWorkspaceController: ObservableObject {
         Task { await refreshMorningDigestNotifications() }
     }
 
+    public func markDone(taskID: String) {
+        run {
+            guard let runtime = self.runtime else { return }
+            let snapshot = await runtime.snapshot()
+            guard let task = snapshot.tasks.first(where: {
+                $0.id == taskID && $0.status == "open"
+            }) else {
+                self.notice = "That task is already closed."
+                await self.refresh()
+                return
+            }
+            let instant = self.now()
+            _ = try await self.applyCompletion(
+                taskID: task.id,
+                message: "Done from Today",
+                requestID: UUID().uuidString,
+                at: instant,
+                runtime: runtime
+            )
+            await self.syncTasks()
+            self.notice = "Done: \(task.task)."
+            await self.refresh()
+        }
+    }
+
     public func submit() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSubmit, !text.isEmpty else { return }
@@ -747,32 +772,14 @@ public final class HobWorkspaceController: ObservableObject {
                 notice = "That task was already closed."
                 return
             }
-            let requestID = "notification:\(response.id)"
             let instant = now()
-            let result = try await runtime.process(RuntimeTurnRequest(
-                requestID: requestID,
+            _ = try await applyCompletion(
+                taskID: response.taskID,
                 message: "Done from schedule reminder",
-                now: timestamp(instant),
-                timezone: timezone.identifier,
-                actions: [RuntimeAction(
-                    type: "complete",
-                    target: response.taskID
-                )]
-            ))
-            try? await runtime.markDelivered(
-                dedupeKey: "turn:\(requestID)",
-                at: timestamp(instant)
+                requestID: "notification:\(response.id)",
+                at: instant,
+                runtime: runtime
             )
-            guard result.outcome.disposition == .applied else {
-                throw RuntimeNotificationError.invalidRequest
-            }
-            try await cleanupCalendarEventsIfNeeded()
-            try await cleanupNotificationsIfNeeded()
-            if result.outcome.tasks.contains(where: { $0.status == "open" }) {
-                _ = try await runtime.proposeSchedule(
-                    try scheduleRequest(at: instant)
-                )
-            }
             notice = "Done: \(response.task). Review the updated plan."
         case .snooze:
             guard taskIsOpen,
@@ -794,6 +801,38 @@ public final class HobWorkspaceController: ObservableObject {
             draft = "I need to replan \(response.task) because "
             notice = "What changed? Finish the sentence and Hob will rebuild the plan."
         }
+    }
+
+    private func applyCompletion(
+        taskID: String,
+        message: String,
+        requestID: String,
+        at instant: Date,
+        runtime: DurableTaskRuntime
+    ) async throws -> RuntimeTurnResponse {
+        let completedAt = timestamp(instant)
+        let result = try await runtime.process(RuntimeTurnRequest(
+            requestID: requestID,
+            message: message,
+            now: completedAt,
+            timezone: timezone.identifier,
+            actions: [RuntimeAction(type: "complete", target: taskID)]
+        ))
+        try? await runtime.markDelivered(
+            dedupeKey: "turn:\(requestID)",
+            at: completedAt
+        )
+        guard result.outcome.disposition == .applied else {
+            throw RuntimeNotificationError.invalidRequest
+        }
+        try await cleanupCalendarEventsIfNeeded()
+        try await cleanupNotificationsIfNeeded()
+        if result.outcome.tasks.contains(where: { $0.status == "open" }) {
+            _ = try await runtime.proposeSchedule(
+                try scheduleRequest(at: instant)
+            )
+        }
+        return result
     }
 
     private func timestamp(_ value: Date) -> String {

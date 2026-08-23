@@ -61,6 +61,7 @@ public struct HobWorkspaceView: View {
     @AppStorage("hob.onboarding.completed.v1") private var onboardingCompleted = false
     @State private var showsOnboarding = false
     @State private var selectedTab: WorkspaceTab = .today
+    @State private var selectedDigestItem: RuntimeMorningDigestItem?
 
     public init() {
         _controller = StateObject(wrappedValue: HobWorkspaceController())
@@ -299,14 +300,26 @@ public struct HobWorkspaceView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(Array(digest.items.prefix(6).enumerated()), id: \.element.id) { index, item in
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text("\(index + 1)")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                                .frame(width: 16, alignment: .trailing)
-                            Text(item.summary)
-                                .font(.subheadline)
+                        Button {
+                            selectedDigestItem = item
+                        } label: {
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text("\(index + 1)")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 16, alignment: .trailing)
+                                Text(item.summary)
+                                    .font(.subheadline)
+                                Spacer(minLength: 4)
+                                Image(systemName: "ellipsis.circle")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        .disabled(controller.isWorking)
+                        .accessibilityHint("Shows task actions")
                     }
                     if digest.items.count > 6 {
                         Text("+\(digest.items.count - 6) more")
@@ -326,6 +339,20 @@ public struct HobWorkspaceView: View {
                     .stroke(HobTheme.border(for: colorScheme), lineWidth: 1)
             }
             .accessibilityElement(children: .contain)
+            .confirmationDialog(
+                selectedDigestItem?.task ?? "Task",
+                isPresented: Binding(
+                    get: { selectedDigestItem != nil },
+                    set: { if !$0 { selectedDigestItem = nil } }
+                ),
+                titleVisibility: .visible,
+                presenting: selectedDigestItem
+            ) { item in
+                Button("Mark Done") {
+                    controller.markDone(taskID: item.taskID)
+                    selectedDigestItem = nil
+                }
+            }
         }
     }
 

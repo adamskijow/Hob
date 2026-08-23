@@ -264,6 +264,58 @@ func naturalMessageBuildsAndAdoptsAPersistentSchedule() async throws {
 }
 
 @Test @MainActor
+func todayTaskCanBeMarkedDoneAndUndone() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("hob-today-done-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let now = try #require(ISO8601DateFormatter().date(
+        from: "2026-06-29T08:00:00-04:00"
+    ))
+    let defaults = try #require(UserDefaults(
+        suiteName: "hob-today-done-tests-\(UUID().uuidString)"
+    ))
+    let notifications = StubNotifications()
+    let controller = HobWorkspaceController(
+        store: TaskStateStore(directoryURL: directory),
+        interpreter: StubInterpreter(actions: [
+            RuntimeAction(
+                type: "capture",
+                task: "get Willow haircut",
+                raw: "Get Willow haircut today",
+                when: RuntimeDateIntent(kind: "today"),
+                durationMinutes: 30
+            ),
+        ]),
+        calendarStore: StubCalendar(),
+        notificationStore: notifications,
+        syncStore: StubSync(),
+        defaults: defaults,
+        timezone: try #require(TimeZone(identifier: "America/New_York")),
+        now: { now }
+    )
+
+    controller.draft = "Get Willow haircut today"
+    controller.submit()
+    try await waitUntilIdle(controller)
+    let taskID = try #require(controller.morningDigest?.items.first?.taskID)
+
+    controller.markDone(taskID: taskID)
+    try await waitUntilIdle(controller)
+
+    #expect(controller.tasks.first?.status == "done")
+    #expect(controller.morningDigest?.items.isEmpty == true)
+    #expect(controller.notice == "Done: get Willow haircut.")
+    #expect(notifications.morningDigests.allSatisfy { $0.items.isEmpty })
+    #expect(try TaskStateStore(directoryURL: directory).load().tasks.first?.status == "done")
+
+    controller.undoLastChange()
+    try await waitUntilIdle(controller)
+
+    #expect(controller.tasks.first?.status == "open")
+    #expect(controller.morningDigest?.items.map(\.task) == ["get Willow haircut"])
+}
+
+@Test @MainActor
 func manualSyncPullsRemoteTasksAndBuildsAProposal() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("hob-sync-\(UUID().uuidString)")
