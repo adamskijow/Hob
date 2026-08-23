@@ -80,6 +80,74 @@ public enum RuntimeGeneratedClock {
         }
         return String(format: "%02d:%02d", canonicalHour, minute)
     }
+
+    /// Canonicalize clock text copied from the message. The model supplies only
+    /// the semantic AM/PM choice; code preserves and validates the written time.
+    public static func normalizeEvidence(
+        _ value: String,
+        interpretation: String,
+        in message: String
+    ) -> String? {
+        let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard RuntimeConstraintEvidence.contains(text, in: message) else {
+            return nil
+        }
+        let lower = text.lowercased().replacingOccurrences(of: ".", with: "")
+        let writtenMeridiem: String?
+        if lower.hasSuffix("am") {
+            writtenMeridiem = "am"
+        } else if lower.hasSuffix("pm") {
+            writtenMeridiem = "pm"
+        } else {
+            writtenMeridiem = nil
+        }
+
+        if let writtenMeridiem {
+            guard interpretation == writtenMeridiem else {
+                return nil
+            }
+            return normalize(text)
+        }
+        if let normalized = normalize(text),
+           let hour = Int(normalized.prefix(2)),
+           hour > 12 {
+            guard interpretation == "am" || interpretation == "pm" else {
+                return nil
+            }
+            return normalized
+        }
+        if interpretation == "am" || interpretation == "pm" {
+            return normalize("\(text)\(interpretation)")
+        }
+        return nil
+    }
+}
+
+public enum RuntimeConstraintEvidence {
+    public static func contains(_ evidence: String, in message: String) -> Bool {
+        let clean = evidence.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, clean.lowercased() != "none" else { return false }
+        return message.range(
+            of: clean,
+            options: [.caseInsensitive, .diacriticInsensitive]
+        ) != nil
+    }
+
+    public static func isSupportedDuration(
+        _ evidence: String,
+        in message: String
+    ) -> Bool {
+        guard contains(evidence, in: message) else { return false }
+        let words = evidence
+            .lowercased()
+            .split { !$0.isLetter }
+        return words.contains { word in
+            word == "m" || word == "min" || word == "mins"
+                || word == "minute" || word == "minutes"
+                || word == "h" || word == "hr" || word == "hrs"
+                || word == "hour" || word == "hours"
+        }
+    }
 }
 
 public enum RuntimeGeneratedActions {

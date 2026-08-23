@@ -7,6 +7,15 @@ import HobAppStorage
 
 private struct StubInterpreter: RuntimeMessageInterpreting {
     let actions: [RuntimeAction]
+    var error: RuntimeInterpretationError?
+
+    init(
+        actions: [RuntimeAction],
+        error: RuntimeInterpretationError? = nil
+    ) {
+        self.actions = actions
+        self.error = error
+    }
 
     func interpret(
         message: String,
@@ -14,7 +23,8 @@ private struct StubInterpreter: RuntimeMessageInterpreting {
         timezone: String,
         tasks: [RuntimeTask]
     ) async throws -> [RuntimeAction] {
-        actions
+        if let error { throw error }
+        return actions
     }
 }
 
@@ -190,6 +200,7 @@ func naturalMessageBuildsAndAdoptsAPersistentSchedule() async throws {
     controller.submit()
     try await waitUntilIdle(controller)
 
+    #expect(controller.draft.isEmpty)
     #expect(controller.tasks.map(\.task) == ["finish taxes", "call Mom"])
     #expect(controller.proposal?.blocks.count == 2)
     #expect(controller.proposal?.blocks.first?.startAt == "2026-06-29T10:00:00-04:00")
@@ -395,6 +406,33 @@ func routineSyncIsSilentWhenNothingChanged() async throws {
 
     #expect(controller.notice == nil)
     #expect(controller.syncNeedsAttention == false)
+}
+
+@Test @MainActor
+func failedInterpretationKeepsDraftForRetry() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("hob-draft-retry-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let controller = HobWorkspaceController(
+        store: TaskStateStore(directoryURL: directory),
+        interpreter: StubInterpreter(
+            actions: [],
+            error: .invalidOutput
+        ),
+        calendarStore: StubCalendar(),
+        notificationStore: StubNotifications(),
+        syncStore: StubSync(),
+        timezone: try #require(TimeZone(identifier: "America/New_York"))
+    )
+    try await waitUntilSettled(controller)
+
+    let message = "Tomorrow meet Claude at 230, then the department at 330"
+    controller.draft = message
+    controller.submit()
+    try await waitUntilIdle(controller)
+
+    #expect(controller.draft == message)
+    #expect(controller.errorMessage == "I could not safely interpret that message. Nothing changed.")
 }
 
 private func notificationResponse(

@@ -48,7 +48,6 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         #if canImport(FoundationModels)
         if #available(iOS 26.0, macOS 26.0, *) {
             guard isAvailable else { throw RuntimeInterpretationError.modelUnavailable }
-            let session = LanguageModelSession(instructions: Self.instructions)
             let open = tasks.filter { $0.status == "open" }.sorted { $0.id < $1.id }
             let prompt = """
             Current instant: \(now)
@@ -56,37 +55,44 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             Open tasks: \(open.enumerated().map { "\($0.offset + 1). \($0.element.task)" })
             User message: \(clean)
             """
+            let expectedActionCount: Int
             do {
-                do {
-                    return try await Self.generateActions(
-                        session: session,
-                        prompt: prompt,
-                        originalMessage: clean,
-                        openTaskCount: open.count
-                    )
-                } catch {
-                    let repairPrompt = """
-                    Interpret the original request again. The previous structured
-                    result was invalid. Return exactly one action for each distinct
-                    task the person mentioned. Never emit alternative times or
-                    duplicate a task. A phrase such as "at 230" names one clock
-                    time; choose its single most plausible AM/PM meaning from the
-                    current instant and task context, then return 24-hour HH:MM.
-
-                    \(prompt)
-                    """
-                    return try await Self.generateActions(
-                        session: session,
-                        prompt: repairPrompt,
-                        originalMessage: clean,
-                        openTaskCount: open.count
-                    )
-                }
-            } catch let error as RuntimeInterpretationError {
-                throw error
+                expectedActionCount = try await Self.generateActionCount(prompt: prompt)
             } catch {
                 throw RuntimeInterpretationError.invalidOutput
             }
+            let repairPrompt = """
+            Start over from the original request. A previous result failed
+            validation. Check every field before returning it:
+            - use capture with target 0 for each genuinely new task
+            - return one action per distinct task and preserve shared context
+            - copy each clock expression exactly into clockText
+            - choose am or pm for every copied clock expression
+            - use duration 0 and durationEvidence none when effort is unstated
+            - never turn a planned day into a deadline
+
+            Expected action count: \(expectedActionCount)
+            \(prompt)
+            """
+            let attempts = [
+                "Expected action count: \(expectedActionCount)\n\(prompt)",
+                repairPrompt,
+                "Final validation attempt.\n\(repairPrompt)",
+            ]
+            for candidate in attempts {
+                do {
+                    return try await Self.generateActions(
+                        session: LanguageModelSession(instructions: Self.instructions),
+                        prompt: candidate,
+                        originalMessage: clean,
+                        openTaskCount: open.count,
+                        expectedActionCount: expectedActionCount
+                    )
+                } catch {
+                    continue
+                }
+            }
+            throw RuntimeInterpretationError.invalidOutput
         }
         #endif
         throw RuntimeInterpretationError.modelUnavailable
@@ -102,19 +108,27 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     A schedule day says when the person intends to do the task. A deadline is
     introduced by wording such as "by Friday" or "due Friday". Never convert a
     deadline into a schedule day. Return semantic date kinds; code owns date math.
-    Interpret conversational clock times from the current instant and ordinary
-    context. For example, a daytime appointment "at 230" normally means 14:30,
-    while an explicitly overnight context may mean 02:30. Return time in 24-hour
-    HH:MM form. Use duration 0 when unstated. Use time "none" when unstated. Use
-    priority normal unless the person clearly says high/urgent or low. Do not
-    answer the person and do not invent tasks, changes, or constraints.
+    Copy clock text exactly from the person's message and choose its single most
+    plausible am or pm meaning from the current instant and ordinary context.
+    Preserve an AM/PM marker or unambiguous 24-hour text exactly as written. Use
+    duration 0 and duration evidence none when effort is unstated.
+    Evidence must be an exact excerpt from the message. Use priority normal unless
+    the person clearly says high/urgent or low. Do not answer the person and do not
+    invent tasks, changes, or constraints.
     """
 
     #if canImport(FoundationModels)
     @available(iOS 26.0, macOS 26.0, *)
+    @Generable(description: "Count of distinct requested planner actions")
+    struct GeneratedActionCount {
+        @Guide(description: "One per distinct task or planning action; from 1 through 16")
+        var count: Int
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
     @Generable(description: "All explicit task or planning actions in one message")
     struct GeneratedCaptureTurn {
-        @Guide(description: "Exactly one entry per distinct task; never include alternatives or duplicates", .count(1...16))
+        @Guide(description: "From 1 through 16 entries; exactly one per distinct task, never alternatives or duplicates")
         var tasks: [GeneratedCaptureTask]
     }
 
@@ -127,10 +141,10 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         )
         var operation: String
 
-        @Guide(description: "1-based numbered open task, or 0 for capture or general replan", .range(0...1000))
+        @Guide(description: "1-based numbered open task, or 0 for capture or general replan")
         var targetIndex: Int
 
-        @Guide(description: "Short actionable task label without date, priority, or duration words")
+        @Guide(description: "Short actionable task label without date, clock, priority, or duration words")
         var task: String
 
         @Guide(
@@ -169,8 +183,11 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         )
         var deadlineWhich: String
 
-        @Guide(description: "Estimated minutes, or 0 when unstated", .range(0...480))
+        @Guide(description: "Estimated minutes from 5 through 480, or 0 when unstated")
         var durationMinutes: Int
+
+        @Guide(description: "Exact effort words copied from the message, or none when unstated")
+        var durationEvidence: String
 
         @Guide(
             description: "Explicit importance",
@@ -178,8 +195,28 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         )
         var priority: String
 
-        @Guide(description: "Explicit 24-hour HH:MM start time, or none; resolve shorthand such as 230 from context")
-        var time: String
+        @Guide(description: "Exact clock text copied from the message, or none when unstated")
+        var clockText: String
+
+        @Guide(
+            description: "am or pm meaning for the copied clock; none when unstated",
+            .anyOf(["none", "am", "pm"])
+        )
+        var clockInterpretation: String
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func generateActionCount(prompt: String) async throws -> Int {
+        let session = LanguageModelSession(instructions: """
+        Count the distinct planner actions the person requests. Coordinated tasks
+        count separately. Context, dates, times, and explanations do not add actions.
+        Count a combined update to one existing task once. Do not perform or describe
+        the actions.
+        """)
+        return try await session.respond(
+            to: prompt,
+            generating: GeneratedActionCount.self
+        ).content.count
     }
 
     @available(iOS 26.0, macOS 26.0, *)
@@ -187,7 +224,8 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         session: LanguageModelSession,
         prompt: String,
         originalMessage: String,
-        openTaskCount: Int
+        openTaskCount: Int,
+        expectedActionCount: Int
     ) async throws -> [RuntimeAction] {
         let response = try await session.respond(
             to: prompt,
@@ -200,7 +238,9 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 openTaskCount: openTaskCount
             )
         }
-        guard !actions.isEmpty, actions.count <= 16 else {
+        guard !actions.isEmpty,
+              actions.count == expectedActionCount,
+              actions.count <= 16 else {
             throw RuntimeInterpretationError.invalidOutput
         }
         guard RuntimeGeneratedActions.areDistinct(actions) else {
@@ -233,7 +273,11 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 }
                 return RuntimeAction(type: "amend", task: task, target: target)
             case "reschedule":
-                let time = try normalizedTime(generated.time)
+                let time = try normalizedTime(
+                    text: generated.clockText,
+                    interpretation: generated.clockInterpretation,
+                    originalMessage: originalMessage
+                )
                 return RuntimeAction(
                     type: "reschedule",
                     target: target,
@@ -249,19 +293,25 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 throw RuntimeInterpretationError.invalidOutput
             }
         }
-        guard !task.isEmpty, task.utf8.count <= 10_000,
-              generated.targetIndex == 0 else {
+        guard !task.isEmpty, task.utf8.count <= 10_000 else {
             throw RuntimeInterpretationError.invalidOutput
         }
         let duration: Int?
         if generated.durationMinutes == 0 {
             duration = nil
         } else if (5...480).contains(generated.durationMinutes) {
-            duration = generated.durationMinutes
+            duration = RuntimeConstraintEvidence.isSupportedDuration(
+                generated.durationEvidence,
+                in: originalMessage
+            ) ? generated.durationMinutes : nil
         } else {
             throw RuntimeInterpretationError.invalidOutput
         }
-        let time = try normalizedTime(generated.time)
+        let time = try normalizedTime(
+            text: generated.clockText,
+            interpretation: generated.clockInterpretation,
+            originalMessage: originalMessage
+        )
         return RuntimeAction(
             type: "capture",
             task: task,
@@ -301,12 +351,21 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         return RuntimeDateIntent(kind: "weekday", which: which, day: weekday)
     }
 
-    private static func normalizedTime(_ value: String) throws -> String? {
-        if value.trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() == "none" {
+    private static func normalizedTime(
+        text: String,
+        interpretation: String,
+        originalMessage: String
+    ) throws -> String? {
+        if text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == "none",
+           interpretation == "none" {
             return nil
         }
-        guard let normalized = RuntimeGeneratedClock.normalize(value) else {
+        guard let normalized = RuntimeGeneratedClock.normalizeEvidence(
+            text,
+            interpretation: interpretation,
+            in: originalMessage
+        ) else {
             throw RuntimeInterpretationError.invalidOutput
         }
         return normalized

@@ -282,7 +282,6 @@ public final class HobWorkspaceController: ObservableObject {
     public func submit() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSubmit, !text.isEmpty else { return }
-        draft = ""
         run {
             guard let runtime = self.runtime else { return }
             let instant = self.now()
@@ -313,6 +312,9 @@ public final class HobWorkspaceController: ObservableObject {
             )
             switch response.outcome.disposition {
             case .applied:
+                if self.draft.trimmingCharacters(in: .whitespacesAndNewlines) == text {
+                    self.draft = ""
+                }
                 try await self.cleanupCalendarEventsIfNeeded()
                 try await self.cleanupNotificationsIfNeeded()
                 _ = try await runtime.proposeSchedule(
