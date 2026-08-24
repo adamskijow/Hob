@@ -60,6 +60,7 @@ public struct HobWorkspaceView: View {
     @StateObject private var controller: HobWorkspaceController
     @AppStorage("hob.onboarding.completed.v1") private var onboardingCompleted = false
     @State private var showsOnboarding = false
+    @State private var showsCalendarSettings = false
     @State private var selectedTab: WorkspaceTab = .today
     @State private var selectedDigestItem: RuntimeMorningDigestItem?
     @State private var editedDigestTitle = ""
@@ -117,6 +118,9 @@ public struct HobWorkspaceView: View {
                 onboardingCompleted = true
                 showsOnboarding = false
             }
+        }
+        .sheet(isPresented: $showsCalendarSettings) {
+            HobCalendarSettingsView(controller: controller)
         }
     }
 
@@ -208,15 +212,27 @@ public struct HobWorkspaceView: View {
     }
 
     @ViewBuilder private var calendarMenuItems: some View {
-        switch controller.calendarAuthorization {
-        case .fullAccess:
-            Label("Connected", systemImage: "checkmark.circle.fill")
-        case .notDetermined:
-            Button("Connect", systemImage: "calendar.badge.plus") {
-                controller.requestCalendarAccess()
+        Toggle(
+            "Calendar integration",
+            isOn: Binding(
+                get: { controller.calendarIntegrationEnabled },
+                set: { controller.setCalendarIntegrationEnabled($0) }
+            )
+        )
+        if controller.calendarIntegrationEnabled {
+            switch controller.calendarAuthorization {
+            case .fullAccess:
+                Button("Plans around: \(controller.inputCalendarSummary)") {
+                    showsCalendarSettings = true
+                }
+                Button("Adds to: \(controller.outputCalendarSummary)") {
+                    showsCalendarSettings = true
+                }
+            case .notDetermined:
+                Label("Waiting for access", systemImage: "calendar.badge.plus")
+            case .denied, .restricted:
+                Label("Needs access in Settings", systemImage: "exclamationmark.triangle")
             }
-        case .denied, .restricted:
-            Label("Needs access in Settings", systemImage: "exclamationmark.triangle")
         }
         if controller.calendarCleanupPending {
             Button("Remove old Hob blocks") {
@@ -440,16 +456,25 @@ public struct HobWorkspaceView: View {
             Button {
                 controller.adoptProposal()
             } label: {
-                Label("Add to Calendar", systemImage: "calendar.badge.plus")
+                Label(
+                    controller.calendarIntegrationEnabled ? "Add to Calendar" : "Use schedule",
+                    systemImage: controller.calendarIntegrationEnabled
+                        ? "calendar.badge.plus" : "checkmark.circle"
+                )
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
             .disabled(
                 proposal.blocks.isEmpty
                     || controller.isWorking
-                    || controller.calendarAuthorization != .fullAccess
+                    || (controller.calendarIntegrationEnabled
+                        && controller.calendarAuthorization != .fullAccess)
             )
-            .accessibilityHint("Adds every displayed time block to your default calendar")
+            .accessibilityHint(
+                controller.calendarIntegrationEnabled
+                    ? "Adds every displayed time block to your chosen calendar"
+                    : "Adopts the displayed schedule without changing Calendar"
+            )
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
@@ -493,7 +518,7 @@ public struct HobWorkspaceView: View {
             VStack(alignment: .leading, spacing: 14) {
                 Label("Review schedule changes", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
                     .font(.title2.bold())
-                Text("Your Calendar stays unchanged until you accept.")
+                Text("The current schedule stays unchanged until you accept.")
                     .foregroundStyle(.secondary)
                 ForEach(diff.changes) { change in
                     HStack(alignment: .top, spacing: 10) {
@@ -510,7 +535,10 @@ public struct HobWorkspaceView: View {
                     }
                 }
                 HStack {
-                    Button("Update Calendar") {
+                    Button(
+                        controller.calendarIntegrationEnabled
+                            ? "Update Calendar" : "Update schedule"
+                    ) {
                         controller.adoptProposal()
                     }
                     .buttonStyle(.borderedProminent)
@@ -690,5 +718,113 @@ public struct HobWorkspaceView: View {
         let startTime = start.formatted(date: .omitted, time: .shortened)
         let endTime = end.formatted(date: .omitted, time: .shortened)
         return "\(day), \(startTime)–\(endTime)"
+    }
+}
+
+private struct HobCalendarSettingsView: View {
+    @ObservedObject var controller: HobWorkspaceController
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Toggle(
+                        "All calendars",
+                        isOn: Binding(
+                            get: { controller.usesAllInputCalendars },
+                            set: { controller.setUsesAllInputCalendars($0) }
+                        )
+                    )
+                    if !controller.usesAllInputCalendars {
+                        ForEach(controller.calendars) { calendar in
+                            Toggle(
+                                isOn: Binding(
+                                    get: {
+                                        controller.inputCalendarIDs?.contains(calendar.id) == true
+                                    },
+                                    set: {
+                                        controller.setInputCalendar(calendar.id, included: $0)
+                                    }
+                                )
+                            ) {
+                                calendarLabel(calendar)
+                            }
+                        }
+                        if controller.unavailableInputCalendarCount > 0 {
+                            Button(
+                                "Remove unavailable calendars",
+                                systemImage: "exclamationmark.triangle"
+                            ) {
+                                controller.removeUnavailableInputCalendars()
+                            }
+                            .foregroundStyle(.orange)
+                        }
+                    }
+                    Toggle(
+                        "All-day events block time",
+                        isOn: Binding(
+                            get: { controller.blockAllDayEvents },
+                            set: { controller.setBlockAllDayEvents($0) }
+                        )
+                    )
+                } header: {
+                    Text("Plans around")
+                } footer: {
+                    Text("Hob uses event times, not titles, while planning.")
+                }
+
+                Section {
+                    Picker(
+                        "Calendar",
+                        selection: Binding<String?>(
+                            get: { controller.outputCalendarID },
+                            set: { controller.setOutputCalendar($0) }
+                        )
+                    ) {
+                        Text("Apple default").tag(Optional<String>.none)
+                        if let selected = controller.outputCalendarID,
+                           !controller.calendars.contains(where: { $0.id == selected }) {
+                            Text("Unavailable calendar").tag(Optional(selected))
+                        }
+                        ForEach(controller.calendars.filter(\.allowsContentModifications)) { calendar in
+                            Text("\(calendar.title) — \(calendar.sourceTitle)")
+                                .tag(Optional(calendar.id))
+                        }
+                    }
+                    Button("Create Hob calendar", systemImage: "calendar.badge.plus") {
+                        controller.createHobCalendar()
+                    }
+                    .disabled(controller.isWorking)
+                } header: {
+                    Text("Adds schedules to")
+                } footer: {
+                    Text("The Hob calendar uses the same account as your Apple default calendar.")
+                }
+            }
+            .navigationTitle("Calendar")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                    .disabled(controller.isWorking)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .interactiveDismissDisabled(controller.isWorking)
+        .onDisappear { controller.applyCalendarSettings() }
+    }
+
+    private func calendarLabel(
+        _ calendar: RuntimeCalendarDescriptor
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(calendar.title)
+            Text(calendar.sourceTitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 }

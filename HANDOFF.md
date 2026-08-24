@@ -12,13 +12,13 @@ Nothing has been uploaded to TestFlight or either App Store.
 ## Exact state
 
 - Branch: `main`
-- Current commit before this docs update: `8018506`
+- Calendar increment base commit: `605d69a`
 - Native app version: `0.1` build `1`
 - Latest public tag: `v0.9.13`, for the legacy Open Local edition
-- Tests: 484 Python and 55 native
-- CI: green on Ubuntu and macOS at `8018506`
-- iPhone: signed current build installed; launch it manually if the phone was locked
-- Mac: signed app installed at `/Applications/Hob.app`; rebuild it after shared UI changes
+- Tests: 484 Python and 62 native
+- CI: green on Ubuntu and macOS at `605d69a`; recheck after this increment
+- iPhone: signed current calendar build installed; relaunch was blocked by the lock screen
+- Mac: signed current calendar build installed at `/Applications/Hob.app`
 - Legacy `com.local.hob` and `com.local.hob.menu` login agents: disabled and retired
 - Hob's old `qwen2.5:14b-instruct` Ollama model: removed; other models untouched
 
@@ -39,23 +39,23 @@ Retired launch-agent files are under
 - Verified `Take Willow to get her haircut at 230` produces one model action at
   `14:30` in a live Foundation Models smoke test.
 - Compacted the proposed schedule card and installed that build on the iPhone.
+- Added opt-in Apple Calendar integration, off by default, with per-device
+  choices in the gear menu.
+- Planning can use all calendars or a chosen set, including shared and
+  subscribed calendars already connected to Apple Calendar.
+- Adopted plans go to the chosen writable calendar. Hob can create a dedicated
+  calendar in the same account as Apple's default calendar.
+- All-day blocking is optional. Free and cancelled events no longer block time.
+- Calendar selection fails closed if a chosen calendar disappears.
 
-## Next bug
+## Next verification
 
-The latest screenshot still displayed that `230` task at `9:00 AM`. The model
-smoke test returned `14:30`, and the scheduler fixes tasks that retain
-`RuntimeTask.dueTime`. Trace the value through:
-
-1. `FoundationModelInterpreter`
-2. `RuntimeAction.time`
-3. `RuntimeTask.dueTime`
-4. persisted and iCloud-merged task state
-5. `RuntimeScheduleEngine`
-6. the rendered proposal
-
-Add an end-to-end regression using the exact sentence. Do not solve it with a
-phrase list. Free-form meaning belongs to Foundation Models; code validates and
-applies typed output.
+On each device, open gear > Calendar, turn integration on, choose the planning
+calendars and output calendar, then add an event to a shared or subscribed
+calendar. Confirm the next proposal avoids it and an adopted plan appears in
+the chosen output calendar.
+The settings sheet still needs a visual pass because the Mac was locked during
+this increment.
 
 ## Product rules
 
@@ -94,6 +94,6 @@ Keep builds on the paired Mac and iPhone. Do not upload, archive for
 distribution, create TestFlight builds, or submit to a Store without fresh user
 approval.
 
-Before 1.0: close the time-preservation bug, rehearse two-device offline sync,
-test restart and notification actions, finish VoiceOver and large-text checks,
-then prepare Store metadata and distribution signing.
+Before 1.0: rehearse shared-calendar and two-device offline flows, test restart
+and notification actions, finish VoiceOver and large-text checks, then prepare
+Store metadata and distribution signing.

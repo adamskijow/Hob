@@ -30,6 +30,11 @@ public final class HobWorkspaceController: ObservableObject {
     @Published public private(set) var notice: String?
     @Published public private(set) var errorMessage: String?
     @Published public private(set) var calendarAuthorization: RuntimeCalendarAuthorization
+    @Published public private(set) var calendarIntegrationEnabled: Bool
+    @Published public private(set) var calendars: [RuntimeCalendarDescriptor] = []
+    @Published public private(set) var inputCalendarIDs: Set<String>?
+    @Published public private(set) var outputCalendarID: String?
+    @Published public private(set) var blockAllDayEvents: Bool
     @Published public private(set) var calendarCleanupPending = false
     @Published public private(set) var notificationAuthorization: RuntimeNotificationAuthorization
     @Published public private(set) var notificationCleanupPending = false
@@ -58,6 +63,10 @@ public final class HobWorkspaceController: ObservableObject {
     private enum DefaultsKey {
         static let morningDigestEnabled = "hob.morning.digest.enabled"
         static let morningDigestTime = "hob.morning.digest.time"
+        static let calendarIntegrationEnabled = "hob.calendar.integration.enabled"
+        static let inputCalendarIDs = "hob.calendar.input.ids"
+        static let outputCalendarID = "hob.calendar.output.id"
+        static let blockAllDayEvents = "hob.calendar.block.all.day"
     }
 
     public convenience init() {
@@ -137,6 +146,18 @@ public final class HobWorkspaceController: ObservableObject {
         self.interpreter = interpreter
         self.calendarStore = calendarStore
         self.calendarAuthorization = calendarStore.authorization
+        self.calendarIntegrationEnabled = defaults.bool(
+            forKey: DefaultsKey.calendarIntegrationEnabled
+        )
+        if defaults.object(forKey: DefaultsKey.inputCalendarIDs) != nil {
+            self.inputCalendarIDs = Set(
+                defaults.stringArray(forKey: DefaultsKey.inputCalendarIDs) ?? []
+            )
+        } else {
+            self.inputCalendarIDs = nil
+        }
+        self.outputCalendarID = defaults.string(forKey: DefaultsKey.outputCalendarID)
+        self.blockAllDayEvents = defaults.bool(forKey: DefaultsKey.blockAllDayEvents)
         self.notificationStore = notificationStore
         self.notificationAuthorization = notificationStore.authorization
         self.syncStore = syncStore
@@ -186,6 +207,71 @@ public final class HobWorkspaceController: ObservableObject {
 
     public static let validMorningDigestTimes = ["06:00", "07:00", "08:00", "09:00"]
 
+    public var usesAllInputCalendars: Bool { inputCalendarIDs == nil }
+
+    public var inputCalendarSummary: String {
+        guard let inputCalendarIDs else { return "All calendars" }
+        if inputCalendarIDs.isEmpty { return "None" }
+        return inputCalendarIDs.count == 1
+            ? calendars.first(where: { inputCalendarIDs.contains($0.id) })?.title ?? "1 calendar"
+            : "\(inputCalendarIDs.count) calendars"
+    }
+
+    public var outputCalendarSummary: String {
+        guard let outputCalendarID else { return "Apple default" }
+        return calendars.first(where: { $0.id == outputCalendarID })?.title
+            ?? "Choose a calendar"
+    }
+
+    public var unavailableInputCalendarCount: Int {
+        guard let inputCalendarIDs else { return 0 }
+        return inputCalendarIDs.subtracting(calendars.map(\.id)).count
+    }
+
+    public func setCalendarIntegrationEnabled(_ enabled: Bool) {
+        if !enabled {
+            calendarIntegrationEnabled = false
+            defaults.set(false, forKey: DefaultsKey.calendarIntegrationEnabled)
+            run {
+                if self.tasks.contains(where: { $0.status == "open" }),
+                   let runtime = self.runtime {
+                    _ = try await runtime.proposeSchedule(
+                        try self.scheduleRequest(at: self.now())
+                    )
+                    await self.refresh()
+                }
+                self.notice = self.adoptedSchedule?.calendarEventIDs.isEmpty == false
+                    ? "Calendar integration off. Existing Hob events stay in Calendar."
+                    : "Calendar integration off."
+            }
+            return
+        }
+        run {
+            let authorization = self.calendarStore.authorization == .notDetermined
+                ? try await self.calendarStore.requestAccess()
+                : self.calendarStore.authorization
+            self.calendarAuthorization = authorization
+            guard authorization == .fullAccess else {
+                self.calendarIntegrationEnabled = false
+                self.defaults.set(false, forKey: DefaultsKey.calendarIntegrationEnabled)
+                self.errorMessage = "Calendar access is off. Enable full access in Settings."
+                return
+            }
+            self.calendarIntegrationEnabled = true
+            self.defaults.set(true, forKey: DefaultsKey.calendarIntegrationEnabled)
+            self.refreshCalendarChoices()
+            try await self.cleanupCalendarEventsIfNeeded()
+            self.notice = "Calendar integration on."
+            if self.tasks.contains(where: { $0.status == "open" }),
+               let runtime = self.runtime {
+                _ = try await runtime.proposeSchedule(
+                    try self.scheduleRequest(at: self.now())
+                )
+                await self.refresh()
+            }
+        }
+    }
+
     public func setMorningDigestEnabled(_ enabled: Bool) {
         morningDigestEnabled = enabled
         defaults.set(enabled, forKey: DefaultsKey.morningDigestEnabled)
@@ -197,6 +283,69 @@ public final class HobWorkspaceController: ObservableObject {
         morningDigestTime = time
         defaults.set(time, forKey: DefaultsKey.morningDigestTime)
         Task { await refreshMorningDigestNotifications() }
+    }
+
+    public func setUsesAllInputCalendars(_ usesAll: Bool) {
+        inputCalendarIDs = usesAll ? nil : Set(calendars.map(\.id))
+        persistCalendarPreferences()
+    }
+
+    public func setInputCalendar(_ calendarID: String, included: Bool) {
+        var selected = inputCalendarIDs ?? Set(calendars.map(\.id))
+        if included {
+            selected.insert(calendarID)
+        } else {
+            selected.remove(calendarID)
+        }
+        inputCalendarIDs = selected
+        persistCalendarPreferences()
+    }
+
+    public func removeUnavailableInputCalendars() {
+        guard let inputCalendarIDs else { return }
+        self.inputCalendarIDs = inputCalendarIDs.intersection(calendars.map(\.id))
+        persistCalendarPreferences()
+    }
+
+    public func setOutputCalendar(_ calendarID: String?) {
+        guard calendarID == nil || calendars.contains(where: {
+            $0.id == calendarID && $0.allowsContentModifications
+        }) else { return }
+        outputCalendarID = calendarID
+        persistCalendarPreferences()
+    }
+
+    public func setBlockAllDayEvents(_ blocks: Bool) {
+        blockAllDayEvents = blocks
+        persistCalendarPreferences()
+    }
+
+    public func createHobCalendar() {
+        run {
+            let calendar = try self.calendarStore.createHobCalendar()
+            self.refreshCalendarChoices()
+            self.outputCalendarID = calendar.id
+            self.persistCalendarPreferences()
+            self.notice = "Hob calendar ready."
+        }
+    }
+
+    public func applyCalendarSettings() {
+        run {
+            self.refreshCalendarChoices()
+            guard let runtime = self.runtime,
+                  self.tasks.contains(where: { $0.status == "open" }) else {
+                self.notice = "Calendar settings updated."
+                return
+            }
+            _ = try await runtime.proposeSchedule(
+                try self.scheduleRequest(at: self.now())
+            )
+            self.notice = self.adoptedSchedule == nil
+                ? "Schedule updated for your calendars."
+                : "Review the schedule changes before updating Calendar."
+            await self.refresh()
+        }
     }
 
     public func markDone(taskID: String) {
@@ -352,10 +501,18 @@ public final class HobWorkspaceController: ObservableObject {
         run {
             guard let runtime = self.runtime else { return }
             try await self.cleanupCalendarEventsIfNeeded()
-            guard self.calendarStore.authorization == .fullAccess else {
-                throw RuntimeCalendarError.permissionDenied
+            let eventIDs: [String]
+            if self.calendarIntegrationEnabled {
+                guard self.calendarStore.authorization == .fullAccess else {
+                    throw RuntimeCalendarError.permissionDenied
+                }
+                eventIDs = try self.calendarStore.write(
+                    proposal,
+                    calendarID: self.outputCalendarID
+                )
+            } else {
+                eventIDs = []
             }
-            let eventIDs = try self.calendarStore.write(proposal)
             var notificationIDs: [String] = []
             do {
                 if self.notificationStore.authorization == .authorized {
@@ -378,9 +535,15 @@ public final class HobWorkspaceController: ObservableObject {
             await self.refresh()
             try await self.cleanupCalendarEventsIfNeeded()
             try await self.cleanupNotificationsIfNeeded()
-            self.notice = notificationIDs.isEmpty
-                ? "Calendar schedule updated. Notifications are off."
-                : "Calendar schedule updated with start reminders."
+            if self.calendarIntegrationEnabled {
+                self.notice = notificationIDs.isEmpty
+                    ? "Calendar schedule updated. Notifications are off."
+                    : "Calendar schedule updated with start reminders."
+            } else {
+                self.notice = notificationIDs.isEmpty
+                    ? "Schedule adopted. Notifications are off."
+                    : "Schedule adopted with start reminders."
+            }
             await self.refresh()
         }
     }
@@ -390,7 +553,7 @@ public final class HobWorkspaceController: ObservableObject {
         run {
             guard let runtime = self.runtime else { return }
             try await runtime.discardScheduleProposal(proposalID: proposal.id)
-            self.notice = "Kept the current Calendar schedule."
+            self.notice = "Kept the current schedule."
             await self.refresh()
         }
     }
@@ -398,6 +561,7 @@ public final class HobWorkspaceController: ObservableObject {
     public func cancelAdoptedSchedule() {
         run {
             guard let runtime = self.runtime else { return }
+            let hadCalendarEvents = self.adoptedSchedule?.calendarEventIDs.isEmpty == false
             if let notificationIDs = self.adoptedSchedule?.notificationIDs {
                 self.notificationStore.cancel(notificationIDs: notificationIDs)
             }
@@ -406,7 +570,9 @@ public final class HobWorkspaceController: ObservableObject {
                 try self.calendarStore.remove(eventIDs: eventIDs)
             }
             try await runtime.cancelAdoptedSchedule()
-            self.notice = "Calendar blocks removed. Tasks remain open."
+            self.notice = hadCalendarEvents
+                ? "Calendar blocks removed. Tasks remain open."
+                : "Schedule cancelled. Tasks remain open."
             await self.refresh()
         }
     }
@@ -444,6 +610,9 @@ public final class HobWorkspaceController: ObservableObject {
         run {
             self.calendarAuthorization = try await self.calendarStore.requestAccess()
             if self.calendarAuthorization == .fullAccess {
+                self.calendarIntegrationEnabled = true
+                self.defaults.set(true, forKey: DefaultsKey.calendarIntegrationEnabled)
+                self.refreshCalendarChoices()
                 try await self.cleanupCalendarEventsIfNeeded()
                 self.notice = "Calendar connected. New plans will avoid busy time."
                 if self.tasks.contains(where: { $0.status == "open" }),
@@ -461,6 +630,8 @@ public final class HobWorkspaceController: ObservableObject {
 
     public func syncNow() {
         run {
+            self.calendarAuthorization = self.calendarStore.authorization
+            self.refreshCalendarChoices()
             self.syncAvailability = await self.syncStore.refreshAvailability()
             guard self.syncAvailability == .available else {
                 self.syncNeedsAttention = true
@@ -557,7 +728,7 @@ public final class HobWorkspaceController: ObservableObject {
 
     public func retryCalendarCleanup() {
         run {
-            try await self.cleanupCalendarEventsIfNeeded()
+            try await self.cleanupCalendarEventsIfNeeded(force: true)
             self.notice = "Old Calendar blocks removed."
             await self.refresh()
         }
@@ -616,6 +787,7 @@ public final class HobWorkspaceController: ObservableObject {
         notificationCleanupPending = !snapshot.notificationCleanupIDs.isEmpty
         notificationActionsPending = !snapshot.pendingNotificationResponses.isEmpty
         calendarAuthorization = calendarStore.authorization
+        refreshCalendarChoices()
         notificationAuthorization = notificationStore.authorization
         syncAvailability = syncStore.availability
         planningPreferences = snapshot.planningPreferences
@@ -705,7 +877,9 @@ public final class HobWorkspaceController: ObservableObject {
             } catch RuntimeCalendarError.removalFailed {
                 errorMessage = "Calendar could not remove every Hob block. Try again before replanning."
             } catch RuntimeCalendarError.unavailable {
-                errorMessage = "Calendar has no writable default calendar."
+                errorMessage = "Choose a writable calendar in Calendar settings."
+            } catch RuntimeCalendarError.selectionUnavailable {
+                errorMessage = "A calendar Hob plans around is unavailable. Review Calendar settings."
             } catch RuntimeCalendarError.invalidSchedule {
                 errorMessage = "The proposed times are invalid. Build a fresh plan."
             } catch RuntimeNotificationError.permissionDenied {
@@ -732,11 +906,15 @@ public final class HobWorkspaceController: ObservableObject {
             value: 7,
             to: instant
         ) ?? instant.addingTimeInterval(7 * 86_400)
-        let busy = calendarStore.authorization == .fullAccess
+        let busy = calendarIntegrationEnabled
+            && calendarStore.authorization == .fullAccess
             ? try calendarStore.busyIntervals(
                 from: instant,
                 to: end,
-                timezone: timezone
+                timezone: timezone,
+                calendarIDs: inputCalendarIDs,
+                blockAllDayEvents: blockAllDayEvents,
+                excludingProposalID: adoptedSchedule?.proposal.id
             )
             : []
         return RuntimeScheduleRequest(
@@ -753,7 +931,38 @@ public final class HobWorkspaceController: ObservableObject {
         )
     }
 
-    private func cleanupCalendarEventsIfNeeded() async throws {
+    private func refreshCalendarChoices() {
+        guard calendarIntegrationEnabled,
+              calendarStore.authorization == .fullAccess else {
+            calendars = []
+            return
+        }
+        do {
+            calendars = try calendarStore.calendars()
+        } catch {
+            calendars = []
+        }
+    }
+
+    private func persistCalendarPreferences() {
+        if let inputCalendarIDs {
+            defaults.set(
+                inputCalendarIDs.sorted(),
+                forKey: DefaultsKey.inputCalendarIDs
+            )
+        } else {
+            defaults.removeObject(forKey: DefaultsKey.inputCalendarIDs)
+        }
+        if let outputCalendarID {
+            defaults.set(outputCalendarID, forKey: DefaultsKey.outputCalendarID)
+        } else {
+            defaults.removeObject(forKey: DefaultsKey.outputCalendarID)
+        }
+        defaults.set(blockAllDayEvents, forKey: DefaultsKey.blockAllDayEvents)
+    }
+
+    private func cleanupCalendarEventsIfNeeded(force: Bool = false) async throws {
+        guard calendarIntegrationEnabled || force else { return }
         guard let runtime else { return }
         let eventIDs = await runtime.snapshot().calendarCleanupEventIDs
         guard !eventIDs.isEmpty else { return }

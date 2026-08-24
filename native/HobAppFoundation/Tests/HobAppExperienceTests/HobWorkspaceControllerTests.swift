@@ -33,25 +33,77 @@ private final class StubCalendar: RuntimeCalendarScheduling {
     var authorization: RuntimeCalendarAuthorization = .fullAccess
     var writtenEventIDs: [String] = []
     var removedEventIDs: [String] = []
+    var writeCount = 0
+    var writtenCalendarID: String?
+    var busyRequestCount = 0
+    var requestedCalendarIDs: Set<String>?
+    var requestedBlockAllDayEvents = false
+    var excludedProposalID: String?
+    var availableCalendars = [
+        RuntimeCalendarDescriptor(
+            id: "personal",
+            title: "Personal",
+            sourceTitle: "iCloud",
+            allowsContentModifications: true,
+            isSubscribed: false
+        ),
+        RuntimeCalendarDescriptor(
+            id: "family",
+            title: "Family",
+            sourceTitle: "Subscribed",
+            allowsContentModifications: false,
+            isSubscribed: true
+        ),
+    ]
 
     func requestAccess() async throws -> RuntimeCalendarAuthorization {
         authorization
     }
 
+    func calendars() throws -> [RuntimeCalendarDescriptor] {
+        availableCalendars
+    }
+
     func busyIntervals(
         from start: Date,
         to end: Date,
-        timezone: TimeZone
+        timezone: TimeZone,
+        calendarIDs: Set<String>?,
+        blockAllDayEvents: Bool,
+        excludingProposalID: String?
     ) throws -> [RuntimeBusyInterval] {
-        [RuntimeBusyInterval(
+        busyRequestCount += 1
+        requestedCalendarIDs = calendarIDs
+        requestedBlockAllDayEvents = blockAllDayEvents
+        self.excludedProposalID = excludingProposalID
+        return [RuntimeBusyInterval(
             startAt: "2026-06-29T09:00:00-04:00",
             endAt: "2026-06-29T10:00:00-04:00"
         )]
     }
 
-    func write(_ proposal: RuntimeScheduleProposal) throws -> [String] {
+    func write(
+        _ proposal: RuntimeScheduleProposal,
+        calendarID: String?
+    ) throws -> [String] {
+        writeCount += 1
+        writtenCalendarID = calendarID
         writtenEventIDs = proposal.blocks.map { "event-\($0.id)" }
         return writtenEventIDs
+    }
+
+    func createHobCalendar() throws -> RuntimeCalendarDescriptor {
+        let calendar = RuntimeCalendarDescriptor(
+            id: "hob",
+            title: "Hob",
+            sourceTitle: "iCloud",
+            allowsContentModifications: true,
+            isSubscribed: false
+        )
+        if !availableCalendars.contains(calendar) {
+            availableCalendars.append(calendar)
+        }
+        return calendar
     }
 
     func remove(eventIDs: [String]) throws {
@@ -168,6 +220,7 @@ func naturalMessageBuildsAndAdoptsAPersistentSchedule() async throws {
     let defaults = try #require(UserDefaults(
         suiteName: "hob-workspace-tests-\(UUID().uuidString)"
     ))
+    defaults.set(true, forKey: "hob.calendar.integration.enabled")
     let controller = HobWorkspaceController(
         store: TaskStateStore(directoryURL: directory),
         interpreter: StubInterpreter(actions: [
@@ -433,6 +486,126 @@ func failedInterpretationKeepsDraftForRetry() async throws {
 
     #expect(controller.draft == message)
     #expect(controller.errorMessage == "I could not safely interpret that message. Nothing changed.")
+}
+
+@Test @MainActor
+func calendarIntegrationDefaultsOffAndSchedulesStayUsable() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("hob-calendar-off-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let now = try #require(ISO8601DateFormatter().date(
+        from: "2026-06-29T08:00:00-04:00"
+    ))
+    let calendar = StubCalendar()
+    let controller = HobWorkspaceController(
+        store: TaskStateStore(directoryURL: directory),
+        interpreter: StubInterpreter(actions: [
+            RuntimeAction(
+                type: "capture",
+                task: "finish taxes",
+                raw: "Finish taxes today",
+                when: RuntimeDateIntent(kind: "today"),
+                durationMinutes: 30
+            ),
+        ]),
+        calendarStore: calendar,
+        notificationStore: StubNotifications(),
+        syncStore: StubSync(),
+        defaults: try #require(UserDefaults(
+            suiteName: "hob-calendar-off-tests-\(UUID().uuidString)"
+        )),
+        timezone: try #require(TimeZone(identifier: "America/New_York")),
+        now: { now }
+    )
+
+    controller.draft = "Finish taxes today"
+    controller.submit()
+    try await waitUntilIdle(controller)
+    #expect(!controller.calendarIntegrationEnabled)
+    #expect(calendar.busyRequestCount == 0)
+
+    controller.adoptProposal()
+    try await waitUntilIdle(controller)
+    #expect(calendar.writeCount == 0)
+    #expect(controller.adoptedSchedule?.calendarEventIDs == [])
+}
+
+@Test @MainActor
+func calendarChoicesControlPlanningAndPersistPerDevice() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("hob-calendar-choices-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let defaults = try #require(UserDefaults(
+        suiteName: "hob-calendar-choices-tests-\(UUID().uuidString)"
+    ))
+    let now = try #require(ISO8601DateFormatter().date(
+        from: "2026-06-29T08:00:00-04:00"
+    ))
+    let calendar = StubCalendar()
+    let controller = HobWorkspaceController(
+        store: TaskStateStore(directoryURL: directory),
+        interpreter: StubInterpreter(actions: [
+            RuntimeAction(
+                type: "capture",
+                task: "finish taxes",
+                raw: "Finish taxes today",
+                when: RuntimeDateIntent(kind: "today"),
+                durationMinutes: 30
+            ),
+        ]),
+        calendarStore: calendar,
+        notificationStore: StubNotifications(),
+        syncStore: StubSync(),
+        defaults: defaults,
+        timezone: try #require(TimeZone(identifier: "America/New_York")),
+        now: { now }
+    )
+    try await Task.sleep(for: .milliseconds(30))
+
+    #expect(!controller.calendarIntegrationEnabled)
+    #expect(controller.usesAllInputCalendars)
+    #expect(controller.calendars.isEmpty)
+
+    controller.setCalendarIntegrationEnabled(true)
+    try await waitUntilIdle(controller)
+    #expect(controller.calendarIntegrationEnabled)
+    #expect(controller.calendars.map(\.id) == ["personal", "family"])
+
+    controller.setUsesAllInputCalendars(false)
+    controller.setInputCalendar("family", included: false)
+    controller.setBlockAllDayEvents(true)
+    controller.createHobCalendar()
+    try await waitUntilIdle(controller)
+    #expect(controller.outputCalendarID == "hob")
+    controller.setOutputCalendar("personal")
+
+    controller.draft = "Finish taxes today"
+    controller.submit()
+    try await waitUntilIdle(controller)
+
+    #expect(calendar.requestedCalendarIDs == ["personal"])
+    #expect(calendar.requestedBlockAllDayEvents)
+    #expect(calendar.excludedProposalID == nil)
+
+    controller.adoptProposal()
+    try await waitUntilIdle(controller)
+    #expect(calendar.writtenCalendarID == "personal")
+
+    let restored = HobWorkspaceController(
+        store: TaskStateStore(directoryURL: directory),
+        interpreter: StubInterpreter(actions: []),
+        calendarStore: StubCalendar(),
+        notificationStore: StubNotifications(),
+        syncStore: StubSync(),
+        defaults: defaults,
+        timezone: try #require(TimeZone(identifier: "America/New_York")),
+        now: { now }
+    )
+    try await Task.sleep(for: .milliseconds(30))
+    #expect(restored.calendarIntegrationEnabled)
+    #expect(restored.inputCalendarIDs == ["personal"])
+    #expect(restored.outputCalendarID == "personal")
+    #expect(restored.blockAllDayEvents)
 }
 
 private func notificationResponse(

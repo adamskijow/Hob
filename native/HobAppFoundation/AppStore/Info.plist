@@ -22,6 +22,6 @@
   <key>LSUIElement</key>
   <true/>
   <key>NSCalendarsFullAccessUsageDescription</key>
-  <string>Hob reads busy times so it does not propose work during existing commitments. Event titles never leave EventKit.</string>
+  <string>Hob reads busy times from calendars you choose. Event titles never leave EventKit.</string>
 </dict>
 </plist>

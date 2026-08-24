@@ -18,7 +18,7 @@
   <key>CFBundleVersion</key>
   <string>$(CURRENT_PROJECT_VERSION)</string>
   <key>NSCalendarsFullAccessUsageDescription</key>
-  <string>Hob reads busy times and adds only schedules you adopt.</string>
+  <string>Hob reads busy times from calendars you choose and adds only schedules you adopt.</string>
   <key>UILaunchScreen</key>
   <dict/>
   <key>UISupportedInterfaceOrientations</key>

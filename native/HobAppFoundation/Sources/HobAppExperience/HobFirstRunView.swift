@@ -58,7 +58,7 @@ struct HobFirstRunView: View {
                 .foregroundStyle(.tint)
                 .accessibilityHidden(true)
             Text("A plan you can actually follow").font(.largeTitle.bold())
-            Text("Describe the work. Hob uses Apple Intelligence on this device, finds room around your Calendar, and lets you approve every schedule change.")
+            Text("Describe the work. Hob uses Apple Intelligence on this device and builds a schedule you approve.")
             Label("Messages and Calendar details stay on this device.", systemImage: "lock.shield")
             Label("Tasks sync privately through your iCloud account.", systemImage: "icloud")
         }
@@ -90,13 +90,18 @@ struct HobFirstRunView: View {
             }
             setupRow(
                 title: "Calendar",
-                detail: controller.calendarAuthorization == .fullAccess
-                    ? "Connected" : "Avoid busy time and add approved plans",
+                detail: controller.calendarIntegrationEnabled
+                    ? "Plans around chosen calendars" : "Off by default",
                 symbol: "calendar"
             ) {
-                if controller.calendarAuthorization == .notDetermined {
-                    Button("Connect") { controller.requestCalendarAccess() }
-                }
+                Toggle(
+                    "Use Calendar",
+                    isOn: Binding(
+                        get: { controller.calendarIntegrationEnabled },
+                        set: { controller.setCalendarIntegrationEnabled($0) }
+                    )
+                )
+                .labelsHidden()
             }
             setupRow(
                 title: "Notifications",
@@ -109,7 +114,7 @@ struct HobFirstRunView: View {
                     Button("Enable") { controller.requestNotificationAccess() }
                 }
             }
-            Text("You can continue without Calendar or reminders.")
+            Text("Calendar and reminders are optional.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             if let notice = controller.notice {
@@ -162,7 +167,7 @@ struct HobFirstRunView: View {
                 .accessibilityHidden(true)
             Text("Ready").font(.largeTitle.bold())
             Text("Try: “Finish taxes by Friday, high priority, about 90 minutes.”")
-            Text("Hob proposes a timeline first. Your Calendar changes only when you approve it.")
+            Text("Hob proposes a timeline first. Calendar changes require approval when integration is on.")
                 .foregroundStyle(.secondary)
             if !controller.modelReadiness.isReady {
                 Label("Apple Intelligence must be ready before Hob can interpret tasks.", systemImage: "exclamationmark.triangle")

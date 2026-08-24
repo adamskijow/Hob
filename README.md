@@ -25,9 +25,9 @@ edition stays in the repository for migration and regression coverage.
 ## What it does
 
 - Captures tasks, dates, deadlines, priority, and effort from one message.
-- Plans work around working hours and Calendar availability.
+- Optionally plans around selected Apple calendars, including shared and subscribed calendars.
 - Keeps today current and sends an optional matching morning notification.
-- Adds an approved plan to Calendar, then supports cancellation and replanning.
+- Adopts plans locally or adds them to a chosen calendar.
 - Sends optional start reminders with Done, Snooze, and Replan actions.
 - Syncs tasks privately between iPhone and Mac through iCloud.
 - Preserves schedules, undo, and recovery state across restarts.

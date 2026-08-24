@@ -14,10 +14,12 @@ Hob builds a timeline from:
 - working days and hours;
 - default task length and transition time;
 - stated dates, fixed times, deadlines, priority, and effort;
-- opaque Calendar busy intervals.
+- optional opaque Calendar busy intervals.
 
-The proposal shows scheduled and unscheduled work. Calendar remains unchanged
-until **Add to Calendar** is selected.
+The proposal shows scheduled and unscheduled work. Calendar integration defaults
+off. When enabled, its settings choose which calendars protect time and where
+approved blocks are added. Shared and subscribed calendars work through Apple
+Calendar. All-day blocking is optional.
 
 The Today tab keeps the current day's plan visible as a living morning digest.
 It refreshes after captures, replans, completions, and iCloud sync. Detailed
@@ -53,8 +55,6 @@ and manual sync live in the gear menu.
 
 - Local development installs only; no TestFlight or Store build exists.
 - Sync and accessibility still need final two-device manual rehearsals.
-- The latest `230` screenshot exposed a possible loss of fixed time between
-  interpretation and proposal rendering; see [Handoff](../HANDOFF.md).
 
 The previous Telegram feature set remains documented in historical release
 audits.

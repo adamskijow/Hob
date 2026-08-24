@@ -29,9 +29,11 @@ are forbidden. Deterministic code may handle closed identifiers and protocols.
 ## Scheduling
 
 Tasks carry a work date, optional fixed time, deadline, duration, and priority.
-The scheduler applies working days, hours, transition time, and opaque Calendar
-busy intervals. A proposal remains separate from adoption. Only explicit
-adoption writes Calendar events or start reminders.
+The scheduler applies working days, hours, transition time, and optional opaque
+busy intervals from selected Apple calendars. Free and cancelled events are
+ignored; all-day blocking is optional. A proposal remains separate from
+adoption. Adoption stays local when Calendar integration is off. When enabled,
+it writes blocks to the chosen writable calendar. Start reminders are separate.
 
 ## Persistence and sync
 

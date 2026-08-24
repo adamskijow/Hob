@@ -72,5 +72,9 @@ let package = Package(
                 "HobAppCore", "HobAppStorage", "HobAppExperience",
             ]
         ),
+        .testTarget(
+            name: "HobCalendarTests",
+            dependencies: ["HobCalendar"]
+        ),
     ]
 )
