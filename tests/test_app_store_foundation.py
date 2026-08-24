@@ -186,8 +186,8 @@ def test_replanning_keeps_calendar_stable_until_the_diff_is_accepted():
 
     assert "RuntimeScheduleDiff" in schedule
     assert 'Label("Review schedule changes"' in workspace
-    assert 'Text("Your Calendar stays unchanged until you accept.")' in workspace
-    assert 'Button("Update Calendar")' in workspace
+    assert 'Text("The current schedule stays unchanged until you accept.")' in workspace
+    assert '? "Update Calendar" : "Update schedule"' in workspace
     assert 'Button("Keep current schedule")' in workspace
 
 
