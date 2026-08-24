@@ -205,7 +205,17 @@ public final class HobWorkspaceController: ObservableObject {
         return RuntimeScheduleDiff(current: current, proposed: proposal)
     }
 
-    public static let validMorningDigestTimes = ["06:00", "07:00", "08:00", "09:00"]
+    public static let validMorningDigestTimes = (0..<24).map {
+        String(format: "%02d:00", $0)
+    }
+
+    public static func morningDigestTimeLabel(_ time: String) -> String {
+        guard let hour = Int(time.prefix(2)), (0..<24).contains(hour) else {
+            return time
+        }
+        let displayHour = hour % 12 == 0 ? 12 : hour % 12
+        return "\(displayHour):00 \(hour < 12 ? "AM" : "PM")"
+    }
 
     public var usesAllInputCalendars: Bool { inputCalendarIDs == nil }
 

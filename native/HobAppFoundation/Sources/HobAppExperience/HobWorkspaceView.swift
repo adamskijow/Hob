@@ -191,18 +191,28 @@ public struct HobWorkspaceView: View {
                 set: { controller.setMorningDigestEnabled($0) }
             )
         )
-        Picker(
-            "Time",
-            selection: Binding(
-                get: { controller.morningDigestTime },
-                set: { controller.setMorningDigestTime($0) }
+        Menu {
+            ForEach(HobWorkspaceController.validMorningDigestTimes, id: \.self) { time in
+                Button {
+                    controller.setMorningDigestTime(time)
+                } label: {
+                    if time == controller.morningDigestTime {
+                        Label(
+                            HobWorkspaceController.morningDigestTimeLabel(time),
+                            systemImage: "checkmark"
+                        )
+                    } else {
+                        Text(HobWorkspaceController.morningDigestTimeLabel(time))
+                    }
+                }
+            }
+        } label: {
+            Label(
+                "Digest time: \(HobWorkspaceController.morningDigestTimeLabel(controller.morningDigestTime))",
+                systemImage: "clock"
             )
-        ) {
-            Text("6:00 AM").tag("06:00")
-            Text("7:00 AM").tag("07:00")
-            Text("8:00 AM").tag("08:00")
-            Text("9:00 AM").tag("09:00")
         }
+        .disabled(!controller.morningDigestEnabled)
         if controller.morningDigestEnabled,
            controller.notificationAuthorization != .authorized {
             Label("Enable notifications below", systemImage: "bell.slash")

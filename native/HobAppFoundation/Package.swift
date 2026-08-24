@@ -76,5 +76,9 @@ let package = Package(
             name: "HobCalendarTests",
             dependencies: ["HobCalendar"]
         ),
+        .testTarget(
+            name: "HobAppleIntelligenceTests",
+            dependencies: ["HobAppleIntelligence"]
+        ),
     ]
 )

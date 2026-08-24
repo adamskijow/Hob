@@ -95,6 +95,11 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         accomplishments changes no task. In an all/everything report, excluded
         tasks remain open. Scheduling existing work moves it; scheduling a new
         obligation adds it. Call each necessary tool once. Never invent effects.
+        Compact coordination can state several obligations. Create one tool call
+        per distinct appointment or task. Pair coordinated people or objects with
+        coordinated dates and clocks in order, including pairings expressed with
+        "respectively". Keep every other obligation and its clock out of each
+        individual task label.
         """
         var succeeded = false
         for _ in 0..<2 where !succeeded {
@@ -140,8 +145,10 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 _ = try? await LanguageModelSession(
                     tools: [Capture(collector: collector)],
                     instructions: """
-                    Extract only genuinely new obligations from the user message.
-                    Call add_new_task once per new task. Existing-task effects,
+                    Extract every genuinely new obligation from the user message.
+                    Call add_new_tasks once with one item per distinct task or
+                    appointment. Preserve ordered pairings between coordinated
+                    people, objects, dates, and clocks. Existing-task effects,
                     reports, replies, and bulk instructions are not new tasks.
                     Copy supporting evidence only from the user message. Call no
                     tool if there is no new task.
@@ -149,8 +156,35 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 ).respond(to: prompt)
             }
         }
+        var reviewed = await collector.values()
+        var captures = reviewed.compactMap { proposal -> CaptureArgs? in
+            if case .capture(let value) = proposal { return value }
+            return nil
+        }
+        if captures.isEmpty, open.isEmpty {
+            captures = try await extractNewCaptures(
+                message: message, now: now, timezone: timezone
+            )
+            if !captures.isEmpty {
+                reviewed = captures.map(Proposal.capture)
+            }
+        }
+        if let first = captures.first,
+           clockCandidateCount(in: message) >= 2,
+           coordinatedCapturesNeedReview(captures) {
+            if let refined = try await refineCoordinatedCapture(
+                first, message: message, now: now, timezone: timezone
+            ) {
+                reviewed.removeAll {
+                    if case .capture = $0 { return true }; return false
+                }
+                reviewed += refined.map(Proposal.capture)
+            } else {
+                throw RuntimeInterpretationError.invalidOutput
+            }
+        }
         return try await validate(
-            await collector.values(), message: message, open: open,
+            reviewed, message: message, open: open,
             recentChange: recentChange
         )
     }
@@ -543,6 +577,399 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     }
 
     @available(iOS 26.0, macOS 26.0, *)
+    private static func extractNewCaptures(
+        message: String,
+        now: String,
+        timezone: String
+    ) async throws -> [CaptureArgs] {
+        for _ in 0..<2 {
+            do {
+                let response = try await LanguageModelSession(
+                    instructions: """
+                    Extract every genuinely new obligation into the returned
+                    list, with one item per distinct task or appointment. Pair
+                    coordinated people or objects with coordinated dates and
+                    clocks in order. Keep constraints out of task labels. Return
+                    an empty list for a reply, status report, or replan request.
+                    """
+                ).respond(to: """
+                    Current instant: \(now)
+                    Timezone: \(timezone)
+                    User message: \(message)
+                    """, generating: CaptureBatchArgs.self)
+                let result = response.content.tasks
+                if !result.isEmpty { return result }
+            } catch {}
+        }
+        return []
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func refineCoordinatedCapture(
+        _ initial: CaptureArgs,
+        message: String,
+        now: String,
+        timezone: String
+    ) async throws -> [CaptureArgs]? {
+        if clockCandidateCount(in: message) == 2 {
+            var confirmedPair: CoordinatedClockPairArgs?
+            for _ in 0..<4 {
+                do {
+                    let response = try await LanguageModelSession(
+                        instructions: """
+                        Classify how two clock expressions work in the user's
+                        sentence. A time range belongs to one obligation. Two
+                        coordinated appointments paired in order, including with
+                        "respectively", are two obligations. For two appointments,
+                        isolate each label and its exact single clock. Never put
+                        both people, both objects, or both clocks in one label.
+                        """
+                    ).respond(to: """
+                        Current instant: \(now)
+                        Timezone: \(timezone)
+                        User message: \(message)
+                        Initial merged task: \(initial.task)
+                        """, generating: CoordinatedClockPairArgs.self)
+                    if response.content.kind == "one_time_range" { continue }
+                    let pair = response.content
+                    confirmedPair = pair
+                    if let labels = structurallySeparateCoordinatedLabels(in: message) {
+                        let items = [
+                            CaptureDecompositionItem(
+                                task: labels.0.task,
+                                evidence: labels.0.evidence,
+                                clockText: pair.firstClockText,
+                                clockInterpretation: pair.firstClockInterpretation
+                            ),
+                            CaptureDecompositionItem(
+                                task: labels.1.task,
+                                evidence: labels.1.evidence,
+                                clockText: pair.secondClockText,
+                                clockInterpretation: pair.secondClockInterpretation
+                            ),
+                        ]
+                        let result = items.map { capture($0, inheriting: initial) }
+                        if coordinatedCapturesAreOrdered(result, message: message),
+                           !coordinatedCapturesNeedReview(result) {
+                            return result
+                        }
+                    }
+                    guard let firstLabel = try await isolateCoordinatedLabel(
+                        position: "first", message: message
+                    ), let secondLabel = try await isolateCoordinatedLabel(
+                        position: "second", message: message
+                    ), coordinatedLabelsAreOrdered(
+                        firstLabel, secondLabel: secondLabel, message: message
+                    ) else { continue }
+                    let labels = separateCoordinatedLabels(
+                        firstLabel, secondLabel: secondLabel, message: message
+                    )
+                    let items = [
+                        CaptureDecompositionItem(
+                            task: labels.0.task,
+                            evidence: labels.0.evidence,
+                            clockText: pair.firstClockText,
+                            clockInterpretation: pair.firstClockInterpretation
+                        ),
+                        CaptureDecompositionItem(
+                            task: labels.1.task,
+                            evidence: labels.1.evidence,
+                            clockText: pair.secondClockText,
+                            clockInterpretation: pair.secondClockInterpretation
+                        ),
+                    ]
+                    let result = items.map {
+                        capture($0, inheriting: initial)
+                    }
+                    if !coordinatedCapturesNeedReview(result) { return result }
+                } catch {}
+            }
+            if let pair = confirmedPair,
+               let labels = structurallySeparateCoordinatedLabels(in: message) {
+                let items = [
+                    CaptureDecompositionItem(
+                        task: labels.0.task,
+                        evidence: labels.0.evidence,
+                        clockText: pair.firstClockText,
+                        clockInterpretation: pair.firstClockInterpretation
+                    ),
+                    CaptureDecompositionItem(
+                        task: labels.1.task,
+                        evidence: labels.1.evidence,
+                        clockText: pair.secondClockText,
+                        clockInterpretation: pair.secondClockInterpretation
+                    ),
+                ]
+                let result = items.map { capture($0, inheriting: initial) }
+                if coordinatedCapturesAreOrdered(result, message: message),
+                   !coordinatedCapturesNeedReview(result) {
+                    return result
+                }
+            }
+        }
+        for _ in 0..<4 {
+            do {
+                let response = try await LanguageModelSession(
+                    instructions: """
+                    Audit a possibly merged new-task extraction. Return the
+                    complete final set of distinct obligations. A clause shaped
+                    like "meet A and B at X and Y
+                    respectively" contains two appointments: A at X, then B at
+                    Y. Apply that grammar generally. Keep constraints out of task
+                    labels. A real time range can remain one task. Never invent.
+                    """
+                ).respond(to: """
+                    Current instant: \(now)
+                    Timezone: \(timezone)
+                    User message: \(message)
+                    Initial task: \(initial.task)
+                    Initial clock: \(initial.clockText)
+                    """, generating: CaptureDecompositionArgs.self)
+                let result = response.content.tasks.map {
+                    capture($0, inheriting: initial)
+                }
+                if result.count == 2,
+                   coordinatedCapturesAreOrdered(result, message: message),
+                   !coordinatedCapturesNeedReview(result) { return result }
+            } catch {}
+        }
+        return nil
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func isolateCoordinatedLabel(
+        position: String,
+        message: String
+    ) async throws -> GroundedCaptureLabel? {
+        for _ in 0..<4 {
+            do {
+                let response = try await LanguageModelSession(
+                    instructions: """
+                    The sentence contains two coordinated appointments in order.
+                    Return only the \(position) appointment's short action label
+                    and exact naming words. In "meet A and B at X and Y
+                    respectively", the first label is "Meet A" and the second is
+                    "Meet B". Exclude the other appointment and every clock.
+                    """
+                ).respond(
+                    to: "User message: \(message)",
+                    generating: CaptureLabelArgs.self
+                )
+                let task = response.content.task.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                if let grounded = groundedLabel(task, in: message),
+                   clockCandidateCount(in: task) == 0 {
+                    return grounded
+                }
+            } catch {}
+        }
+        return nil
+    }
+
+    private static func groundedLabel(
+        _ task: String,
+        in message: String
+    ) -> GroundedCaptureLabel? {
+        let taskWords = words(task).filter { $0.count >= 3 }
+        guard !taskWords.isEmpty else { return nil }
+        let matches = taskWords.compactMap { word -> (String.Index, String)? in
+            guard let range = message.range(
+                of: word, options: [.caseInsensitive, .diacriticInsensitive]
+            ) else { return nil }
+            return (range.lowerBound, String(message[range]))
+        }
+        guard matches.count * 2 >= taskWords.count,
+              let anchor = matches.max(by: { $0.0 < $1.0 })?.1
+        else { return nil }
+        return GroundedCaptureLabel(task: task, evidence: anchor)
+    }
+
+    private static func coordinatedLabelsAreOrdered(
+        _ firstLabel: GroundedCaptureLabel,
+        secondLabel: GroundedCaptureLabel,
+        message: String
+    ) -> Bool {
+        guard let firstRange = message.range(
+            of: firstLabel.evidence,
+            options: [.caseInsensitive, .diacriticInsensitive]
+        ), let secondRange = message.range(
+            of: secondLabel.evidence,
+            options: [.caseInsensitive, .diacriticInsensitive]
+        ) else { return false }
+        return firstRange.lowerBound < secondRange.lowerBound
+    }
+
+    private static func separateCoordinatedLabels(
+        _ firstLabel: GroundedCaptureLabel,
+        secondLabel: GroundedCaptureLabel,
+        message: String
+    ) -> (GroundedCaptureLabel, GroundedCaptureLabel) {
+        let firstWords = words(firstLabel.task).filter { $0.count >= 3 }
+        let secondWords = words(secondLabel.task).filter { $0.count >= 3 }
+        var sharedPrefixCount = 0
+        while sharedPrefixCount < min(firstWords.count, secondWords.count),
+              firstWords[sharedPrefixCount] == secondWords[sharedPrefixCount] {
+            sharedPrefixCount += 1
+        }
+        let distinctiveSecondWords = Set(secondWords.dropFirst(sharedPrefixCount))
+        guard !distinctiveSecondWords.isEmpty else {
+            return (firstLabel, secondLabel)
+        }
+        let matches = distinctiveSecondWords.compactMap { word in
+            firstLabel.task.range(
+                of: word, options: [.caseInsensitive, .diacriticInsensitive]
+            )
+        }
+        guard matches.count * 2 >= distinctiveSecondWords.count,
+              let cut = matches.min(by: { $0.lowerBound < $1.lowerBound })?.lowerBound,
+              cut > firstLabel.task.startIndex
+        else { return (firstLabel, secondLabel) }
+        let candidate = String(firstLabel.task[..<cut])
+            .replacingOccurrences(
+                of: #"\b(?:and|then|plus)\s*$"#,
+                with: "",
+                options: [.regularExpression, .caseInsensitive]
+            )
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let grounded = groundedLabel(candidate, in: message) else {
+            return (firstLabel, secondLabel)
+        }
+        return (grounded, secondLabel)
+    }
+
+    private static func structurallySeparateCoordinatedLabels(
+        in message: String
+    ) -> (GroundedCaptureLabel, GroundedCaptureLabel)? {
+        let clockPattern = #"\b(?:\d{1,2}:\d{2}|\d{3,4}|\d{1,2}\s*(?:a\.?m\.?|p\.?m\.?))\b"#
+        guard let clockRegex = try? NSRegularExpression(
+            pattern: clockPattern, options: [.caseInsensitive]
+        ) else { return nil }
+        let nsMessage = message as NSString
+        let clockMatches = clockRegex.matches(
+            in: message,
+            range: NSRange(location: 0, length: nsMessage.length)
+        )
+        guard clockMatches.count == 2 else { return nil }
+        var subjects = nsMessage.substring(
+            with: NSRange(location: 0, length: clockMatches[0].range.location)
+        )
+        subjects = subjects.replacingOccurrences(
+            of: #"\b(?:at|around|about|by)\s*$"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let separator = try? NSRegularExpression(
+            pattern: #"\s+(?:and|then|&)\s+"#,
+            options: [.caseInsensitive]
+        ) else { return nil }
+        let nsSubjects = subjects as NSString
+        guard let split = separator.matches(
+            in: subjects,
+            range: NSRange(location: 0, length: nsSubjects.length)
+        ).last else { return nil }
+        let firstTask = nsSubjects.substring(
+            with: NSRange(location: 0, length: split.range.location)
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let secondStart = NSMaxRange(split.range)
+        let secondTask = nsSubjects.substring(
+            with: NSRange(location: secondStart, length: nsSubjects.length - secondStart)
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !firstTask.isEmpty, !secondTask.isEmpty,
+              clockCandidateCount(in: firstTask) == 0,
+              clockCandidateCount(in: secondTask) == 0,
+              let firstRange = message.range(
+                of: firstTask, options: [.caseInsensitive, .diacriticInsensitive]
+              ),
+              let secondRange = message.range(
+                of: secondTask, options: [.caseInsensitive, .diacriticInsensitive]
+              ),
+              firstRange.lowerBound < secondRange.lowerBound
+        else { return nil }
+        return (
+            GroundedCaptureLabel(task: firstTask, evidence: String(message[firstRange])),
+            GroundedCaptureLabel(task: secondTask, evidence: String(message[secondRange]))
+        )
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func capture(
+        _ item: CaptureDecompositionItem,
+        inheriting initial: CaptureArgs
+    ) -> CaptureArgs {
+        CaptureArgs(
+            task: item.task,
+            evidence: item.evidence,
+            scheduleKind: initial.scheduleKind,
+            scheduleEvidence: initial.scheduleEvidence,
+            scheduleWeekday: initial.scheduleWeekday,
+            scheduleWhich: initial.scheduleWhich,
+            deadlineKind: initial.deadlineKind,
+            deadlineEvidence: initial.deadlineEvidence,
+            deadlineWeekday: initial.deadlineWeekday,
+            deadlineWhich: initial.deadlineWhich,
+            durationMinutes: initial.durationMinutes,
+            durationEvidence: initial.durationEvidence,
+            priority: initial.priority,
+            clockText: item.clockText,
+            clockInterpretation: item.clockInterpretation
+        )
+    }
+
+    private static func clockCandidateCount(in text: String) -> Int {
+        let pattern = #"\b(?:\d{1,2}:\d{2}|\d{3,4}|\d{1,2}\s*(?:a\.?m\.?|p\.?m\.?))\b"#
+        guard let regex = try? NSRegularExpression(
+            pattern: pattern, options: [.caseInsensitive]
+        ) else { return 0 }
+        return regex.numberOfMatches(
+            in: text,
+            range: NSRange(location: 0, length: (text as NSString).length)
+        )
+    }
+
+    private static func coordinatedCapturesNeedReview(
+        _ captures: [CaptureArgs]
+    ) -> Bool {
+        guard captures.count > 1 else { return true }
+        if captures.contains(where: { clockCandidateCount(in: $0.task) > 0 }) {
+            return true
+        }
+        let tokenSets = captures.map {
+            Set(words($0.task).filter { $0.count >= 3 })
+        }
+        for left in tokenSets.indices {
+            for right in tokenSets.indices where right > left {
+                let union = tokenSets[left].union(tokenSets[right])
+                guard !union.isEmpty else { return true }
+                let overlap = tokenSets[left].intersection(tokenSets[right]).count
+                let smallerCount = min(tokenSets[left].count, tokenSets[right].count)
+                if smallerCount == 0
+                    || Double(overlap) / Double(smallerCount) >= 0.75 {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private static func coordinatedCapturesAreOrdered(
+        _ captures: [CaptureArgs],
+        message: String
+    ) -> Bool {
+        guard captures.count == 2,
+              let firstRange = message.range(
+                of: captures[0].evidence,
+                options: [.caseInsensitive, .diacriticInsensitive]
+              ),
+              let secondRange = message.range(
+                of: captures[1].evidence,
+                options: [.caseInsensitive, .diacriticInsensitive]
+              )
+        else { return false }
+        return firstRange.lowerBound < secondRange.lowerBound
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
     private static func bulkCompletionAudit(_ message: String) async throws -> Bool {
         for _ in 0..<2 {
             let response = try await LanguageModelSession().respond(to: """
@@ -654,7 +1081,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     }
     @available(iOS 26.0, macOS 26.0, *) @Generable
     struct CaptureArgs {
-        @Guide(description: "Short actionable new task without constraints") var task: String
+        @Guide(description: "One short actionable new task without dates, clocks, or another coordinated obligation") var task: String
         @Guide(description: "Exact user words supporting this one new task") var evidence: String
         @Guide(.anyOf(["none", "today", "tomorrow", "weekday"])) var scheduleKind: String
         @Guide(description: "Exact planned-day words, or none") var scheduleEvidence: String
@@ -669,6 +1096,37 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         @Guide(.anyOf(["high", "normal", "low"])) var priority: String
         @Guide(description: "Exact clock text, or none") var clockText: String
         @Guide(.anyOf(["none", "am", "pm"])) var clockInterpretation: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct CaptureBatchArgs {
+        @Guide(description: "Every distinct new obligation, one item per task or appointment") var tasks: [CaptureArgs]
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct CaptureDecompositionItem {
+        @Guide(description: "One short appointment label naming only its own person or object") var task: String
+        @Guide(description: "Exact user words naming only this appointment") var evidence: String
+        @Guide(description: "The exact clock text paired with this appointment") var clockText: String
+        @Guide(.anyOf(["am", "pm"])) var clockInterpretation: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct CaptureDecompositionArgs {
+        @Guide(description: "The separate appointments in their original order") var tasks: [CaptureDecompositionItem]
+    }
+    struct GroundedCaptureLabel {
+        let task: String
+        let evidence: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct CaptureLabelArgs {
+        @Guide(description: "Only this appointment's short action label") var task: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct CoordinatedClockPairArgs {
+        @Guide(.anyOf(["one_time_range", "two_appointments"])) var kind: String
+        @Guide(description: "Only the exact first clock text") var firstClockText: String
+        @Guide(.anyOf(["am", "pm"])) var firstClockInterpretation: String
+        @Guide(description: "Only the exact second clock text") var secondClockText: String
+        @Guide(.anyOf(["am", "pm"])) var secondClockInterpretation: String
     }
     @available(iOS 26.0, macOS 26.0, *) @Generable
     struct MoveDestination {
@@ -775,10 +1233,13 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     }
     @available(iOS 26.0, macOS 26.0, *)
     struct Capture: Tool {
-        let collector: Collector; let name = "add_new_task"
-        let description = "Add one genuinely new obligation, once per task. Never use for an effect on existing work. A planned day is not a deadline."
-        func call(arguments: CaptureArgs) async throws -> String {
-            await collector.append(.capture(arguments)); return "Added."
+        let collector: Collector; let name = "add_new_tasks"
+        let description = "Add every genuinely new obligation in one batch. Use one item per task, split coordinated appointments, and pair their clocks in order. Never use for an effect on existing work. A planned day is not a deadline."
+        func call(arguments: CaptureBatchArgs) async throws -> String {
+            for task in arguments.tasks {
+                await collector.append(.capture(task))
+            }
+            return "Added \(arguments.tasks.count)."
         }
     }
     @available(iOS 26.0, macOS 26.0, *)

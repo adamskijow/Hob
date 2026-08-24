@@ -12,11 +12,11 @@ Nothing has been uploaded to TestFlight or either App Store.
 ## Exact state
 
 - Branch: `main`
-- Calendar increment base commit: `605d69a`
+- Current increment base commit: `ca97849`
 - Native app version: `0.1` build `1`
 - Latest public tag: `v0.9.13`, for the legacy Open Local edition
-- Tests: 484 Python and 62 native
-- CI: green on Ubuntu and macOS at `605d69a`; recheck after this increment
+- Tests: 484 Python and 64 native
+- CI: green on Ubuntu and macOS at `ca97849`; recheck after this increment
 - iPhone: signed current calendar build installed; relaunch was blocked by the lock screen
 - Mac: signed current calendar build installed at `/Applications/Hob.app`
 - Legacy `com.local.hob` and `com.local.hob.menu` login agents: disabled and retired
@@ -47,6 +47,9 @@ Retired launch-agent files are under
   calendar in the same account as Apple's default calendar.
 - All-day blocking is optional. Free and cancelled events no longer block time.
 - Calendar selection fails closed if a chosen calendar disappears.
+- Split coordinated appointments and pair their stated times in order, backed by
+  an exact live Foundation Models regression.
+- Replaced the four inline digest times with one compact 24-hour selector.
 
 ## Next verification
 
@@ -54,8 +57,7 @@ On each device, open gear > Calendar, turn integration on, choose the planning
 calendars and output calendar, then add an event to a shared or subscribed
 calendar. Confirm the next proposal avoids it and an adopted plan appears in
 the chosen output calendar.
-The settings sheet still needs a visual pass because the Mac was locked during
-this increment.
+Confirm the compact digest-time selector stays put while the gear menu scrolls.
 
 ## Product rules
 

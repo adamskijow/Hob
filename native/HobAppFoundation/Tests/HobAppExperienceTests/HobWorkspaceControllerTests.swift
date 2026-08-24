@@ -531,6 +531,37 @@ func calendarIntegrationDefaultsOffAndSchedulesStayUsable() async throws {
 }
 
 @Test @MainActor
+func dailyDigestSupportsEveryHourAndPersistsTheSelection() async throws {
+    #expect(HobWorkspaceController.validMorningDigestTimes.count == 24)
+    #expect(HobWorkspaceController.validMorningDigestTimes.first == "00:00")
+    #expect(HobWorkspaceController.validMorningDigestTimes.last == "23:00")
+    #expect(HobWorkspaceController.morningDigestTimeLabel("00:00") == "12:00 AM")
+    #expect(HobWorkspaceController.morningDigestTimeLabel("23:00") == "11:00 PM")
+
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("hob-digest-hour-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let suite = "hob-digest-hour-tests-\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set("23:00", forKey: "hob.morning.digest.time")
+    let controller = HobWorkspaceController(
+        store: TaskStateStore(directoryURL: directory),
+        interpreter: StubInterpreter(actions: []),
+        calendarStore: StubCalendar(),
+        notificationStore: StubNotifications(),
+        syncStore: StubSync(),
+        defaults: defaults,
+        timezone: try #require(TimeZone(identifier: "America/New_York"))
+    )
+
+    #expect(controller.morningDigestTime == "23:00")
+    controller.setMorningDigestTime("00:00")
+    #expect(controller.morningDigestTime == "00:00")
+    #expect(defaults.string(forKey: "hob.morning.digest.time") == "00:00")
+}
+
+@Test @MainActor
 func calendarChoicesControlPlanningAndPersistPerDevice() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("hob-calendar-choices-\(UUID().uuidString)")
