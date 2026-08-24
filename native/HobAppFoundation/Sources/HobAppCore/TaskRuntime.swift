@@ -718,6 +718,12 @@ public struct TaskRuntime: Sendable {
         guard !actions.isEmpty, actions.count <= 32 else {
             return outcome(.rejected)
         }
+        if actions.contains(where: { $0.type == "acknowledge" }) {
+            guard actions == [RuntimeAction(type: "acknowledge")] else {
+                return outcome(.rejected)
+            }
+            return outcome(.applied, kinds: ["acknowledge"])
+        }
         if actions.contains(where: { $0.type == "undo" }) {
             guard actions.count == 1 else { return outcome(.rejected) }
             guard let snapshot = undoSnapshots.popLast() else {
@@ -865,7 +871,7 @@ public struct TaskRuntime: Sendable {
             )))
         }
 
-        guard ["complete", "drop", "reschedule", "amend"].contains(action.type)
+        guard ["complete", "drop", "reschedule", "amend", "keep"].contains(action.type)
         else { return .rejected }
         guard let target = resolvedTarget(action.target) else {
             return .clarification
@@ -875,6 +881,7 @@ public struct TaskRuntime: Sendable {
         }
         if action.type == "complete" { return .success(.complete(target)) }
         if action.type == "drop" { return .success(.drop(target)) }
+        if action.type == "keep" { return .success(.keep(target)) }
         if action.type == "amend" {
             guard let task = bounded(action.task, maxBytes: 10_000) else {
                 return .clarification
@@ -974,6 +981,8 @@ public struct TaskRuntime: Sendable {
             }
         case .amend(let target, let task):
             update(target, now: now) { $0.task = task }
+        case .keep(let target):
+            update(target, now: now) { _ in }
         }
         tasks.sort { $0.id < $1.id }
     }
@@ -995,6 +1004,7 @@ private enum PreparedMutation {
     case drop(String)
     case reschedule(String, String?, String?)
     case amend(String, String)
+    case keep(String)
 
     var kind: String {
         switch self {
@@ -1003,6 +1013,7 @@ private enum PreparedMutation {
         case .drop: return "drop"
         case .reschedule: return "reschedule"
         case .amend: return "amend"
+        case .keep: return "keep"
         }
     }
 }

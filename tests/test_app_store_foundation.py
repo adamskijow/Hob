@@ -249,7 +249,11 @@ def test_iphone_app_uses_the_same_native_workspace_and_local_model():
     assert "HobAppFoundation" in project
     assert "SystemLanguageModel.default" in interpreter
     assert "LanguageModelSession" in interpreter
-    assert '"complete", "drop", "reschedule", "amend", "replan"' in interpreter
+    assert 'let name = "complete_task"' in interpreter
+    assert 'let name = "drop_task"' in interpreter
+    assert 'let name = "move_task"' in interpreter
+    assert 'let name = "edit_task_text"' in interpreter
+    assert 'let name = "replan_schedule"' in interpreter
     assert 'RuntimeAction(type: "replan")' in interpreter
     assert 'Label("Connected", systemImage: "checkmark.circle.fill")' in onboarding
     assert 'Button("Check iCloud")' in onboarding

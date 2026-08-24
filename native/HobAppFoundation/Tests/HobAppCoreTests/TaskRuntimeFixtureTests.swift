@@ -78,6 +78,57 @@ import Testing
     #expect(oversized.tasks == [task])
 }
 
+@Test func acknowledgeAndKeepAreSafeExplicitEffects() {
+    let task = RuntimeTask(
+        id: "a1",
+        rawText: "call mom",
+        task: "call mom",
+        dueDate: nil,
+        dueTime: nil,
+        status: "open",
+        createdAt: "2026-06-29T09:00:00-04:00",
+        updatedAt: "2026-06-29T09:00:00-04:00"
+    )
+    var runtime = TaskRuntime(tasks: [task])
+    let acknowledged = runtime.process(RuntimeTurnRequest(
+        requestID: "ack",
+        message: "nothing completed",
+        now: "2026-06-29T09:05:00-04:00",
+        timezone: "America/New_York",
+        actions: [RuntimeAction(type: "acknowledge")]
+    )).outcome
+    #expect(acknowledged.disposition == .applied)
+    #expect(acknowledged.appliedKinds == ["acknowledge"])
+    #expect(acknowledged.tasks == [task])
+    #expect(runtime.persistentState.undoSnapshots.isEmpty)
+
+    let kept = runtime.process(RuntimeTurnRequest(
+        requestID: "keep",
+        message: "leave it on deck",
+        now: "2026-06-29T09:10:00-04:00",
+        timezone: "America/New_York",
+        actions: [RuntimeAction(type: "keep", target: "a1")]
+    )).outcome
+    #expect(kept.disposition == .applied)
+    #expect(kept.appliedKinds == ["keep"])
+    #expect(kept.tasks[0].status == "open")
+    #expect(kept.tasks[0].updatedAt == "2026-06-29T09:10:00-04:00")
+    #expect(runtime.persistentState.undoSnapshots.count == 1)
+
+    let mixed = runtime.process(RuntimeTurnRequest(
+        requestID: "mixed-ack",
+        message: "nothing completed and drop it",
+        now: "2026-06-29T09:15:00-04:00",
+        timezone: "America/New_York",
+        actions: [
+            RuntimeAction(type: "acknowledge"),
+            RuntimeAction(type: "drop", target: "a1"),
+        ]
+    )).outcome
+    #expect(mixed.disposition == .rejected)
+    #expect(mixed.tasks[0].status == "open")
+}
+
 @Test func runtimeRejectsUnsupportedOrUncorrelatedRequests() {
     var runtime = TaskRuntime()
     let unsupported = runtime.process(RuntimeTurnRequest(

@@ -323,6 +323,12 @@ public final class HobWorkspaceController: ObservableObject {
                 await self.syncTasks()
                 if response.outcome.appliedKinds == ["replan"] {
                     self.notice = "Built a new plan from what changed."
+                } else if response.outcome.appliedKinds == ["acknowledge"] {
+                    self.notice = "Okay. Nothing marked done."
+                } else if response.outcome.appliedKinds == ["keep"] {
+                    self.notice = "Keeping it on deck."
+                } else if response.outcome.appliedKinds == ["undo"] {
+                    self.notice = "Undid the last task change."
                 } else if response.outcome.appliedKinds.allSatisfy({ $0 == "capture" }) {
                     self.notice = actions.count == 1
                         ? "Captured and planned one task."
