@@ -59,6 +59,23 @@ func conversationalContinuationAddsAnotherAppointment() async throws {
 }
 
 @Test
+func tomorrowStatusQuestionReturnsTomorrowTasks() async throws {
+    let interpreter = AppleFoundationInterpreter()
+    guard interpreter.isAvailable else { return }
+    let actions = try await interpreter.interpret(
+        message: "How's it looking tomorrow",
+        now: "2026-08-25T12:29:00-04:00",
+        timezone: "America/New_York",
+        tasks: []
+    )
+
+    #expect(actions.count == 1)
+    #expect(actions.first?.type == "query")
+    #expect(actions.first?.queryKind == "date")
+    #expect(actions.first?.when == RuntimeDateIntent(kind: "tomorrow"))
+}
+
+@Test
 func modelUnderstandsLongDates() async throws {
     let interpreter = AppleFoundationInterpreter()
     guard interpreter.isAvailable else { return }

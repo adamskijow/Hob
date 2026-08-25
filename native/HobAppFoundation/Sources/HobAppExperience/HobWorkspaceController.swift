@@ -710,9 +710,11 @@ public final class HobWorkspaceController: ObservableObject {
                 } else if response.outcome.appliedKinds == ["undo"] {
                     self.notice = "Undid the last task change."
                 } else if response.outcome.appliedKinds.allSatisfy({ $0 == "capture" }) {
-                    self.notice = actions.count == 1
-                        ? "Captured one task."
-                        : "Captured \(actions.count) tasks."
+                    if actions.count == 1, let task = actions[0].task {
+                        self.notice = "Captured: \(task)."
+                    } else {
+                        self.notice = "Captured \(actions.count) tasks."
+                    }
                 } else {
                     self.notice = "Updated the tasks."
                 }

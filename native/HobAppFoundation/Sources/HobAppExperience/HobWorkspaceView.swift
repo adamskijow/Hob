@@ -378,7 +378,7 @@ public struct HobWorkspaceView: View {
                 .accessibilityHidden(true)
             Text("What needs to get done?")
                 .font(.largeTitle.bold())
-            Text("Include dates, priority, and effort naturally. Untimed work stays on deck.")
+            Text("Add work, make changes, or ask about your plan naturally. Untimed work stays on deck.")
                 .foregroundStyle(.secondary)
         }
     }
@@ -530,7 +530,7 @@ public struct HobWorkspaceView: View {
     private var composer: some View {
         VStack(alignment: .trailing, spacing: 10) {
             TextField(
-                "Finish taxes by Friday, high priority, about 90 minutes…",
+                "Add a task or ask about your plan…",
                 text: $controller.draft,
                 axis: .vertical
             )

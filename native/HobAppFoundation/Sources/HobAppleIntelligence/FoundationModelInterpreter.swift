@@ -114,6 +114,16 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         }
         if ["new_task", "retrieval"].contains(intent),
            changeKind == "other",
+           let dateQuery = try? await extractDateQuery(message) {
+            return [dateQuery]
+        }
+        if ["new_task", "retrieval"].contains(intent),
+           changeKind == "other",
+           let dateQuery = try? await recoverRelativeDateQuery(message) {
+            return [dateQuery]
+        }
+        if ["new_task", "retrieval"].contains(intent),
+           changeKind == "other",
            try await confirmsNewObligation(message) {
             let captures = try await extractNewCaptures(
                 message: message, now: now, timezone: timezone
@@ -2025,8 +2035,12 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             Classify a read-only request for saved task state. Completed-history
             questions use status completed. Waiting work uses status waiting.
             The kind describes the time or search scope: today, date, all,
-            overdue, week, search, done, or waiting. Copy evidence exactly.
+            overdue, week, search, done, or waiting. Questions about how a
+            future day is looking ask for open tasks on that date; use kind date
+            and status open. Never use completed unless the user asks what was
+            done, finished, or completed. Copy evidence exactly.
             """
+        var candidates: [QueryArgs] = []
         for _ in 0..<3 {
             guard let result = try? await LanguageModelSession(
                 instructions: instructions
@@ -2039,15 +2053,102 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             else { continue }
             let kind = result.status == "completed" ? "done"
                 : (result.status == "waiting" ? "waiting" : result.kind)
-            return QueryArgs(
+            let candidate = QueryArgs(
                 kind: kind,
                 date: result.date,
                 term: result.term,
                 period: result.period,
                 evidence: result.evidence
             )
+            candidates.append(candidate)
+            if kind == "date",
+               RuntimeConstraintEvidence.contains(
+                result.date.dateEvidence, in: message
+               ), (try? dateIntent(
+                kind: result.date.dateKind,
+                weekday: result.date.dateWeekday,
+                which: result.date.dateWhich,
+                n: result.date.dateN,
+                unit: result.date.dateUnit,
+                part: result.date.datePart,
+                anchor: result.date.dateAnchor,
+                year: result.date.dateYear,
+                month: result.date.dateMonth,
+                day: result.date.dateDay,
+                evidence: result.date.dateEvidence
+               )) != nil {
+                return candidate
+            }
         }
-        throw RuntimeInterpretationError.invalidOutput
+        guard let winner = Dictionary(grouping: candidates, by: \.kind)
+            .max(by: { $0.value.count < $1.value.count })?.value.first
+        else { throw RuntimeInterpretationError.invalidOutput }
+        return winner
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func extractDateQuery(_ message: String) async throws -> RuntimeAction {
+        let instructions = """
+            Decide whether this read-only question asks what is scheduled or
+            open on one particular day. “How is tomorrow looking?” is a date
+            query. Questions about completion history, a whole week, searching,
+            or changing work are other. Copy the day words exactly.
+            """
+        var candidates: [RuntimeDateIntent] = []
+        for _ in 0..<5 {
+            guard let result = try? await LanguageModelSession(
+                instructions: instructions
+            ).respond(
+                to: "User message: \(message)",
+                generating: DateQueryClassificationArgs.self
+            ).content,
+                  result.mode == "date",
+                  RuntimeConstraintEvidence.contains(
+                    result.date.dateEvidence, in: message
+                  ), let intent = try? dateIntent(
+                    kind: result.date.dateKind,
+                    weekday: result.date.dateWeekday,
+                    which: result.date.dateWhich,
+                    n: result.date.dateN,
+                    unit: result.date.dateUnit,
+                    part: result.date.datePart,
+                    anchor: result.date.dateAnchor,
+                    year: result.date.dateYear,
+                    month: result.date.dateMonth,
+                    day: result.date.dateDay,
+                    evidence: result.date.dateEvidence
+                  ) else { continue }
+            candidates.append(intent)
+        }
+        guard let winner = candidates.first(where: { candidate in
+            candidates.count(where: { $0 == candidate }) >= 3
+        }) else { throw RuntimeInterpretationError.invalidOutput }
+        return RuntimeAction(type: "query", when: winner, queryKind: "date")
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func recoverRelativeDateQuery(
+        _ message: String
+    ) async throws -> RuntimeAction {
+        guard let date = try dateIntent(
+            kind: "none", weekday: "none", which: "none", evidence: message
+        ) else { throw RuntimeInterpretationError.invalidOutput }
+        var approvals = 0
+        for _ in 0..<3 {
+            let response = try await LanguageModelSession().respond(to: """
+                Does this message ask to see the user's plan or open tasks for
+                the stated day? Answer YES or NO first. Asking how a day looks
+                is YES. Adding, moving, completing, or dropping work is NO.
+                User message: \(message)
+                """)
+            if response.content.uppercased().split(whereSeparator: {
+                !$0.isLetter
+            }).first.map(String.init) == "YES" {
+                approvals += 1
+            }
+        }
+        guard approvals >= 2 else { throw RuntimeInterpretationError.invalidOutput }
+        return RuntimeAction(type: "query", when: date, queryKind: "date")
     }
 
     @available(iOS 26.0, macOS 26.0, *)
@@ -2340,6 +2441,11 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         @Guide(description: "Search words, or none") var term: String
         @Guide(.anyOf(["today", "week", "all"])) var period: String
         @Guide(description: "Exact user words asking for task state, or none") var evidence: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct DateQueryClassificationArgs {
+        @Guide(.anyOf(["date", "other"])) var mode: String
+        var date: DateConstraintArgs
     }
     @available(iOS 26.0, macOS 26.0, *) @Generable
     struct SimpleQueryClassificationArgs {

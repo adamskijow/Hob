@@ -407,6 +407,7 @@ func todayTaskCanBeMarkedDoneAndUndone() async throws {
     controller.submit()
     try await waitUntilIdle(controller)
     let taskID = try #require(controller.morningDigest?.items.first?.taskID)
+    #expect(controller.notice == "Captured: get Willow haircut.")
 
     controller.renameTask(taskID: taskID, to: "Book Willow haircut")
     try await waitUntilIdle(controller)
