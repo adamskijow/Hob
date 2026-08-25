@@ -364,8 +364,16 @@ public struct HobWorkspaceView: View {
 
     private var introduction: some View {
         HStack(spacing: 12) {
-            HobTeapotIcon()
-                .frame(width: 46, height: 46)
+            Image("AppIcon", bundle: .main)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 54, height: 54)
+                .clipShape(Circle())
+                .overlay {
+                    Circle()
+                        .stroke(HobTheme.border(for: colorScheme), lineWidth: 1)
+                }
+                .shadow(color: HobTheme.copper.opacity(0.28), radius: 8, y: 3)
             Text("Hob")
                 .font(.system(size: 42, weight: .bold, design: .rounded))
         }
