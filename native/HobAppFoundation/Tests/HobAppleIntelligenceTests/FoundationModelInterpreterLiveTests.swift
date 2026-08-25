@@ -30,6 +30,35 @@ func coordinatedAppointmentsKeepTheirRespectiveTimes() async throws {
 }
 
 @Test
+func conversationalContinuationAddsAnotherAppointment() async throws {
+    let interpreter = AppleFoundationInterpreter()
+    guard interpreter.isAvailable else { return }
+    let existing = RuntimeTask(
+        id: "office", rawText: "Go to the office at 1030",
+        task: "Go to the office", dueDate: "2026-08-25",
+        dueTime: "10:30", status: "open",
+        createdAt: "2026-08-25T07:00:00-04:00",
+        updatedAt: "2026-08-25T07:00:00-04:00"
+    )
+
+    let actions = try await interpreter.interpret(
+        message: "And prexchool at 230",
+        now: "2026-08-25T08:00:00-04:00",
+        timezone: "America/New_York",
+        tasks: [existing],
+        context: RuntimeConversationContext(focusedTaskIDs: [existing.id])
+    )
+
+    #expect(actions.count == 1)
+    #expect(actions.first?.type == "capture")
+    let task = actions.first?.task?.lowercased() ?? ""
+    #expect(["prexchool", "preschool", "pre-school"].contains {
+        task.contains($0)
+    })
+    #expect(actions.first?.time == "14:30")
+}
+
+@Test
 func modelUnderstandsLongDates() async throws {
     let interpreter = AppleFoundationInterpreter()
     guard interpreter.isAvailable else { return }

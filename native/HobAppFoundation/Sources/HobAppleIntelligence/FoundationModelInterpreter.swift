@@ -112,6 +112,23 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 )
             }
         }
+        if ["new_task", "retrieval"].contains(intent),
+           changeKind == "other",
+           try await confirmsNewObligation(message) {
+            let captures = try await extractNewCaptures(
+                message: message, now: now, timezone: timezone
+            )
+            if !captures.isEmpty {
+                do {
+                    let actions = try await validate(
+                        captures.map(Proposal.capture), message: message,
+                        open: open, recentChange: recentChange,
+                        newObligationConfirmed: true
+                    )
+                    return actions
+                } catch {}
+            }
+        }
         var isRetrieval = false
         if intent == "retrieval", changeKind == "other" {
             isRetrieval = (try? await confirmsRetrieval(message)) == true
@@ -351,7 +368,8 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         message: String,
         open: [RuntimeTask],
         recentChange: Bool,
-        focusedIndices: Set<Int> = []
+        focusedIndices: Set<Int> = [],
+        newObligationConfirmed: Bool = false
     ) async throws -> [RuntimeAction] {
         guard !rawProposals.isEmpty, rawProposals.count <= 32 else {
             throw RuntimeInterpretationError.invalidOutput
@@ -506,9 +524,12 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 }
                 let task = value.task.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !task.isEmpty, task.utf8.count <= 10_000,
-                      captureIsNew(task, evidence: value.evidence, open: open)
+                      captureIsNew(
+                        task, evidence: value.evidence, open: open,
+                        allowSemanticEvidence: newObligationConfirmed
+                      )
                 else { continue }
-                if !open.isEmpty {
+                if !open.isEmpty, !newObligationConfirmed {
                     let approved = try await captureAudit(
                         task: task, evidence: value.evidence, message: message
                     )
@@ -557,6 +578,19 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 } else {
                     statedWhen = nil
                 }
+                var recoveredClock = recoveredTime(
+                    task: task, evidence: value.evidence,
+                    text: value.clockText,
+                    interpretation: value.clockInterpretation,
+                    originalMessage: message
+                )
+                if explicitMeridiem(in: message) == nil {
+                    if let auditedClock = try? await refineSingleClock(message) {
+                        recoveredClock = auditedClock
+                    }
+                } else if recoveredClock == nil {
+                    recoveredClock = try? await refineSingleClock(message)
+                }
                 result.append(RuntimeAction(
                     type: "capture", task: task, raw: message,
                     when: statedWhen ?? recurrenceInitialDate(recurrence),
@@ -570,12 +604,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                         month: value.deadlineMonth, day: value.deadlineDay,
                         evidence: value.deadlineEvidence
                     ) : nil,
-                    time: recoveredTime(
-                        task: task, evidence: value.evidence,
-                        text: value.clockText,
-                        interpretation: value.clockInterpretation,
-                        originalMessage: message
-                    ),
+                    time: recoveredClock,
                     durationMinutes: duration,
                     priority: ["high", "normal", "low"].contains(value.priority)
                         ? value.priority : "normal",
@@ -1008,11 +1037,13 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     private static func captureIsNew(
         _ task: String,
         evidence: String,
-        open: [RuntimeTask]
+        open: [RuntimeTask],
+        allowSemanticEvidence: Bool = false
     ) -> Bool {
         let taskWords = Set(words(task).filter { $0.count >= 3 })
         let evidenceWords = Set(words(evidence).filter { $0.count >= 3 })
-        guard !taskWords.isEmpty, !taskWords.isDisjoint(with: evidenceWords) else {
+        guard !taskWords.isEmpty,
+              allowSemanticEvidence || !taskWords.isDisjoint(with: evidenceWords) else {
             return false
         }
         return !open.contains { existing in
@@ -1087,8 +1118,11 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                     Extract every genuinely new obligation into the returned
                     list, with one item per distinct task or appointment. Pair
                     coordinated people or objects with coordinated dates and
-                    clocks in order. Keep constraints out of task labels. Return
-                    an empty list for a reply, status report, or replan request.
+                    clocks in order. Preserve the user's spelling in each task
+                    label; do not correct or paraphrase it. Keep conjunctions,
+                    dates, clocks, and other constraints out of task labels.
+                    Return an empty list for a question, reply, status report,
+                    or replan request.
                     """
                 ).respond(to: """
                     Current instant: \(now)
@@ -1553,6 +1587,37 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         )
     }
 
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func refineSingleClock(_ message: String) async throws -> String? {
+        guard clockCandidateCount(in: message) == 1 else { return nil }
+        var times: [String] = []
+        for _ in 0..<5 {
+            guard let value = try? await LanguageModelSession(instructions: """
+                Extract a clock only when the user's number schedules an
+                appointment or action. Infer an unstated AM or PM from the
+                activity and ordinary waking-hours context. Only choose an
+                overnight reading when the user's activity or words support it;
+                bare 1 through 6 o'clock appointments are normally PM. Counts,
+                durations, prices, IDs, and codes are not clocks. Copy the clock
+                text exactly from the user.
+                """).respond(
+                to: "User message: \(message)",
+                generating: SingleClockArgs.self
+            ).content,
+                  value.kind == "clock",
+                  let time = normalizedTime(
+                    text: value.clockText,
+                    interpretation: value.clockInterpretation,
+                    originalMessage: message
+                  ) else { continue }
+            times.append(time)
+        }
+        guard let winner = Dictionary(grouping: times, by: { $0 })
+            .max(by: { $0.value.count < $1.value.count }),
+              winner.value.count >= 4 else { return nil }
+        return winner.key
+    }
+
     private static func explicitMeridiem(in text: String) -> String? {
         let compact = text.lowercased()
             .replacingOccurrences(of: ".", with: "")
@@ -1898,6 +1963,31 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     }
 
     @available(iOS 26.0, macOS 26.0, *)
+    private static func confirmsNewObligation(_ message: String) async throws -> Bool {
+        let instructions = """
+        Decide whether the user adds at least one genuinely new obligation.
+        A compact conversational continuation may begin with a conjunction and
+        contain only an appointment or activity label plus a clock. For example,
+        “And dentist at 2:30” is a new obligation. Spelling mistakes do not
+        change that intent. Retrieval asks to see saved information. A task
+        change affects existing work. A report describes what happened.
+        """
+        var modes: [String] = []
+        for _ in 0..<5 {
+            if let mode = try? await LanguageModelSession(
+                instructions: instructions
+            ).respond(
+                to: "User message: \(message)",
+                generating: NewObligationAuditArgs.self
+            ).content.mode {
+                modes.append(mode)
+            }
+        }
+        guard !modes.isEmpty else { return false }
+        return modes.count { $0 == "new_task" } >= 4
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
     private static func classifyChange(_ message: String) async throws -> String {
         let instructions = """
             Classify an instruction that changes an existing task. Metadata sets
@@ -2155,6 +2245,12 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         @Guide(description: "Only this appointment's short action label") var task: String
     }
     @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct SingleClockArgs {
+        @Guide(.anyOf(["none", "clock"])) var kind: String
+        @Guide(description: "Only the exact clock text, or none") var clockText: String
+        @Guide(.anyOf(["none", "am", "pm"])) var clockInterpretation: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
     struct CoordinatedClockPairArgs {
         @Guide(.anyOf(["one_time_range", "two_appointments"])) var kind: String
         @Guide(description: "Only the exact first clock text") var firstClockText: String
@@ -2258,6 +2354,10 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     @available(iOS 26.0, macOS 26.0, *) @Generable
     struct RetrievalAuditArgs {
         @Guide(.anyOf(["retrieval", "new_task", "task_change", "report"])) var mode: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct NewObligationAuditArgs {
+        @Guide(.anyOf(["new_task", "retrieval", "task_change", "report", "other"])) var mode: String
     }
     @available(iOS 26.0, macOS 26.0, *) @Generable
     struct ChangeClassificationArgs {
