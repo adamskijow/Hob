@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 import SwiftUI
+import ImageIO
 #if canImport(HobAppCore)
 import HobAppCore
 #endif
@@ -364,8 +365,7 @@ public struct HobWorkspaceView: View {
 
     private var introduction: some View {
         HStack(spacing: 12) {
-            Image("AppIcon", bundle: .main)
-                .resizable()
+            HobBrandArtwork()
                 .scaledToFill()
                 .frame(width: 54, height: 54)
                 .clipShape(Circle())
@@ -963,6 +963,29 @@ public struct HobWorkspaceView: View {
         let startTime = start.formatted(date: .omitted, time: .shortened)
         let endTime = end.formatted(date: .omitted, time: .shortened)
         return "\(day), \(startTime)–\(endTime)"
+    }
+}
+
+private struct HobBrandArtwork: View {
+    var body: some View {
+        if let artwork = appIconArtwork {
+            Image(decorative: artwork, scale: 2)
+                .resizable()
+        } else {
+            HobTeapotIcon()
+                .foregroundStyle(HobTheme.gold)
+        }
+    }
+
+    private var appIconArtwork: CGImage? {
+        guard let url = Bundle.main.url(
+            forResource: "AppIcon60x60@2x",
+            withExtension: "png"
+        ),
+        let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+            return nil
+        }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil)
     }
 }
 
