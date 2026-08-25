@@ -418,7 +418,9 @@ public enum RuntimeSchedulePlanner {
               let generatedAt = ISO8601DateFormatter().date(from: request.generatedAt)
         else { throw RuntimeScheduleError.invalidRequest }
 
-        let open = tasks.filter { $0.status == "open" }
+        let open = tasks.filter {
+            $0.status == "open" && !$0.isMissedTimedItem(on: request.startDate)
+        }
         let versions = Dictionary(uniqueKeysWithValues: open.map { ($0.id, $0.updatedAt) })
         let ordered = open.sorted(by: taskOrder)
         var occupied = request.busy.compactMap { interval -> DateInterval? in
@@ -566,6 +568,11 @@ public enum RuntimeSchedulePlanner {
         zone: TimeZone
     ) -> Bool {
         if let due = task.dueDate.flatMap({ parseDay($0, zone: zone) }) {
+            if task.dueTime != nil {
+                var calendar = Calendar(identifier: .gregorian)
+                calendar.timeZone = zone
+                return calendar.isDate(day, inSameDayAs: due)
+            }
             return day >= max(due, startDay)
         }
         return true

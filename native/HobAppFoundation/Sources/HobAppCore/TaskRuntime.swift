@@ -44,6 +44,16 @@ public struct RuntimeTask: Codable, Equatable, Sendable {
     }
 }
 
+public extension RuntimeTask {
+    /// A clock time describes a one-time appointment. Once its date has passed,
+    /// Hob keeps the item for recovery without silently moving it to another day.
+    func isMissedTimedItem(on day: String) -> Bool {
+        status == "open"
+            && dueTime != nil
+            && dueDate.map { $0 < day } == true
+    }
+}
+
 public struct RuntimeDateIntent: Codable, Equatable, Sendable {
     public let kind: String
     public let which: String?

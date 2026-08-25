@@ -408,6 +408,10 @@ public final class HobWorkspaceController: ObservableObject {
         }
     }
 
+    public func taskStatusLabel(_ task: RuntimeTask) -> String {
+        task.isMissedTimedItem(on: day(now())) ? "Missed" : task.status.capitalized
+    }
+
     public func renameTask(taskID: String, to title: String) {
         let updatedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !updatedTitle.isEmpty else { return }

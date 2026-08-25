@@ -12,11 +12,11 @@ Nothing has been uploaded to TestFlight or either App Store.
 ## Exact state
 
 - Branch: `main`
-- Current increment base commit: `ec7a8be`
+- Current increment base commit: `0d69ca8`
 - Native app version: `0.1` build `1`
 - Latest public tag: `v0.9.13`, for the legacy Open Local edition
-- Tests: 484 Python and 66 native
-- CI: green on Ubuntu and macOS at `ec7a8be`; recheck after this increment
+- Tests: 484 Python and 69 native
+- CI: recheck after this increment
 - iPhone: signed current calendar build installed; relaunch was blocked by the lock screen
 - Mac: signed current calendar build installed at `/Applications/Hob.app`
 - Legacy `com.local.hob` and `com.local.hob.menu` login agents: disabled and retired
@@ -53,6 +53,8 @@ Retired launch-agent files are under
 - Made setup review dismissible without weakening the first-run model check.
 - Added an optional evening completion recap, off by default at 8:00 PM, with
   the same compact 24-hour selector as the morning digest.
+- Untimed work carries forward. Timed appointments stay on their stated date;
+  missed ones remain recoverable instead of moving to another day.
 
 ## Next verification
 

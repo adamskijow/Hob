@@ -75,6 +75,32 @@ import Testing
     #expect(digest.eveningRecapBody.contains("1: Finish taxes"))
 }
 
+@Test func timedAppointmentsDoNotCarryIntoAnotherDay() throws {
+    let zone = try #require(TimeZone(identifier: "America/New_York"))
+    let today = try #require(ISO8601DateFormatter().date(
+        from: "2026-08-25T06:30:00-04:00"
+    ))
+    var appointment = digestTask(
+        id: "appointment", task: "Meet the teacher", dueDate: "2026-08-24"
+    )
+    appointment.dueTime = "14:30"
+    let untimed = digestTask(
+        id: "errand", task: "Buy poster board", dueDate: "2026-08-24"
+    )
+
+    let digest = RuntimeMorningDigestBuilder.build(
+        for: today,
+        tasks: [appointment, untimed],
+        proposal: nil,
+        timezone: zone
+    )
+
+    #expect(appointment.isMissedTimedItem(on: "2026-08-25"))
+    #expect(!untimed.isMissedTimedItem(on: "2026-08-25"))
+    #expect(digest.items.map(\.taskID) == ["errand"])
+    #expect(digest.items.first?.summary == "Buy poster board · overdue")
+}
+
 @Test func upcomingMorningDigestsCoverSevenLocalDates() throws {
     let zone = try #require(TimeZone(identifier: "America/New_York"))
     let today = try #require(ISO8601DateFormatter().date(

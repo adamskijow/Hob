@@ -80,7 +80,7 @@ public enum RuntimeMorningDigestBuilder {
         calendar.timeZone = timezone
         let day = dayString(date, calendar: calendar)
         let open = Dictionary(uniqueKeysWithValues: tasks
-            .filter { $0.status == "open" }
+            .filter { $0.status == "open" && !$0.isMissedTimedItem(on: day) }
             .map { ($0.id, $0) })
         var items: [RuntimeMorningDigestItem] = []
         var included: Set<String> = []

@@ -734,8 +734,11 @@ public struct HobWorkspaceView: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Text(task.status.capitalized)
+                    Text(controller.taskStatusLabel(task))
                         .font(.caption.weight(.semibold))
+                        .foregroundStyle(
+                            controller.taskStatusLabel(task) == "Missed" ? .orange : .primary
+                        )
                 }
                 .padding(12)
                 .background(
@@ -748,7 +751,11 @@ public struct HobWorkspaceView: View {
 
     private func details(_ task: RuntimeTask) -> String {
         var values: [String] = []
-        if let due = task.dueDate { values.append("scheduled \(due)") }
+        if let due = task.dueDate, let time = task.dueTime {
+            values.append("scheduled \(due) at \(time)")
+        } else if let due = task.dueDate {
+            values.append("on deck from \(due)")
+        }
         if let deadline = task.deadlineDate { values.append("due \(deadline)") }
         if let duration = task.durationMinutes { values.append("\(duration)m") }
         if let priority = task.priority, priority != "normal" { values.append(priority) }

@@ -27,6 +27,7 @@ edition stays in the repository for migration and regression coverage.
 - Captures tasks, dates, deadlines, priority, and effort from one message.
 - Optionally plans around selected Apple calendars, including shared and subscribed calendars.
 - Keeps today current and offers timed morning and evening check-ins.
+- Rolls untimed work forward while leaving missed appointments for rescheduling.
 - Adopts plans locally or adds them to a chosen calendar.
 - Sends optional start reminders with Done, Snooze, and Replan actions.
 - Syncs tasks privately between iPhone and Mac through iCloud.

@@ -85,6 +85,83 @@ import HobAppStorage
     #expect(proposal.assumptions == ["write report: 30m default estimate"])
 }
 
+@Test func plannerCarriesUntimedWorkButNotTimedAppointments() throws {
+    var appointment = RuntimeTask(
+        id: "appointment",
+        rawText: "Meet the teacher at 2:30",
+        task: "meet the teacher",
+        dueDate: "2026-06-28",
+        dueTime: "14:30",
+        status: "open",
+        createdAt: "2026-06-28T08:00:00-04:00",
+        updatedAt: "2026-06-28T08:00:00-04:00"
+    )
+    let errand = RuntimeTask(
+        id: "errand",
+        rawText: "Buy poster board",
+        task: "buy poster board",
+        dueDate: "2026-06-28",
+        dueTime: nil,
+        status: "open",
+        createdAt: "2026-06-28T08:00:00-04:00",
+        updatedAt: "2026-06-28T08:00:00-04:00"
+    )
+    let request = RuntimeScheduleRequest(
+        proposalID: "carry-rule",
+        generatedAt: "2026-06-29T08:00:00-04:00",
+        startDate: "2026-06-29",
+        timezone: "America/New_York",
+        workStart: "09:00",
+        workEnd: "17:00"
+    )
+
+    let proposal = try RuntimeSchedulePlanner.propose(
+        tasks: [appointment, errand], request: request
+    )
+
+    #expect(proposal.blocks.map(\.taskID) == ["errand"])
+    #expect(proposal.unscheduled.isEmpty)
+    #expect(proposal.taskVersions.keys.sorted() == ["errand"])
+
+    appointment.dueDate = "2026-06-29"
+    let sameDay = try RuntimeSchedulePlanner.propose(
+        tasks: [appointment], request: request
+    )
+    #expect(sameDay.blocks.first?.startAt == "2026-06-29T14:30:00-04:00")
+}
+
+@Test func unavailableTimedAppointmentDoesNotMoveToTomorrow() throws {
+    let appointment = RuntimeTask(
+        id: "appointment",
+        rawText: "Meet the teacher at 2:30",
+        task: "meet the teacher",
+        dueDate: "2026-06-29",
+        dueTime: "14:30",
+        durationMinutes: 30,
+        status: "open",
+        createdAt: "2026-06-29T08:00:00-04:00",
+        updatedAt: "2026-06-29T08:00:00-04:00"
+    )
+    let proposal = try RuntimeSchedulePlanner.propose(
+        tasks: [appointment],
+        request: RuntimeScheduleRequest(
+            proposalID: "blocked-appointment",
+            generatedAt: "2026-06-29T08:00:00-04:00",
+            startDate: "2026-06-29",
+            timezone: "America/New_York",
+            workStart: "09:00",
+            workEnd: "17:00",
+            busy: [RuntimeBusyInterval(
+                startAt: "2026-06-29T14:00:00-04:00",
+                endAt: "2026-06-29T15:00:00-04:00"
+            )]
+        )
+    )
+
+    #expect(proposal.blocks.isEmpty)
+    #expect(proposal.unscheduled.map(\.taskID) == ["appointment"])
+}
+
 @Test func taskRuntimePersistsTypedPlanningConstraints() {
     var runtime = TaskRuntime()
     let result = runtime.process(RuntimeTurnRequest(
