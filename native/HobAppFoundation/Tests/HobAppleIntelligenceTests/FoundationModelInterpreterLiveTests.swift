@@ -95,6 +95,28 @@ func modelUnderstandsLongDates() async throws {
 }
 
 @Test
+func modelKeepsSocialMessagesOutOfPlanning() async throws {
+    let interpreter = AppleFoundationInterpreter()
+    guard interpreter.isAvailable else { return }
+
+    for message in [
+        "thanks bro", "cool", "got it",
+        "Who's the princess of the prairie?",
+    ] {
+        let actions = try await interpreter.interpret(
+            message: message,
+            now: "2026-08-25T08:00:00-04:00",
+            timezone: "America/New_York",
+            tasks: []
+        )
+        #expect(actions.count == 1)
+        #expect(actions.first?.type == "social")
+        let reply = try #require(actions.first?.reply)
+        #expect(!reply.isEmpty)
+    }
+}
+
+@Test
 func modelUnderstandsRecurrence() async throws {
     let interpreter = AppleFoundationInterpreter()
     guard interpreter.isAvailable else { return }

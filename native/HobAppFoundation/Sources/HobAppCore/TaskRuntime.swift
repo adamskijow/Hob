@@ -191,6 +191,7 @@ public struct RuntimeAction: Codable, Equatable, Sendable {
     public let horizonDays: Int?
     public let budgetMinutes: Int?
     public let hypotheticalDurationMinutes: Int?
+    public let reply: String?
     public let confidence: Double?
 
     public init(
@@ -214,6 +215,7 @@ public struct RuntimeAction: Codable, Equatable, Sendable {
         horizonDays: Int? = nil,
         budgetMinutes: Int? = nil,
         hypotheticalDurationMinutes: Int? = nil,
+        reply: String? = nil,
         confidence: Double? = nil
     ) {
         self.type = type
@@ -236,6 +238,7 @@ public struct RuntimeAction: Codable, Equatable, Sendable {
         self.horizonDays = horizonDays
         self.budgetMinutes = budgetMinutes
         self.hypotheticalDurationMinutes = hypotheticalDurationMinutes
+        self.reply = reply
         self.confidence = confidence
     }
 }
@@ -746,6 +749,7 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
             && (action.hypotheticalDurationMinutes.map {
                 (5...480).contains($0)
             } ?? true)
+            && bounded(action.reply, maxBytes: 500)
             && (action.confidence.map { $0.isFinite && (0...1).contains($0) } ?? true)
             && (action.when.map(validDateIntent) ?? true)
             && (action.deadline.map(validDateIntent) ?? true)
@@ -894,6 +898,16 @@ public struct TaskRuntime: Sendable {
                 return outcome(.rejected)
             }
             return outcome(.applied, kinds: ["acknowledge"])
+        }
+        if actions.contains(where: { $0.type == "social" }) {
+            guard actions.count == 1,
+                  let reply = actions[0].reply?.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                  ),
+                  !reply.isEmpty,
+                  actions[0] == RuntimeAction(type: "social", reply: reply)
+            else { return outcome(.rejected) }
+            return outcome(.applied, kinds: ["social"])
         }
         if actions.contains(where: { $0.type == "undo" }) {
             guard actions.count == 1 else { return outcome(.rejected) }

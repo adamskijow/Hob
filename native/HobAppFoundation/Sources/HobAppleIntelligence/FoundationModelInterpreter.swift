@@ -112,15 +112,18 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 )
             }
         }
-        if ["new_task", "retrieval"].contains(intent),
-           changeKind == "other",
+        if changeKind == "other",
            let dateQuery = try? await extractDateQuery(message) {
             return [dateQuery]
         }
-        if ["new_task", "retrieval"].contains(intent),
-           changeKind == "other",
+        if changeKind == "other",
            let dateQuery = try? await recoverRelativeDateQuery(message) {
             return [dateQuery]
+        }
+        if (intent == "social" || (intent == "new_task" && changeKind == "other")),
+           (try? await confirmsSocial(message)) == true {
+            let reply = (try? await socialReply(to: message)) ?? "Anytime."
+            return [RuntimeAction(type: "social", reply: reply)]
         }
         if ["new_task", "retrieval"].contains(intent),
            changeKind == "other",
@@ -259,6 +262,9 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             } catch {}
         }
         if !succeeded {
+            guard intent == "planning" else {
+                throw RuntimeInterpretationError.invalidOutput
+            }
             if let analysis = try? await extractAnalysis(
                 message: message, open: open
             ) {
@@ -326,7 +332,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             }
         }
         var reviewed = await collector.values()
-        if reviewed.isEmpty,
+        if reviewed.isEmpty, intent == "planning",
            let analysis = try? await extractAnalysis(
             message: message, open: open
            ) {
@@ -1911,6 +1917,51 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     }
 
     @available(iOS 26.0, macOS 26.0, *)
+    private static func socialReply(to message: String) async throws -> String {
+        let response = try await LanguageModelSession(instructions: """
+            Reply naturally to a brief social or non-task message. Match the
+            user's tone without overdoing it. Answer a general question briefly.
+            Use one sentence and no more than 24 words. Do not claim that tasks,
+            plans, reminders, or calendars changed.
+            """).respond(to: message).content
+        let compact = response.split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !compact.isEmpty else { return "Anytime." }
+        return String(compact.prefix(120))
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func confirmsSocial(_ message: String) async throws -> Bool {
+        let instructions = """
+        Decide whether the message contains an actual request or statement about
+        work. Social includes conversational acknowledgements, thanks, greetings,
+        reactions, and general-knowledge questions. A bare acknowledgement of the
+        assistant's preceding turn is social; it does not create an obligation.
+        Short past-tense confirmations such as “Understood” or “I hear you” are
+        acknowledgements, not tasks. Never invent an omitted chore behind a
+        pronoun. A task message names work to do, a saved item, or a planning
+        operation; ordinary conversational verbs do not qualify by themselves.
+        Task includes anything about saved work, a plan, schedule, calendar,
+        completion, a date, or adding or changing an obligation. Choose task only
+        when the user's words contain that task or planning meaning.
+        """
+        var modes: [String] = []
+        for _ in 0..<5 {
+            if let mode = try? await LanguageModelSession(
+                instructions: instructions
+            ).respond(
+                to: "User message: \(message)",
+                generating: SocialAuditArgs.self
+            ).content.mode {
+                modes.append(mode)
+            }
+        }
+        guard !modes.isEmpty else { return false }
+        return modes.count { $0 == "social" } > modes.count / 2
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
     private static func classifyIntent(
         _ message: String
     ) async throws -> String {
@@ -1919,7 +1970,9 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         find, search, or recall saved task state. Change means editing, moving,
         parking, resuming, or annotating a task. Report means saying what
         happened. New task means adding an obligation. Planning means capacity,
-        explanation, what-if, or a schedule request. Changing a saved task's
+        explanation, what-if, or a schedule request. Social means thanks,
+        greetings, reactions, casual conversation, or a general question that
+        is unrelated to saved tasks. Changing a saved task's
         priority or estimate is change, even when a duration appears. “Make the
         report high priority and 90 minutes” is change. Planning is reserved for
         questions such as “will it fit?” or “what if it takes 90 minutes?” and
@@ -1928,6 +1981,8 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         week, search, done, or waiting. Completed-history questions use done.
         Finding words in saved tasks uses search. Copy evidence exactly from the
         user message. For every non-retrieval intent use kind none.
+        A short acknowledgement of Hob's preceding turn is social. Do not infer
+        an unstated task from conversational words or pronouns.
         """
         var results: [IntentClassificationArgs] = []
         for _ in 0..<3 {
@@ -1981,6 +2036,9 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         “And dentist at 2:30” is a new obligation. Spelling mistakes do not
         change that intent. Retrieval asks to see saved information. A task
         change affects existing work. A report describes what happened.
+        Thanks, acknowledgements, reactions, and general conversation are other.
+        A new obligation must name the activity or appointment being added; do
+        not invent one from a conversational verb or pronoun.
         """
         var modes: [String] = []
         for _ in 0..<5 {
@@ -2456,6 +2514,10 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     @available(iOS 26.0, macOS 26.0, *) @Generable
     struct IntentClassificationArgs {
         @Guide(.anyOf(["change", "report", "new_task", "planning", "social", "retrieval"])) var intent: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct SocialAuditArgs {
+        @Guide(.anyOf(["social", "task"])) var mode: String
     }
     @available(iOS 26.0, macOS 26.0, *) @Generable
     struct RetrievalAuditArgs {

@@ -682,6 +682,15 @@ public final class HobWorkspaceController: ObservableObject {
                 dedupeKey: "turn:\(requestID)",
                 at: timestamp
             )
+            if response.outcome.disposition == .applied,
+               response.outcome.appliedKinds == ["social"] {
+                self.unresolvedMessage = nil
+                if self.draft.trimmingCharacters(in: .whitespacesAndNewlines) == text {
+                    self.draft = ""
+                }
+                self.notice = actions.first?.reply ?? "Anytime."
+                return
+            }
             switch response.outcome.disposition {
             case .applied:
                 self.unresolvedMessage = nil
@@ -1555,6 +1564,7 @@ public final class HobWorkspaceController: ObservableObject {
                 horizonDays: action.horizonDays,
                 budgetMinutes: action.budgetMinutes,
                 hypotheticalDurationMinutes: action.hypotheticalDurationMinutes,
+                reply: action.reply,
                 confidence: action.confidence
             )
         }

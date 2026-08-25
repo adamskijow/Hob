@@ -112,6 +112,18 @@ private func portableTasks(_ tasks: [RuntimeTask]) -> [RuntimeTask] {
     #expect(acknowledged.tasks == [task])
     #expect(runtime.persistentState.undoSnapshots.isEmpty)
 
+    let social = runtime.process(RuntimeTurnRequest(
+        requestID: "social",
+        message: "thanks bro",
+        now: "2026-06-29T09:07:00-04:00",
+        timezone: "America/New_York",
+        actions: [RuntimeAction(type: "social", reply: "Anytime, bro.")]
+    )).outcome
+    #expect(social.disposition == .applied)
+    #expect(social.appliedKinds == ["social"])
+    #expect(social.tasks == [task])
+    #expect(runtime.persistentState.undoSnapshots.isEmpty)
+
     let kept = runtime.process(RuntimeTurnRequest(
         requestID: "keep",
         message: "leave it on deck",

@@ -707,6 +707,52 @@ func calendarChoicesControlPlanningAndPersistPerDevice() async throws {
 }
 
 @Test @MainActor
+func socialReplyStaysInConversationWithoutPlanningOrTaskChanges() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("hob-social-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = TaskStateStore(directoryURL: directory)
+    let task = RuntimeTask(
+        id: "task-1", rawText: "finish report", task: "finish report",
+        dueDate: nil, dueTime: nil, status: "open",
+        createdAt: "2026-08-25T08:00:00-04:00",
+        updatedAt: "2026-08-25T08:00:00-04:00"
+    )
+    try store.save(RuntimePersistentState(tasks: [task], undoSnapshots: []))
+    let before = try store.load()
+    let now = try #require(ISO8601DateFormatter().date(
+        from: "2026-08-25T09:00:00-04:00"
+    ))
+    let controller = HobWorkspaceController(
+        store: store,
+        interpreter: StubInterpreter(actions: [RuntimeAction(
+            type: "social", reply: "Anytime, bro."
+        )]),
+        calendarStore: StubCalendar(),
+        notificationStore: StubNotifications(),
+        syncStore: StubSync(),
+        defaults: try #require(UserDefaults(
+            suiteName: "hob-social-tests-\(UUID().uuidString)"
+        )),
+        timezone: try #require(TimeZone(identifier: "America/New_York")),
+        now: { now }
+    )
+    try await Task.sleep(for: .milliseconds(30))
+
+    controller.draft = "thanks bro"
+    controller.submit()
+    try await waitUntilIdle(controller)
+
+    #expect(controller.draft.isEmpty)
+    #expect(controller.notice == "Anytime, bro.")
+    #expect(controller.planningAnalysis == nil)
+    #expect(controller.tasks == [task])
+    let after = try store.load()
+    #expect(after.tasks == before.tasks)
+    #expect(after.undoSnapshots == before.undoSnapshots)
+}
+
+@Test @MainActor
 func planningQuestionShowsReadOnlyAnswerWithoutWritingState() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("hob-analysis-\(UUID().uuidString)")
