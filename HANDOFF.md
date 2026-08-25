@@ -12,11 +12,11 @@ Nothing has been uploaded to TestFlight or either App Store.
 ## Exact state
 
 - Branch: `main`
-- Current increment base commit: `ca97849`
+- Current increment base commit: `305804d`
 - Native app version: `0.1` build `1`
 - Latest public tag: `v0.9.13`, for the legacy Open Local edition
-- Tests: 484 Python and 64 native
-- CI: green on Ubuntu and macOS at `ca97849`; recheck after this increment
+- Tests: 484 Python and 65 native
+- CI: green on Ubuntu and macOS at `305804d`; recheck after this increment
 - iPhone: signed current calendar build installed; relaunch was blocked by the lock screen
 - Mac: signed current calendar build installed at `/Applications/Hob.app`
 - Legacy `com.local.hob` and `com.local.hob.menu` login agents: disabled and retired
@@ -50,6 +50,7 @@ Retired launch-agent files are under
 - Split coordinated appointments and pair their stated times in order, backed by
   an exact live Foundation Models regression.
 - Replaced the four inline digest times with one compact 24-hour selector.
+- Made setup review dismissible without weakening the first-run model check.
 
 ## Next verification
 

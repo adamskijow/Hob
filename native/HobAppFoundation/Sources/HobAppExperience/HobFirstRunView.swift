@@ -7,6 +7,7 @@ import HobAppCore
 struct HobFirstRunView: View {
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var controller: HobWorkspaceController
+    let reviewingExistingSetup: Bool
     let finish: () -> Void
 
     @State private var step = 0
@@ -31,21 +32,25 @@ struct HobFirstRunView: View {
                 HStack {
                     if step > 0 { Button("Back") { step -= 1 } }
                     Spacer()
-                    Button(step == 3 ? "Start using Hob" : "Continue") {
+                    Button(finalButtonTitle) {
                         if step == 2 { saveRhythm() }
                         if step == 3 { finish() } else { step += 1 }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(
-                        controller.isWorking
-                            || (step == 3 && !controller.modelReadiness.isReady)
-                    )
+                    .disabled(primaryButtonIsDisabled)
                 }
             }
             .padding(28)
             .frame(maxWidth: 560, maxHeight: .infinity)
             .background { HobAppBackground().ignoresSafeArea() }
-            .navigationTitle("Set up Hob")
+            .navigationTitle(reviewingExistingSetup ? "Review Hob" : "Set up Hob")
+            .toolbar {
+                if reviewingExistingSetup {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") { finish() }
+                    }
+                }
+            }
             .onAppear { loadRhythm() }
         }
         .tint(HobTheme.accent(for: colorScheme))
@@ -161,19 +166,64 @@ struct HobFirstRunView: View {
 
     private var ready: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Image(systemName: "checkmark.circle.fill")
+            Image(systemName: readySymbol)
                 .font(.system(size: 42))
-                .foregroundStyle(.green)
+                .foregroundStyle(readyColor)
                 .accessibilityHidden(true)
-            Text("Ready").font(.largeTitle.bold())
+            Text(readyTitle).font(.largeTitle.bold())
             Text("Try: “Finish taxes by Friday, high priority, about 90 minutes.”")
             Text("Hob proposes a timeline first. Calendar changes require approval when integration is on.")
                 .foregroundStyle(.secondary)
             if !controller.modelReadiness.isReady {
-                Label("Apple Intelligence must be ready before Hob can interpret tasks.", systemImage: "exclamationmark.triangle")
+                Label(modelAttentionMessage, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
             }
         }
+    }
+
+    private var finalButtonTitle: String {
+        guard step == 3 else { return "Continue" }
+        return reviewingExistingSetup ? "Done" : "Start using Hob"
+    }
+
+    private var primaryButtonIsDisabled: Bool {
+        if step == 3 {
+            return !Self.canFinish(
+                reviewingExistingSetup: reviewingExistingSetup,
+                modelReadiness: controller.modelReadiness,
+                isWorking: controller.isWorking
+            )
+        }
+        return controller.isWorking
+    }
+
+    nonisolated static func canFinish(
+        reviewingExistingSetup: Bool,
+        modelReadiness: ModelReadinessState,
+        isWorking: Bool
+    ) -> Bool {
+        reviewingExistingSetup || (!isWorking && modelReadiness.isReady)
+    }
+
+    private var readyTitle: String {
+        if reviewingExistingSetup { return "Setup reviewed" }
+        return controller.modelReadiness.isReady ? "Ready" : "One thing left"
+    }
+
+    private var readySymbol: String {
+        controller.modelReadiness.isReady
+            ? "checkmark.circle.fill" : "exclamationmark.circle.fill"
+    }
+
+    private var readyColor: Color {
+        controller.modelReadiness.isReady ? .green : .orange
+    }
+
+    private var modelAttentionMessage: String {
+        if reviewingExistingSetup {
+            return "Apple Intelligence did not answer the latest check. You can close this review and check again later."
+        }
+        return "Apple Intelligence must be ready before Hob can interpret tasks."
     }
 
     private func setupRow<Actions: View>(

@@ -207,6 +207,25 @@ private final class StubSync: RuntimeTaskSyncing {
     }
 }
 
+@Test
+func setupReviewCanAlwaysCloseWithoutWeakeningFirstRun() {
+    #expect(HobFirstRunView.canFinish(
+        reviewingExistingSetup: true,
+        modelReadiness: .unavailable,
+        isWorking: true
+    ))
+    #expect(!HobFirstRunView.canFinish(
+        reviewingExistingSetup: false,
+        modelReadiness: .unavailable,
+        isWorking: false
+    ))
+    #expect(HobFirstRunView.canFinish(
+        reviewingExistingSetup: false,
+        modelReadiness: .available,
+        isWorking: false
+    ))
+}
+
 @Test @MainActor
 func naturalMessageBuildsAndAdoptsAPersistentSchedule() async throws {
     let directory = FileManager.default.temporaryDirectory

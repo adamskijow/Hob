@@ -114,7 +114,10 @@ public struct HobWorkspaceView: View {
             if !onboardingCompleted { showsOnboarding = true }
         }
         .sheet(isPresented: $showsOnboarding) {
-            HobFirstRunView(controller: controller) {
+            HobFirstRunView(
+                controller: controller,
+                reviewingExistingSetup: onboardingCompleted
+            ) {
                 onboardingCompleted = true
                 showsOnboarding = false
             }
