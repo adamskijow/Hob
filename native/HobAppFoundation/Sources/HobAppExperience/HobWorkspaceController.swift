@@ -711,9 +711,9 @@ public final class HobWorkspaceController: ObservableObject {
                     self.notice = "Undid the last task change."
                 } else if response.outcome.appliedKinds.allSatisfy({ $0 == "capture" }) {
                     if actions.count == 1, let task = actions[0].task {
-                        self.notice = "Captured: \(task)."
+                        self.notice = "Added “\(task)”"
                     } else {
-                        self.notice = "Captured \(actions.count) tasks."
+                        self.notice = "Added \(actions.count) tasks."
                     }
                 } else {
                     self.notice = "Updated the tasks."

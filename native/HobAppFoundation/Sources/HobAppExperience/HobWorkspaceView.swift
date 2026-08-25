@@ -897,7 +897,7 @@ public struct HobWorkspaceView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Tasks").font(.title2.bold())
             if controller.tasks.isEmpty {
-                Text("Nothing captured yet.")
+                Text("No tasks yet.")
                     .foregroundStyle(.secondary)
             }
             ForEach(controller.tasks, id: \.id) { task in

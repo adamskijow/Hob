@@ -293,7 +293,7 @@ func captureStaysUntimedUntilUserPlansAndAdoptsIt() async throws {
     #expect(controller.tasks.map(\.task) == ["finish taxes", "call Mom"])
     #expect(controller.proposal?.blocks.isEmpty == true)
     #expect(controller.hasUnplannedOnDeckTasks)
-    #expect(controller.notice == "Captured 2 tasks.")
+    #expect(controller.notice == "Added 2 tasks.")
     #expect(controller.adoptedSchedule == nil)
     #expect(controller.morningDigest?.items.map(\.task) == ["finish taxes"])
     #expect(notifications.morningTime == "07:00")
@@ -407,7 +407,7 @@ func todayTaskCanBeMarkedDoneAndUndone() async throws {
     controller.submit()
     try await waitUntilIdle(controller)
     let taskID = try #require(controller.morningDigest?.items.first?.taskID)
-    #expect(controller.notice == "Captured: get Willow haircut.")
+    #expect(controller.notice == "Added “get Willow haircut”")
 
     controller.renameTask(taskID: taskID, to: "Book Willow haircut")
     try await waitUntilIdle(controller)
