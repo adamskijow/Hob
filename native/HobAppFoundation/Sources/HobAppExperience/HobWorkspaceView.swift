@@ -80,8 +80,7 @@ public struct HobWorkspaceView: View {
                 workspaceScroll {
                     introduction
                     morningDigest
-                    composer
-                    feedback
+                    conversation
                     planningAnalysis
                 }
                 .navigationTitle("Hob")
@@ -527,8 +526,10 @@ public struct HobWorkspaceView: View {
         .presentationDragIndicator(.visible)
     }
 
-    private var composer: some View {
-        VStack(alignment: .trailing, spacing: 10) {
+    private var conversation: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            conversationReply
+
             TextField(
                 "Add a task or ask about your plan…",
                 text: $controller.draft,
@@ -536,41 +537,79 @@ public struct HobWorkspaceView: View {
             )
             .lineLimit(3...7)
             .textFieldStyle(.plain)
-            .padding(16)
+            .padding(12)
             .background(
-                HobTheme.surface(for: colorScheme),
-                in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                HobTheme.base(for: colorScheme).opacity(0.72),
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
             )
             .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .stroke(HobTheme.border(for: colorScheme), lineWidth: 1)
             }
             .onSubmit { controller.submit() }
-            Button {
-                controller.submit()
-            } label: {
-                if controller.isWorking {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Label("Send", systemImage: "arrow.up.circle.fill")
+            HStack {
+                Text("Tell Hob what changed or ask about the plan.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    controller.submit()
+                } label: {
+                    if controller.isWorking {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Label("Send", systemImage: "arrow.up.circle.fill")
+                    }
                 }
+                .buttonStyle(.borderedProminent)
+                .disabled(!controller.canSubmit)
+                .keyboardShortcut(.return, modifiers: [.command])
+                .accessibilityHint("Interprets the message and applies the requested task changes")
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(!controller.canSubmit)
-            .keyboardShortcut(.return, modifiers: [.command])
-            .accessibilityHint("Interprets the message and applies the requested task changes")
+        }
+        .padding(14)
+        .background(
+            HobTheme.surface(for: colorScheme),
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(HobTheme.border(for: colorScheme), lineWidth: 1)
         }
     }
 
-    @ViewBuilder private var feedback: some View {
+    @ViewBuilder private var conversationReply: some View {
         if let error = controller.errorMessage {
-            Label(error, systemImage: "exclamationmark.triangle.fill")
-                .foregroundStyle(.red)
+            VStack(alignment: .leading, spacing: 5) {
+                Label("Hob", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.bold())
+                    .foregroundStyle(.red)
+                Text(error)
+                    .foregroundStyle(.primary)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                Color.red.opacity(0.10),
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
                 .accessibilityLabel("Error: \(error)")
         } else if let notice = controller.notice {
-            Label(notice, systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 5) {
+                Label("Hob", systemImage: "sparkles")
+                    .font(.caption.bold())
+                    .foregroundStyle(.tint)
+                Text(notice)
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                HobTheme.accent(for: colorScheme).opacity(0.10),
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
         }
     }
 
