@@ -23,17 +23,23 @@ Foundation Models converts free text into typed actions. The runtime validates
 operation, target, date intent, clock time, bounds, duplicates, and destructive
 scope before changing state. Invalid output changes nothing.
 
-Meaning stays in the model. Phrase lists, keyword routers, and raw-text repairs
-are forbidden. Deterministic code may handle closed identifiers and protocols.
+Meaning stays in the model. Phrase lists and keyword routers cannot choose an
+action. Deterministic code validates typed output, resolves dates, and grounds
+closed values such as weekdays against model-cited evidence.
 
 ## Scheduling
 
-Tasks carry a work date, optional fixed time, deadline, duration, and priority.
+Tasks carry a work date, optional fixed time, deadline, duration, priority, and
+optional recurrence. Completing recurring work advances its occurrence in
+place, so undo and iCloud keep one history.
 The scheduler applies working days, hours, transition time, and optional opaque
 busy intervals from selected Apple calendars. Free and cancelled events are
 ignored; all-day blocking is optional. A proposal remains separate from
 adoption. Adoption stays local when Calendar integration is off. When enabled,
 it writes blocks to the chosen writable calendar. Start reminders are separate.
+
+Capacity, placement, and what-if analysis reuses the scheduler on a temporary
+task copy. It cannot write task or schedule state.
 
 ## Persistence and sync
 

@@ -472,23 +472,6 @@ public actor DurableTaskRuntime {
         state
     }
 
-    public func setPlanningPreferences(
-        _ preferences: RuntimePlanningPreferences
-    ) throws {
-        guard preferences.isValid else { throw RuntimeScheduleError.invalidRequest }
-        let candidate = combinedState(
-            runtimeState: runtime.persistentState,
-            inbox: state.inbox,
-            outbox: state.outbox,
-            nextSequence: state.nextSequence,
-            latestProposal: nil,
-            adoptedSchedule: state.adoptedSchedule,
-            planningPreferences: preferences
-        )
-        try store.save(candidate)
-        state = candidate
-    }
-
     @discardableResult
     public func importOpenLocal(_ data: Data) throws -> OpenLocalImportResult {
         guard runtime.tasks.isEmpty else {
@@ -863,8 +846,7 @@ public actor DurableTaskRuntime {
         calendarCleanupEventIDs: [String]? = nil,
         notificationCleanupIDs: [String]? = nil,
         pendingNotificationResponses: [RuntimeNotificationResponse]? = nil,
-        taskOperations: [RuntimeTaskOperation]? = nil,
-        planningPreferences: RuntimePlanningPreferences? = nil
+        taskOperations: [RuntimeTaskOperation]? = nil
     ) -> RuntimePersistentState {
         RuntimePersistentState(
             tasks: runtimeState.tasks,
@@ -880,8 +862,7 @@ public actor DurableTaskRuntime {
                 ?? state.notificationCleanupIDs,
             pendingNotificationResponses: pendingNotificationResponses
                 ?? state.pendingNotificationResponses,
-            taskOperations: taskOperations ?? state.taskOperations,
-            planningPreferences: planningPreferences ?? state.planningPreferences
+            taskOperations: taskOperations ?? state.taskOperations
         )
     }
 

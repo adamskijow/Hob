@@ -77,6 +77,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 BulkMove(collector: collector), Complete(collector: collector),
                 Drop(collector: collector), Move(collector: collector),
                 Amend(collector: collector), Keep(collector: collector),
+                Recurrence(collector: collector), Analyze(collector: collector),
             ]
         }
         let prompt = """
@@ -110,12 +111,23 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 succeeded = true
             } catch {}
         }
-        guard succeeded else { throw RuntimeInterpretationError.invalidOutput }
+        if !succeeded {
+            if let analysis = try? await extractAnalysis(
+                message: message, open: open
+            ) {
+                return try await validate(
+                    [.analysis(analysis)], message: message, open: open,
+                    recentChange: recentChange
+                )
+            }
+            throw RuntimeInterpretationError.invalidOutput
+        }
         let firstPass = await collector.values()
         if !open.isEmpty,
            !firstPass.contains(where: {
                switch $0 {
-               case .bulkComplete, .bulkMove, .acknowledge: return true
+               case .bulkComplete, .bulkMove, .acknowledge, .analysis, .recurrence:
+                   return true
                default: return false
                }
            }) {
@@ -133,7 +145,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         } && !firstPass.contains {
             switch $0 {
             case .acknowledge, .progress, .drop, .move, .keep,
-                 .bulkComplete, .bulkMove: return true
+                 .bulkComplete, .bulkMove, .analysis, .recurrence: return true
             default: return false
             }
         }
@@ -157,6 +169,12 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             }
         }
         var reviewed = await collector.values()
+        if reviewed.isEmpty,
+           let analysis = try? await extractAnalysis(
+            message: message, open: open
+           ) {
+            reviewed = [.analysis(analysis)]
+        }
         var captures = reviewed.compactMap { proposal -> CaptureArgs? in
             if case .capture(let value) = proposal { return value }
             return nil
@@ -183,10 +201,15 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 throw RuntimeInterpretationError.invalidOutput
             }
         }
-        return try await validate(
-            reviewed, message: message, open: open,
-            recentChange: recentChange
-        )
+        do {
+            return try await validate(
+                reviewed, message: message, open: open,
+                recentChange: recentChange
+            )
+        } catch {
+            guard open.isEmpty else { throw error }
+            return try await recoverNewCaptureActions(message: message)
+        }
     }
 
     @available(iOS 26.0, macOS 26.0, *)
@@ -208,6 +231,38 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                     of: right.evidence, options: [.caseInsensitive, .diacriticInsensitive]
                   ) else { return false }
             return leftRange.lowerBound < rightRange.lowerBound
+        }
+        if let analysis = proposals.compactMap({ proposal -> AnalysisArgs? in
+            if case .analysis(let value) = proposal { return value }
+            return nil
+        }).first {
+            guard RuntimeConstraintEvidence.contains(analysis.evidence, in: message),
+                  ["capacity", "explain", "what_if"].contains(analysis.kind),
+                  (analysis.budgetMinutes == 0
+                    || (5...10_080).contains(analysis.budgetMinutes)),
+                  (analysis.targetIndex == 0
+                    || (1...open.count).contains(analysis.targetIndex))
+            else { throw RuntimeInterpretationError.invalidOutput }
+            let hypothetical = analysis.hypotheticalDurationMinutes
+            if analysis.kind == "what_if" {
+                guard analysis.targetIndex > 0,
+                      (5...480).contains(hypothetical),
+                      RuntimeConstraintEvidence.isSupportedDuration(
+                        analysis.durationEvidence, in: message
+                      ) else { throw RuntimeInterpretationError.invalidOutput }
+            }
+            let horizon = (1...31).contains(analysis.horizonDays)
+                ? analysis.horizonDays : 7
+            return [RuntimeAction(
+                type: "analysis",
+                target: analysis.kind == "capacity" ? nil
+                    : (analysis.targetIndex > 0 ? String(analysis.targetIndex) : nil),
+                analysisKind: analysis.kind,
+                horizonDays: horizon,
+                budgetMinutes: analysis.budgetMinutes > 0
+                    ? analysis.budgetMinutes : nil,
+                hypotheticalDurationMinutes: hypothetical > 0 ? hypothetical : nil
+            )]
         }
         if let bulk = proposals.compactMap({ proposal -> BulkCompleteArgs? in
             if case .bulkComplete(let value) = proposal { return value }
@@ -291,19 +346,57 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                     && RuntimeConstraintEvidence.isSupportedDuration(
                         value.durationEvidence, in: message
                     ) ? value.durationMinutes : nil
+                // Foundation Models may serialize generations internally. Keep
+                // these small semantic passes ordered so one cannot starve the
+                // other and silently discard a date or recurrence.
+                let refinedDate = try? await refineOccurrenceDate(message)
+                let refinedRecurrence = try? await refineRecurrence(message)
+                var recurrence = recurrenceRule(value, message: message)
+                if recurrence == nil, let refined = refinedRecurrence {
+                    recurrence = recurrenceRule(refined, message: message)
+                }
+                if recurrence == nil {
+                    recurrence = try? await auditedRecurrenceRule(message)
+                }
+                let statedWhen: RuntimeDateIntent?
+                if RuntimeConstraintEvidence.contains(
+                    value.scheduleEvidence, in: message
+                ) {
+                    statedWhen = try dateIntent(
+                        kind: value.scheduleKind, weekday: value.scheduleWeekday,
+                        which: value.scheduleWhich, n: value.scheduleN,
+                        unit: value.scheduleUnit, part: value.schedulePart,
+                        anchor: value.scheduleAnchor, year: value.scheduleYear,
+                        month: value.scheduleMonth, day: value.scheduleDay,
+                        evidence: value.scheduleEvidence
+                    )
+                } else if let refined = refinedDate,
+                          RuntimeConstraintEvidence.contains(
+                            refined.dateEvidence, in: message
+                          ) {
+                    statedWhen = try? dateIntent(
+                        kind: refined.dateKind, weekday: refined.dateWeekday,
+                        which: refined.dateWhich, n: refined.dateN,
+                        unit: refined.dateUnit, part: refined.datePart,
+                        anchor: refined.dateAnchor, year: refined.dateYear,
+                        month: refined.dateMonth, day: refined.dateDay,
+                        evidence: refined.dateEvidence
+                    )
+                } else {
+                    statedWhen = nil
+                }
                 result.append(RuntimeAction(
                     type: "capture", task: task, raw: message,
-                    when: RuntimeConstraintEvidence.contains(
-                        value.scheduleEvidence, in: message
-                    ) ? try dateIntent(
-                        kind: value.scheduleKind, weekday: value.scheduleWeekday,
-                        which: value.scheduleWhich, evidence: value.scheduleEvidence
-                    ) : nil,
+                    when: statedWhen ?? recurrenceInitialDate(recurrence),
                     deadline: RuntimeConstraintEvidence.contains(
                         value.deadlineEvidence, in: message
                     ) ? try dateIntent(
                         kind: value.deadlineKind, weekday: value.deadlineWeekday,
-                        which: value.deadlineWhich, evidence: value.deadlineEvidence
+                        which: value.deadlineWhich, n: value.deadlineN,
+                        unit: value.deadlineUnit, part: value.deadlinePart,
+                        anchor: value.deadlineAnchor, year: value.deadlineYear,
+                        month: value.deadlineMonth, day: value.deadlineDay,
+                        evidence: value.deadlineEvidence
                     ) : nil,
                     time: recoveredTime(
                         task: task, evidence: value.evidence,
@@ -314,6 +407,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                     durationMinutes: duration,
                     priority: ["high", "normal", "low"].contains(value.priority)
                         ? value.priority : "normal",
+                    recurrence: recurrence,
                     confidence: 1
                 ))
             case .complete(let value):
@@ -371,7 +465,16 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             case .keep(let value):
                 guard supports(value, message: message, open: open) else { continue }
                 result.append(RuntimeAction(type: "keep", target: String(value.targetIndex)))
-            case .bulkComplete, .bulkMove:
+            case .recurrence(let value):
+                guard RuntimeConstraintEvidence.contains(value.evidence, in: message),
+                      (1...open.count).contains(value.targetIndex),
+                      open[value.targetIndex - 1].recurrence != nil,
+                      ["skip", "stop"].contains(value.operation) else { continue }
+                result.append(RuntimeAction(
+                    type: "recurrence", target: String(value.targetIndex),
+                    recurrenceOperation: value.operation
+                ))
+            case .bulkComplete, .bulkMove, .analysis:
                 break
             }
         }
@@ -904,15 +1007,37 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             scheduleEvidence: initial.scheduleEvidence,
             scheduleWeekday: initial.scheduleWeekday,
             scheduleWhich: initial.scheduleWhich,
+            scheduleN: initial.scheduleN,
+            scheduleUnit: initial.scheduleUnit,
+            schedulePart: initial.schedulePart,
+            scheduleAnchor: initial.scheduleAnchor,
+            scheduleYear: initial.scheduleYear,
+            scheduleMonth: initial.scheduleMonth,
+            scheduleDay: initial.scheduleDay,
             deadlineKind: initial.deadlineKind,
             deadlineEvidence: initial.deadlineEvidence,
             deadlineWeekday: initial.deadlineWeekday,
             deadlineWhich: initial.deadlineWhich,
+            deadlineN: initial.deadlineN,
+            deadlineUnit: initial.deadlineUnit,
+            deadlinePart: initial.deadlinePart,
+            deadlineAnchor: initial.deadlineAnchor,
+            deadlineYear: initial.deadlineYear,
+            deadlineMonth: initial.deadlineMonth,
+            deadlineDay: initial.deadlineDay,
             durationMinutes: initial.durationMinutes,
             durationEvidence: initial.durationEvidence,
             priority: initial.priority,
             clockText: item.clockText,
-            clockInterpretation: item.clockInterpretation
+            clockInterpretation: item.clockInterpretation,
+            recurrenceFrequency: initial.recurrenceFrequency,
+            recurrenceInterval: initial.recurrenceInterval,
+            recurrenceWeekdays: initial.recurrenceWeekdays,
+            recurrenceMonthDay: initial.recurrenceMonthDay,
+            recurrenceMonth: initial.recurrenceMonth,
+            recurrenceAnchor: initial.recurrenceAnchor,
+            recurrenceCount: initial.recurrenceCount,
+            recurrenceEvidence: initial.recurrenceEvidence
         )
     }
 
@@ -1045,7 +1170,11 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             type: "reschedule", target: String(value.targetIndex),
             when: try dateIntent(
                 kind: value.scheduleKind, weekday: value.scheduleWeekday,
-                which: value.scheduleWhich, evidence: value.dateEvidence
+                which: value.scheduleWhich, n: value.scheduleN,
+                unit: value.scheduleUnit, part: value.schedulePart,
+                anchor: value.scheduleAnchor, year: value.scheduleYear,
+                month: value.scheduleMonth, day: value.scheduleDay,
+                evidence: value.dateEvidence
             ),
             time: normalizedTime(
                 text: value.clockText,
@@ -1053,6 +1182,285 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 originalMessage: message
             ), confidence: 1
         )
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func recurrenceRule(
+        _ value: CaptureArgs,
+        message: String
+    ) -> RuntimeRecurrenceRule? {
+        guard value.recurrenceFrequency != "none",
+              RuntimeConstraintEvidence.contains(
+                value.recurrenceEvidence, in: message
+              ) else { return nil }
+        let weekdays = groundedRecurrenceWeekdays(
+            value.recurrenceWeekdays,
+            evidence: value.recurrenceEvidence
+        )
+        let rule = RuntimeRecurrenceRule(
+            frequency: value.recurrenceFrequency,
+            interval: max(1, value.recurrenceInterval),
+            weekdays: weekdays,
+            monthDay: value.recurrenceMonthDay > 0
+                ? value.recurrenceMonthDay : nil,
+            month: value.recurrenceMonth > 0 ? value.recurrenceMonth : nil,
+            anchor: value.recurrenceAnchor,
+            count: value.recurrenceCount > 0 ? value.recurrenceCount : nil
+        )
+        return rule.isValid ? rule : nil
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func recurrenceRule(
+        _ value: RecurrenceConstraintArgs,
+        message: String
+    ) -> RuntimeRecurrenceRule? {
+        guard value.recurrenceFrequency != "none",
+              RuntimeConstraintEvidence.contains(
+                value.recurrenceEvidence, in: message
+              ) else { return nil }
+        let weekdays = groundedRecurrenceWeekdays(
+            value.recurrenceWeekdays,
+            evidence: value.recurrenceEvidence
+        )
+        let rule = RuntimeRecurrenceRule(
+            frequency: value.recurrenceFrequency,
+            interval: max(1, value.recurrenceInterval),
+            weekdays: weekdays,
+            monthDay: value.recurrenceMonthDay > 0
+                ? value.recurrenceMonthDay : nil,
+            month: value.recurrenceMonth > 0 ? value.recurrenceMonth : nil,
+            anchor: value.recurrenceAnchor,
+            count: value.recurrenceCount > 0 ? value.recurrenceCount : nil
+        )
+        return rule.isValid ? rule : nil
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func refineOccurrenceDate(
+        _ message: String
+    ) async throws -> DateConstraintArgs {
+        var last: DateConstraintArgs?
+        for _ in 0..<2 {
+            guard let value = try? await LanguageModelSession(instructions: """
+                Extract only when this new task is supposed to happen. Copy the date
+                evidence exactly. Use none when no occurrence date is stated. A
+                relative phrase such as “in 10 years” is offset 10 years. Never
+                treat a duration as a date and never invent.
+                """).respond(
+                    to: "User message: \(message)",
+                    generating: DateConstraintArgs.self
+                ).content else { continue }
+            last = value
+            if value.dateKind != "none" { return value }
+        }
+        guard let last else { throw RuntimeInterpretationError.invalidOutput }
+        return last
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func refineRecurrence(
+        _ message: String
+    ) async throws -> RecurrenceConstraintArgs {
+        var last: RecurrenceConstraintArgs?
+        for _ in 0..<2 {
+            guard let value = try? await LanguageModelSession(instructions: """
+                Extract only whether this new task repeats. Copy recurrence evidence
+                exactly. Use none when it does not repeat. “Every Monday” is weekly
+                on Monday. Never invent recurrence from an ordinary date.
+                """).respond(
+                    to: "User message: \(message)",
+                    generating: RecurrenceConstraintArgs.self
+                ).content else { continue }
+            last = value
+            if value.recurrenceFrequency != "none" { return value }
+        }
+        guard let last else { throw RuntimeInterpretationError.invalidOutput }
+        return last
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func recoverNewCaptureActions(
+        message: String
+    ) async throws -> [RuntimeAction] {
+        let batch = try await LanguageModelSession(instructions: """
+            Extract only genuine new obligations. Return one short task per
+            obligation and copy its supporting words exactly. Return an empty
+            list for questions, replies, reports, or existing-task changes.
+            """).respond(
+                to: "User message: \(message)",
+                generating: SimpleCaptureBatch.self
+            ).content
+        let items = batch.tasks.filter { item in
+            let task = item.task.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !task.isEmpty
+                && task.utf8.count <= 10_000
+                && RuntimeConstraintEvidence.contains(item.evidence, in: message)
+                && captureIsNew(task, evidence: item.evidence, open: [])
+        }
+        guard !items.isEmpty, items.count <= 16 else {
+            throw RuntimeInterpretationError.invalidOutput
+        }
+        if clockCandidateCount(in: message) == 2,
+           let labels = structurallySeparateCoordinatedLabels(in: message) {
+            for _ in 0..<2 {
+                guard let pair = try? await LanguageModelSession(instructions: """
+                    Classify two clock expressions. For coordinated appointments,
+                    pair each appointment with its clock in order. Interpret an
+                    unstated meridiem as a reasonable daytime appointment.
+                    """).respond(
+                        to: "User message: \(message)",
+                        generating: CoordinatedClockPairArgs.self
+                    ).content,
+                    pair.kind == "two_appointments"
+                else { continue }
+                return [
+                    RuntimeAction(
+                        type: "capture", task: labels.0.task, raw: message,
+                        time: normalizedTime(
+                            text: pair.firstClockText,
+                            interpretation: pair.firstClockInterpretation,
+                            originalMessage: message
+                        ), priority: "normal", confidence: 1
+                    ),
+                    RuntimeAction(
+                        type: "capture", task: labels.1.task, raw: message,
+                        time: normalizedTime(
+                            text: pair.secondClockText,
+                            interpretation: pair.secondClockInterpretation,
+                            originalMessage: message
+                        ), priority: "normal", confidence: 1
+                    ),
+                ]
+            }
+        }
+        let refinedDate = try? await refineOccurrenceDate(message)
+        let refinedRecurrence = try? await refineRecurrence(message)
+        var recurrence = refinedRecurrence.flatMap {
+            recurrenceRule($0, message: message)
+        }
+        if recurrence == nil {
+            recurrence = try? await auditedRecurrenceRule(message)
+        }
+        let when = refinedDate.flatMap { value -> RuntimeDateIntent? in
+            guard RuntimeConstraintEvidence.contains(
+                value.dateEvidence, in: message
+            ) else { return nil }
+            return try? dateIntent(
+                kind: value.dateKind, weekday: value.dateWeekday,
+                which: value.dateWhich, n: value.dateN, unit: value.dateUnit,
+                part: value.datePart, anchor: value.dateAnchor,
+                year: value.dateYear, month: value.dateMonth,
+                day: value.dateDay, evidence: value.dateEvidence
+            )
+        } ?? recurrenceInitialDate(recurrence)
+        return items.map { item in
+            RuntimeAction(
+                type: "capture",
+                task: item.task.trimmingCharacters(in: .whitespacesAndNewlines),
+                raw: message, when: when, priority: "normal",
+                recurrence: recurrence, confidence: 1
+            )
+        }
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func auditedRecurrenceRule(
+        _ message: String
+    ) async throws -> RuntimeRecurrenceRule? {
+        for _ in 0..<2 {
+            let response = try await LanguageModelSession(instructions: """
+                Decide whether the obligation repeats. Start with exactly one of
+                NONE, DAILY, WEEKLY, MONTHLY, or YEARLY. Then explain briefly.
+                A named weekday with “every” is weekly. Do not infer repetition
+                from an ordinary date.
+                """).respond(to: "User message: \(message)")
+            guard let first = response.content.uppercased().split(whereSeparator: {
+                !$0.isLetter
+            }).first.map(String.init) else { continue }
+            let frequency: String?
+            switch first {
+            case "DAILY": frequency = "day"
+            case "WEEKLY": frequency = "week"
+            case "MONTHLY": frequency = "month"
+            case "YEARLY": frequency = "year"
+            case "NONE": return nil
+            default: frequency = nil
+            }
+            guard let frequency else { continue }
+            let rule = RuntimeRecurrenceRule(
+                frequency: frequency,
+                weekdays: frequency == "week"
+                    ? groundedRecurrenceWeekdays([], evidence: message) : []
+            )
+            if rule.isValid { return rule }
+        }
+        throw RuntimeInterpretationError.invalidOutput
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func extractAnalysis(
+        message: String,
+        open: [RuntimeTask]
+    ) async throws -> AnalysisArgs? {
+        let result = try await LanguageModelSession(instructions: """
+            Classify only read-only planning questions. Capacity asks whether
+            work fits. Explain asks why one task has its place. What-if changes
+            one duration temporarily. Ordinary task changes are none. Copy
+            evidence exactly. Use seven days when no horizon is stated.
+            """).respond(
+                to: """
+                Open tasks: \(open.enumerated().map { "\($0.offset + 1). \($0.element.task)" })
+                User message: \(message)
+                """,
+                generating: AnalysisClassificationArgs.self
+            ).content
+        guard result.kind != "none" else { return nil }
+        return AnalysisArgs(
+            kind: result.kind,
+            targetIndex: result.targetIndex,
+            horizonDays: result.horizonDays,
+            budgetMinutes: result.budgetMinutes,
+            hypotheticalDurationMinutes: result.hypotheticalDurationMinutes,
+            durationEvidence: result.durationEvidence,
+            evidence: result.evidence
+        )
+    }
+
+    private static func recurrenceInitialDate(
+        _ rule: RuntimeRecurrenceRule?
+    ) -> RuntimeDateIntent? {
+        guard let rule else { return nil }
+        if rule.frequency == "week", let day = rule.weekdays.first {
+            return RuntimeDateIntent(kind: "weekday", which: "this", day: day)
+        }
+        if rule.frequency == "month", let day = rule.monthDay {
+            return RuntimeDateIntent(kind: "ordinal_day", dayNumber: day)
+        }
+        if rule.frequency == "year", let month = rule.month,
+           let day = rule.monthDay {
+            return RuntimeDateIntent(kind: "month_day", month: month, dayNumber: day)
+        }
+        return RuntimeDateIntent(kind: "today")
+    }
+
+    private static func groundedRecurrenceWeekdays(
+        _ generated: [String],
+        evidence: String
+    ) -> [String] {
+        let valid = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
+        let supplied = generated.filter(valid.contains)
+        guard supplied.isEmpty else { return supplied }
+        let tokens = Set(words(evidence))
+        let names = [
+            "sun": ["sun", "sunday"], "mon": ["mon", "monday"],
+            "tue": ["tue", "tues", "tuesday"],
+            "wed": ["wed", "wednesday"], "thu": ["thu", "thur", "thurs", "thursday"],
+            "fri": ["fri", "friday"], "sat": ["sat", "saturday"],
+        ]
+        return valid.filter { day in
+            names[day].map { !Set($0).isDisjoint(with: tokens) } == true
+        }
     }
 
     @available(iOS 26.0, macOS 26.0, *)
@@ -1068,6 +1476,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         case progress(TargetArgs), capture(CaptureArgs), complete(TargetArgs)
         case drop(TargetArgs), move(MoveArgs), amend(AmendArgs), keep(TargetArgs)
         case bulkComplete(BulkCompleteArgs), bulkMove(BulkMoveArgs)
+        case recurrence(RecurrenceArgs), analysis(AnalysisArgs)
     }
 
     @available(iOS 26.0, macOS 26.0, *) @Generable
@@ -1083,23 +1492,79 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     struct CaptureArgs {
         @Guide(description: "One short actionable new task without dates, clocks, or another coordinated obligation") var task: String
         @Guide(description: "Exact user words supporting this one new task") var evidence: String
-        @Guide(.anyOf(["none", "today", "tomorrow", "weekday"])) var scheduleKind: String
+        @Guide(.anyOf(["none", "today", "tomorrow", "weekday", "offset", "weekend", "week", "month", "month_day", "ordinal_day", "absolute"])) var scheduleKind: String
         @Guide(description: "Exact planned-day words, or none") var scheduleEvidence: String
         @Guide(.anyOf(["none", "mon", "tue", "wed", "thu", "fri", "sat", "sun"])) var scheduleWeekday: String
         @Guide(.anyOf(["none", "this", "next"])) var scheduleWhich: String
-        @Guide(.anyOf(["none", "today", "tomorrow", "weekday"])) var deadlineKind: String
+        @Guide(description: "Positive offset amount, or 0") var scheduleN: Int
+        @Guide(.anyOf(["none", "day", "week", "month", "year"])) var scheduleUnit: String
+        @Guide(.anyOf(["none", "start", "early", "mid", "late", "end"])) var schedulePart: String
+        @Guide(.anyOf(["none", "start", "end"])) var scheduleAnchor: String
+        @Guide(description: "Explicit four-digit year, or 0") var scheduleYear: Int
+        @Guide(description: "Explicit month number, or 0") var scheduleMonth: Int
+        @Guide(description: "Explicit day of month, or 0") var scheduleDay: Int
+        @Guide(.anyOf(["none", "today", "tomorrow", "weekday", "offset", "weekend", "week", "month", "month_day", "ordinal_day", "absolute"])) var deadlineKind: String
         @Guide(description: "Exact hard-deadline words, or none") var deadlineEvidence: String
         @Guide(.anyOf(["none", "mon", "tue", "wed", "thu", "fri", "sat", "sun"])) var deadlineWeekday: String
         @Guide(.anyOf(["none", "this", "next"])) var deadlineWhich: String
+        @Guide(description: "Positive deadline offset amount, or 0") var deadlineN: Int
+        @Guide(.anyOf(["none", "day", "week", "month", "year"])) var deadlineUnit: String
+        @Guide(.anyOf(["none", "start", "early", "mid", "late", "end"])) var deadlinePart: String
+        @Guide(.anyOf(["none", "start", "end"])) var deadlineAnchor: String
+        @Guide(description: "Explicit deadline year, or 0") var deadlineYear: Int
+        @Guide(description: "Explicit deadline month number, or 0") var deadlineMonth: Int
+        @Guide(description: "Explicit deadline day of month, or 0") var deadlineDay: Int
         @Guide(description: "Estimated minutes, or 0") var durationMinutes: Int
         @Guide(description: "Exact effort words, or none") var durationEvidence: String
         @Guide(.anyOf(["high", "normal", "low"])) var priority: String
         @Guide(description: "Exact clock text, or none") var clockText: String
         @Guide(.anyOf(["none", "am", "pm"])) var clockInterpretation: String
+        @Guide(.anyOf(["none", "day", "week", "month", "year"])) var recurrenceFrequency: String
+        @Guide(description: "Repeat interval, normally 1, or 0 when not recurring") var recurrenceInterval: Int
+        @Guide(description: "Repeated weekdays as sun through sat, or empty") var recurrenceWeekdays: [String]
+        @Guide(description: "Repeated day of month, or 0") var recurrenceMonthDay: Int
+        @Guide(description: "Repeated month number, or 0") var recurrenceMonth: Int
+        @Guide(.anyOf(["fixed", "completion"])) var recurrenceAnchor: String
+        @Guide(description: "Total occurrence count, or 0 for no count limit") var recurrenceCount: Int
+        @Guide(description: "Exact recurrence words, or none") var recurrenceEvidence: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct DateConstraintArgs {
+        @Guide(.anyOf(["none", "today", "tomorrow", "weekday", "offset", "weekend", "week", "month", "month_day", "ordinal_day", "absolute"])) var dateKind: String
+        @Guide(description: "Exact occurrence-date words, or none") var dateEvidence: String
+        @Guide(.anyOf(["none", "mon", "tue", "wed", "thu", "fri", "sat", "sun"])) var dateWeekday: String
+        @Guide(.anyOf(["none", "this", "next"])) var dateWhich: String
+        @Guide(description: "Positive offset amount, or 0") var dateN: Int
+        @Guide(.anyOf(["none", "day", "week", "month", "year"])) var dateUnit: String
+        @Guide(.anyOf(["none", "start", "early", "mid", "late", "end"])) var datePart: String
+        @Guide(.anyOf(["none", "start", "end"])) var dateAnchor: String
+        @Guide(description: "Explicit four-digit year, or 0") var dateYear: Int
+        @Guide(description: "Explicit month number, or 0") var dateMonth: Int
+        @Guide(description: "Explicit day of month, or 0") var dateDay: Int
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct RecurrenceConstraintArgs {
+        @Guide(.anyOf(["none", "day", "week", "month", "year"])) var recurrenceFrequency: String
+        @Guide(description: "Repeat interval, normally 1, or 0") var recurrenceInterval: Int
+        @Guide(description: "Repeated weekdays as sun through sat, or empty") var recurrenceWeekdays: [String]
+        @Guide(description: "Repeated day of month, or 0") var recurrenceMonthDay: Int
+        @Guide(description: "Repeated month number, or 0") var recurrenceMonth: Int
+        @Guide(.anyOf(["fixed", "completion"])) var recurrenceAnchor: String
+        @Guide(description: "Total occurrence count, or 0") var recurrenceCount: Int
+        @Guide(description: "Exact recurrence words, or none") var recurrenceEvidence: String
     }
     @available(iOS 26.0, macOS 26.0, *) @Generable
     struct CaptureBatchArgs {
         @Guide(description: "Every distinct new obligation, one item per task or appointment") var tasks: [CaptureArgs]
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct SimpleCaptureItem {
+        @Guide(description: "One short actionable task label") var task: String
+        @Guide(description: "Exact user words expressing this obligation") var evidence: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct SimpleCaptureBatch {
+        @Guide(description: "Every genuine new obligation, or empty") var tasks: [SimpleCaptureItem]
     }
     @available(iOS 26.0, macOS 26.0, *) @Generable
     struct CaptureDecompositionItem {
@@ -1131,10 +1596,17 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     @available(iOS 26.0, macOS 26.0, *) @Generable
     struct MoveDestination {
         @Guide(description: "1-based open task number") var targetIndex: Int
-        @Guide(.anyOf(["none", "today", "tomorrow", "weekday"])) var scheduleKind: String
+        @Guide(.anyOf(["none", "today", "tomorrow", "weekday", "offset", "weekend", "week", "month", "month_day", "ordinal_day", "absolute"])) var scheduleKind: String
         @Guide(description: "Exact date or day words from the user message") var dateEvidence: String
         @Guide(.anyOf(["none", "mon", "tue", "wed", "thu", "fri", "sat", "sun"])) var scheduleWeekday: String
         @Guide(.anyOf(["none", "this", "next"])) var scheduleWhich: String
+        @Guide(description: "Positive offset amount, or 0") var scheduleN: Int
+        @Guide(.anyOf(["none", "day", "week", "month", "year"])) var scheduleUnit: String
+        @Guide(.anyOf(["none", "start", "early", "mid", "late", "end"])) var schedulePart: String
+        @Guide(.anyOf(["none", "start", "end"])) var scheduleAnchor: String
+        @Guide(description: "Explicit four-digit year, or 0") var scheduleYear: Int
+        @Guide(description: "Explicit month number, or 0") var scheduleMonth: Int
+        @Guide(description: "Explicit day of month, or 0") var scheduleDay: Int
         @Guide(description: "Exact clock text, or none") var clockText: String
         @Guide(.anyOf(["none", "am", "pm"])) var clockInterpretation: String
     }
@@ -1157,6 +1629,32 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     struct BulkMoveArgs {
         @Guide(description: "One destination for every affected task") var destinations: [MoveDestination]
         @Guide(description: "Exact user words expressing the bulk move") var evidence: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct RecurrenceArgs {
+        @Guide(description: "1-based number of the recurring task") var targetIndex: Int
+        @Guide(.anyOf(["skip", "stop"])) var operation: String
+        @Guide(description: "Exact user words requesting this recurrence change") var evidence: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct AnalysisArgs {
+        @Guide(.anyOf(["capacity", "explain", "what_if"])) var kind: String
+        @Guide(description: "1-based affected task number, or 0 for the whole plan") var targetIndex: Int
+        @Guide(description: "Planning horizon in days; use 7 when unstated") var horizonDays: Int
+        @Guide(description: "Available time budget in minutes, or 0") var budgetMinutes: Int
+        @Guide(description: "Temporary task duration in minutes, or 0") var hypotheticalDurationMinutes: Int
+        @Guide(description: "Exact words supporting the temporary duration, or none") var durationEvidence: String
+        @Guide(description: "Exact user words requesting analysis") var evidence: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct AnalysisClassificationArgs {
+        @Guide(.anyOf(["none", "capacity", "explain", "what_if"])) var kind: String
+        @Guide(description: "1-based affected task number, or 0") var targetIndex: Int
+        @Guide(description: "Planning horizon in days; use 7 when unstated") var horizonDays: Int
+        @Guide(description: "Available time budget in minutes, or 0") var budgetMinutes: Int
+        @Guide(description: "Temporary task duration in minutes, or 0") var hypotheticalDurationMinutes: Int
+        @Guide(description: "Exact words supporting that duration, or none") var durationEvidence: String
+        @Guide(description: "Exact words requesting analysis, or none") var evidence: String
     }
 
     @available(iOS 26.0, macOS 26.0, *)
@@ -1258,10 +1756,36 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             await collector.append(.bulkMove(arguments)); return "Bulk move recorded."
         }
     }
+    @available(iOS 26.0, macOS 26.0, *)
+    struct Recurrence: Tool {
+        let collector: Collector; let name = "change_recurrence"
+        let description = "Skip the next occurrence or stop repetition for one existing recurring task. Never complete or drop the task."
+        func call(arguments: RecurrenceArgs) async throws -> String {
+            await collector.append(.recurrence(arguments)); return "Recurrence updated."
+        }
+    }
+    @available(iOS 26.0, macOS 26.0, *)
+    struct Analyze: Tool {
+        let collector: Collector; let name = "analyze_plan"
+        let description = "Use for read-only capacity, why/explanation, fit, or what-if questions. A what-if duration is temporary and never edits a task."
+        func call(arguments: AnalysisArgs) async throws -> String {
+            await collector.append(.analysis(arguments)); return "Analysis requested."
+        }
+    }
     #endif
 
     private static func dateIntent(
-        kind: String, weekday: String, which: String, evidence: String = ""
+        kind: String,
+        weekday: String,
+        which: String,
+        n: Int = 0,
+        unit: String = "none",
+        part: String = "none",
+        anchor: String = "none",
+        year: Int = 0,
+        month: Int = 0,
+        day: Int = 0,
+        evidence: String = ""
     ) throws -> RuntimeDateIntent? {
         let evidenceWords = Set(words(evidence))
         if evidenceWords.contains("tomorrow") { return RuntimeDateIntent(kind: "tomorrow") }
@@ -1279,11 +1803,88 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         }?.key
         let resolvedDay = evidencedDay ?? weekday
         let resolvedWhich = evidenceWords.contains("next") ? "next" : which
-        guard kind == "weekday", weekdays[resolvedDay] != nil,
-              ["this", "next"].contains(resolvedWhich) else {
-            throw RuntimeInterpretationError.invalidOutput
+        if kind == "weekday" {
+            guard weekdays[resolvedDay] != nil,
+                  ["this", "next"].contains(resolvedWhich) else {
+                throw RuntimeInterpretationError.invalidOutput
+            }
+            return RuntimeDateIntent(
+                kind: "weekday", which: resolvedWhich, day: resolvedDay
+            )
         }
-        return RuntimeDateIntent(kind: "weekday", which: resolvedWhich, day: resolvedDay)
+        if kind == "offset" {
+            guard n > 0, ["day", "week", "month", "year"].contains(unit),
+                  numberIsGrounded(n, in: evidence) else {
+                throw RuntimeInterpretationError.invalidOutput
+            }
+            return RuntimeDateIntent(kind: kind, n: n, unit: unit)
+        }
+        if kind == "weekend" {
+            guard ["this", "next"].contains(resolvedWhich) else {
+                throw RuntimeInterpretationError.invalidOutput
+            }
+            return RuntimeDateIntent(kind: kind, which: resolvedWhich)
+        }
+        if kind == "week" || kind == "month" {
+            guard ["this", "next"].contains(resolvedWhich) else {
+                throw RuntimeInterpretationError.invalidOutput
+            }
+            return RuntimeDateIntent(
+                kind: kind, which: resolvedWhich,
+                part: part == "none" ? nil : part,
+                anchor: anchor == "none" ? nil : anchor
+            )
+        }
+        if kind == "month_day" || kind == "ordinal_day" {
+            guard (1...31).contains(day), numberIsGrounded(day, in: evidence),
+                  month == 0 || ((1...12).contains(month)
+                    && monthIsGrounded(month, in: evidence)) else {
+                throw RuntimeInterpretationError.invalidOutput
+            }
+            return RuntimeDateIntent(
+                kind: kind, month: month > 0 ? month : nil, dayNumber: day
+            )
+        }
+        if kind == "absolute" {
+            guard (1...9999).contains(year), (1...12).contains(month),
+                  (1...31).contains(day),
+                  numberIsGrounded(year, in: evidence),
+                  monthIsGrounded(month, in: evidence),
+                  numberIsGrounded(day, in: evidence) else {
+                throw RuntimeInterpretationError.invalidOutput
+            }
+            return RuntimeDateIntent(
+                kind: kind, year: year, month: month, dayNumber: day
+            )
+        }
+        throw RuntimeInterpretationError.invalidOutput
+    }
+
+    private static func numberIsGrounded(_ value: Int, in evidence: String) -> Bool {
+        let tokens = Set(words(evidence))
+        if tokens.contains(String(value)) { return true }
+        let names = [
+            1: "one", 2: "two", 3: "three", 4: "four", 5: "five",
+            6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten",
+            11: "eleven", 12: "twelve", 13: "thirteen", 14: "fourteen",
+            15: "fifteen", 16: "sixteen", 17: "seventeen",
+            18: "eighteen", 19: "nineteen", 20: "twenty",
+        ]
+        return names[value].map(tokens.contains) == true
+    }
+
+    private static func monthIsGrounded(_ value: Int, in evidence: String) -> Bool {
+        let tokens = Set(words(evidence))
+        if tokens.contains(String(value)) { return true }
+        let months = [
+            1: ["jan", "january"], 2: ["feb", "february"],
+            3: ["mar", "march"], 4: ["apr", "april"],
+            5: ["may"], 6: ["jun", "june"], 7: ["jul", "july"],
+            8: ["aug", "august"], 9: ["sep", "sept", "september"],
+            10: ["oct", "october"], 11: ["nov", "november"],
+            12: ["dec", "december"],
+        ]
+        return months[value].map { !Set($0).isDisjoint(with: tokens) } == true
     }
 
     private static func normalizedTime(

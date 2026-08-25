@@ -705,6 +705,93 @@ func calendarChoicesControlPlanningAndPersistPerDevice() async throws {
     #expect(restored.blockAllDayEvents)
 }
 
+@Test @MainActor
+func planningQuestionShowsReadOnlyAnswerWithoutWritingState() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("hob-analysis-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = TaskStateStore(directoryURL: directory)
+    let task = RuntimeTask(
+        id: "task-1", rawText: "finish report", task: "finish report",
+        dueDate: nil, dueTime: nil, durationMinutes: 60,
+        priority: "high", status: "open",
+        createdAt: "2026-08-25T08:00:00-04:00",
+        updatedAt: "2026-08-25T08:00:00-04:00"
+    )
+    try store.save(RuntimePersistentState(tasks: [task], undoSnapshots: []))
+    let before = try store.load()
+    let now = try #require(ISO8601DateFormatter().date(
+        from: "2026-08-25T09:00:00-04:00"
+    ))
+    let controller = HobWorkspaceController(
+        store: store,
+        interpreter: StubInterpreter(actions: [RuntimeAction(
+            type: "analysis", analysisKind: "capacity", horizonDays: 7
+        )]),
+        calendarStore: StubCalendar(),
+        notificationStore: StubNotifications(),
+        syncStore: StubSync(),
+        defaults: try #require(UserDefaults(
+            suiteName: "hob-analysis-tests-\(UUID().uuidString)"
+        )),
+        timezone: try #require(TimeZone(identifier: "America/New_York")),
+        now: { now }
+    )
+    try await Task.sleep(for: .milliseconds(30))
+
+    controller.draft = "Will this week fit?"
+    controller.submit()
+    try await waitUntilIdle(controller)
+
+    #expect(controller.draft.isEmpty)
+    #expect(controller.planningAnalysis?.headline == "Everything fits.")
+    #expect(controller.planningAnalysis?.kind == "capacity")
+    #expect(controller.tasks == [task])
+    #expect(try store.load() == before)
+}
+
+@Test @MainActor
+func farFutureDateRequiresShortConfirmationBeforeWriting() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("hob-far-date-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let now = try #require(ISO8601DateFormatter().date(
+        from: "2026-08-25T09:00:00-04:00"
+    ))
+    let controller = HobWorkspaceController(
+        store: TaskStateStore(directoryURL: directory),
+        interpreter: StubInterpreter(actions: [RuntimeAction(
+            type: "capture",
+            task: "buy bananas",
+            raw: "buy bananas in 10 years",
+            when: RuntimeDateIntent(kind: "offset", n: 10, unit: "year")
+        )]),
+        calendarStore: StubCalendar(),
+        notificationStore: StubNotifications(),
+        syncStore: StubSync(),
+        defaults: try #require(UserDefaults(
+            suiteName: "hob-far-date-tests-\(UUID().uuidString)"
+        )),
+        timezone: try #require(TimeZone(identifier: "America/New_York")),
+        now: { now }
+    )
+    try await Task.sleep(for: .milliseconds(30))
+
+    controller.draft = "buy bananas in 10 years"
+    controller.submit()
+    try await waitUntilIdle(controller)
+
+    #expect(controller.tasks.isEmpty)
+    #expect(controller.draft == "buy bananas in 10 years")
+    #expect(controller.longRangeConfirmation == "Are you sure it’s 10 years away?")
+
+    controller.confirmLongRangeSubmission()
+    try await waitUntilIdle(controller)
+    #expect(controller.longRangeConfirmation == nil)
+    #expect(controller.draft.isEmpty)
+    #expect(controller.tasks.first?.dueDate == "2036-08-25")
+}
+
 private func notificationResponse(
     id: String,
     action: RuntimeNotificationAction,

@@ -48,9 +48,10 @@ public final class HobWorkspaceController: ObservableObject {
     @Published public private(set) var eveningRecapNeedsAttention = false
     @Published public private(set) var syncAvailability: RuntimeTaskSyncAvailability
     @Published public private(set) var syncNeedsAttention = false
-    @Published public private(set) var planningPreferences: RuntimePlanningPreferences = .default
     @Published public private(set) var importReport: OpenLocalImportResult?
     @Published public private(set) var modelReadiness: ModelReadinessState
+    @Published public private(set) var planningAnalysis: RuntimePlanningAnalysis? = nil
+    @Published public private(set) var longRangeConfirmation: String? = nil
 
     private let runtime: DurableTaskRuntime?
     private let interpreter: any RuntimeMessageInterpreting
@@ -62,6 +63,13 @@ public final class HobWorkspaceController: ObservableObject {
     private let now: @Sendable () -> Date
     private let modelProbe: (@Sendable () async throws -> Void)?
     private let defaults: UserDefaults
+    private var pendingLongRangeSubmission: PendingLongRangeSubmission?
+
+    private struct PendingLongRangeSubmission {
+        let text: String
+        let actions: [RuntimeAction]
+        let instant: Date
+    }
 
     private enum DefaultsKey {
         static let morningDigestEnabled = "hob.morning.digest.enabled"
@@ -406,7 +414,8 @@ public final class HobWorkspaceController: ObservableObject {
                 return
             }
             let instant = self.now()
-            _ = try await self.applyCompletion(
+            self.planningAnalysis = nil
+            let result = try await self.applyCompletion(
                 taskID: task.id,
                 message: "Done from Today",
                 requestID: UUID().uuidString,
@@ -414,9 +423,52 @@ public final class HobWorkspaceController: ObservableObject {
                 runtime: runtime
             )
             await self.syncTasks()
-            self.notice = "Done: \(task.task)."
+            if let next = result.outcome.tasks.first(where: {
+                $0.id == task.id && $0.status == "open" && $0.recurrence != nil
+            }) {
+                self.notice = "Next: \(next.task)\(next.dueDate.map { " on \($0)" } ?? "")."
+            } else {
+                self.notice = "Done: \(task.task)."
+            }
             await self.refresh()
         }
+    }
+
+    public func task(taskID: String) -> RuntimeTask? {
+        tasks.first { $0.id == taskID }
+    }
+
+    public func skipOccurrence(taskID: String) {
+        updateRecurrence(taskID: taskID, operation: "skip")
+    }
+
+    public func stopRepeating(taskID: String) {
+        updateRecurrence(taskID: taskID, operation: "stop")
+    }
+
+    public func dismissPlanningAnalysis() {
+        planningAnalysis = nil
+    }
+
+    public func confirmLongRangeSubmission() {
+        guard let pending = pendingLongRangeSubmission else { return }
+        pendingLongRangeSubmission = nil
+        longRangeConfirmation = nil
+        run {
+            guard let runtime = self.runtime else { return }
+            try await self.applySubmittedActions(
+                pending.actions,
+                text: pending.text,
+                instant: pending.instant,
+                runtime: runtime
+            )
+        }
+    }
+
+    public func cancelLongRangeSubmission() {
+        pendingLongRangeSubmission = nil
+        longRangeConfirmation = nil
+        notice = "Canceled."
     }
 
     public func taskStatusLabel(_ task: RuntimeTask) -> String {
@@ -497,6 +549,50 @@ public final class HobWorkspaceController: ObservableObject {
                 tasks: current,
                 at: instant
             )
+            if actions.count == 1, actions[0].type == "analysis" {
+                let horizon = actions[0].horizonDays ?? 7
+                self.planningAnalysis = try RuntimePlanningAnalyzer.analyze(
+                    tasks: current,
+                    action: actions[0],
+                    request: try self.scheduleRequest(
+                        at: instant,
+                        horizonDays: horizon
+                    )
+                )
+                if self.draft.trimmingCharacters(in: .whitespacesAndNewlines) == text {
+                    self.draft = ""
+                }
+                self.notice = nil
+                return
+            }
+            if let confirmation = self.longRangeMessage(
+                actions: actions,
+                tasks: current,
+                text: text,
+                instant: instant
+            ) {
+                self.pendingLongRangeSubmission = PendingLongRangeSubmission(
+                    text: text,
+                    actions: actions,
+                    instant: instant
+                )
+                self.longRangeConfirmation = confirmation
+                return
+            }
+            self.planningAnalysis = nil
+            try await self.applySubmittedActions(
+                actions, text: text, instant: instant, runtime: runtime
+            )
+        }
+    }
+
+    private func applySubmittedActions(
+        _ actions: [RuntimeAction],
+        text: String,
+        instant: Date,
+        runtime: DurableTaskRuntime
+    ) async throws {
+            let timestamp = self.timestamp(instant)
             let requestID = UUID().uuidString
             let response = try await runtime.process(RuntimeTurnRequest(
                 requestID: requestID,
@@ -549,7 +645,50 @@ public final class HobWorkspaceController: ObservableObject {
                 self.notice = "Nothing changed. Try describing the task another way."
             }
             await self.refresh()
-        }
+    }
+
+    private func longRangeMessage(
+        actions: [RuntimeAction],
+        tasks: [RuntimeTask],
+        text: String,
+        instant: Date
+    ) -> String? {
+        var preview = TaskRuntime(tasks: tasks)
+        let response = preview.process(RuntimeTurnRequest(
+            requestID: "long-range-preview",
+            message: text,
+            now: timestamp(instant),
+            timezone: timezone.identifier,
+            actions: actions
+        ))
+        guard response.outcome.disposition == .applied,
+              let boundary = gregorianCalendar.date(
+                byAdding: .year, value: 2, to: instant
+              ) else { return nil }
+        let formatter = DateFormatter()
+        formatter.calendar = gregorianCalendar
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timezone
+        formatter.dateFormat = "yyyy-MM-dd"
+        let boundaryDay = formatter.string(from: boundary)
+        let affected = Set(actions.compactMap(\.target))
+        let newIDs = Set(response.outcome.tasks.map(\.id)).subtracting(tasks.map(\.id))
+        let farDates = response.outcome.tasks.filter {
+            affected.contains($0.id) || newIDs.contains($0.id)
+        }.flatMap { [$0.dueDate, $0.deadlineDate].compactMap { $0 } }
+            .filter { $0 > boundaryDay }
+            .sorted()
+        guard let farthest = farDates.last,
+              let date = formatter.date(from: farthest) else { return nil }
+        let years = max(
+            2,
+            gregorianCalendar.dateComponents(
+                [.year],
+                from: gregorianCalendar.startOfDay(for: instant),
+                to: date
+            ).year ?? 2
+        )
+        return "Are you sure it’s \(years) years away?"
     }
 
     public func planOnDeckWork() {
@@ -746,33 +885,6 @@ public final class HobWorkspaceController: ObservableObject {
         }
     }
 
-    public func updatePlanningPreferences(
-        workStart: String,
-        workEnd: String,
-        workDays: [Int],
-        defaultDurationMinutes: Int,
-        transitionBufferMinutes: Int
-    ) {
-        let preferences = RuntimePlanningPreferences(
-            workStart: workStart,
-            workEnd: workEnd,
-            workDays: workDays,
-            defaultDurationMinutes: defaultDurationMinutes,
-            transitionBufferMinutes: transitionBufferMinutes
-        )
-        run {
-            guard let runtime = self.runtime else { return }
-            try await runtime.setPlanningPreferences(preferences)
-            if self.tasks.contains(where: { $0.status == "open" }) {
-                _ = try await runtime.proposeSchedule(
-                    try self.scheduleRequest(at: self.now(), preferences: preferences)
-                )
-            }
-            self.notice = "Planning hours updated."
-            await self.refresh()
-        }
-    }
-
     public func importOpenLocal(from url: URL) {
         run {
             guard let runtime = self.runtime else { return }
@@ -882,7 +994,6 @@ public final class HobWorkspaceController: ObservableObject {
         refreshCalendarChoices()
         notificationAuthorization = notificationStore.authorization
         syncAvailability = syncStore.availability
-        planningPreferences = snapshot.planningPreferences
         let activeProposal = snapshot.adoptedSchedule?.proposal ?? snapshot.latestProposal
         morningDigest = RuntimeMorningDigestBuilder.build(
             for: now(),
@@ -1035,15 +1146,15 @@ public final class HobWorkspaceController: ObservableObject {
 
     private func scheduleRequest(
         at instant: Date,
-        preferences: RuntimePlanningPreferences? = nil,
-        includedUntimedTaskIDs: [String]? = nil
+        includedUntimedTaskIDs: [String]? = nil,
+        horizonDays: Int = 7
     ) throws -> RuntimeScheduleRequest {
-        let preferences = preferences ?? planningPreferences
+        let preferences = RuntimePlanningPreferences.default
         let end = gregorianCalendar.date(
             byAdding: .day,
-            value: 7,
+            value: horizonDays,
             to: instant
-        ) ?? instant.addingTimeInterval(7 * 86_400)
+        ) ?? instant.addingTimeInterval(Double(horizonDays) * 86_400)
         let busy = calendarIntegrationEnabled
             && calendarStore.authorization == .fullAccess
             ? try calendarStore.busyIntervals(
@@ -1060,6 +1171,7 @@ public final class HobWorkspaceController: ObservableObject {
             generatedAt: timestamp(instant),
             startDate: day(instant),
             timezone: timezone.identifier,
+            horizonDays: horizonDays,
             workStart: preferences.workStart,
             workEnd: preferences.workEnd,
             defaultDurationMinutes: preferences.defaultDurationMinutes,
@@ -1258,6 +1370,56 @@ public final class HobWorkspaceController: ObservableObject {
         return formatter.string(from: value)
     }
 
+    private func updateRecurrence(taskID: String, operation: String) {
+        run {
+            guard let runtime = self.runtime else { return }
+            let snapshot = await runtime.snapshot()
+            guard let task = snapshot.tasks.first(where: {
+                $0.id == taskID && $0.status == "open" && $0.recurrence != nil
+            }) else {
+                self.notice = "That repeating task is no longer open."
+                await self.refresh()
+                return
+            }
+            self.planningAnalysis = nil
+            let instant = self.now()
+            let occurredAt = self.timestamp(instant)
+            let requestID = UUID().uuidString
+            let result = try await runtime.process(RuntimeTurnRequest(
+                requestID: requestID,
+                message: operation == "skip" ? "Skip occurrence" : "Stop repeating",
+                now: occurredAt,
+                timezone: self.timezone.identifier,
+                actions: [RuntimeAction(
+                    type: "recurrence",
+                    target: taskID,
+                    recurrenceOperation: operation
+                )]
+            ))
+            try? await runtime.markDelivered(
+                dedupeKey: "turn:\(requestID)",
+                at: occurredAt
+            )
+            guard result.outcome.disposition == .applied else {
+                self.notice = "That recurrence could not be changed."
+                return
+            }
+            try await self.cleanupCalendarEventsIfNeeded()
+            try await self.cleanupNotificationsIfNeeded()
+            _ = try await runtime.proposeSchedule(
+                try self.scheduleRequest(at: instant)
+            )
+            await self.syncTasks()
+            if operation == "skip",
+               let updated = result.outcome.tasks.first(where: { $0.id == taskID }) {
+                self.notice = "Next: \(updated.task)\(updated.dueDate.map { " on \($0)" } ?? "")."
+            } else {
+                self.notice = "Stopped repeating: \(task.task)."
+            }
+            await self.refresh()
+        }
+    }
+
     private func stableActions(
         _ actions: [RuntimeAction],
         tasks: [RuntimeTask],
@@ -1291,6 +1453,12 @@ public final class HobWorkspaceController: ObservableObject {
                 time: action.time,
                 durationMinutes: action.durationMinutes,
                 priority: action.priority,
+                recurrence: action.recurrence,
+                recurrenceOperation: action.recurrenceOperation,
+                analysisKind: action.analysisKind,
+                horizonDays: action.horizonDays,
+                budgetMinutes: action.budgetMinutes,
+                hypotheticalDurationMinutes: action.hypotheticalDurationMinutes,
                 confidence: action.confidence
             )
         }

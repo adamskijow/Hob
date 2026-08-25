@@ -7,6 +7,12 @@ Describe several tasks naturally, including dates, times, deadlines, priority,
 and effort. Hob creates typed tasks only after the local Apple model returns a
 valid action set. Ambiguous or unsafe output changes nothing.
 
+Dates can be relative, named, or absolute. Hob confirms dates more than two
+years away before saving them.
+
+Tasks can repeat daily, weekly, monthly, or yearly. Completing an occurrence
+advances the same task. Today actions can skip one occurrence or stop repeating.
+
 ## Planning
 
 Fixed appointments keep their stated times. Untimed work stays on deck until
@@ -20,6 +26,10 @@ The proposal shows scheduled and unscheduled work. Calendar integration defaults
 off. When enabled, its settings choose which calendars protect time and where
 approved blocks are added. Shared and subscribed calendars work through Apple
 Calendar. All-day blocking is optional.
+
+Natural questions such as “Will this week fit?”, “Why is this here?”, and “What
+if this takes two hours?” return a read-only planning check. The answer shows
+its time window and any missing-effort estimates.
 
 The Today tab keeps the current day's plan visible as a living morning digest.
 It refreshes after captures, replans, completions, and iCloud sync. Detailed

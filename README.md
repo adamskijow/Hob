@@ -25,6 +25,9 @@ edition stays in the repository for migration and regression coverage.
 ## What it does
 
 - Captures tasks, dates, deadlines, priority, and effort from one message.
+- Understands relative and named dates, with confirmation for dates over two years away.
+- Repeats daily, weekly, monthly, or yearly work without duplicating tasks.
+- Answers capacity, placement, and what-if questions without changing the plan.
 - Optionally plans around selected Apple calendars, including shared and subscribed calendars.
 - Keeps today current and offers timed morning and evening check-ins.
 - Rolls untimed work forward while leaving missed appointments for rescheduling.

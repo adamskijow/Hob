@@ -1,6 +1,69 @@
 // SPDX-License-Identifier: MIT
 import Foundation
 
+public struct RuntimeRecurrenceRule: Codable, Equatable, Sendable {
+    public let frequency: String
+    public let interval: Int
+    public let weekdays: [String]
+    public let monthDay: Int?
+    public let month: Int?
+    public let anchor: String
+    public let endDate: String?
+    public let count: Int?
+    public var completed: Int
+
+    public init(
+        frequency: String,
+        interval: Int = 1,
+        weekdays: [String] = [],
+        monthDay: Int? = nil,
+        month: Int? = nil,
+        anchor: String = "fixed",
+        endDate: String? = nil,
+        count: Int? = nil,
+        completed: Int = 0
+    ) {
+        self.frequency = frequency
+        self.interval = interval
+        self.weekdays = weekdays
+        self.monthDay = monthDay
+        self.month = month
+        self.anchor = anchor
+        self.endDate = endDate
+        self.count = count
+        self.completed = completed
+    }
+
+    public var isValid: Bool {
+        let validWeekdays = Set(["sun", "mon", "tue", "wed", "thu", "fri", "sat"])
+        return ["day", "week", "month", "year"].contains(frequency)
+            && (1...365).contains(interval)
+            && Set(weekdays).count == weekdays.count
+            && weekdays.allSatisfy(validWeekdays.contains)
+            && (monthDay.map { (1...31).contains($0) } ?? true)
+            && (month.map { (1...12).contains($0) } ?? true)
+            && ["fixed", "completion"].contains(anchor)
+            && (endDate.map(Self.validDate) ?? true)
+            && (count.map { (1...10_000).contains($0) } ?? true)
+            && completed >= 0
+            && completed <= (count ?? 10_000)
+            && (frequency == "week" || weekdays.isEmpty)
+            && (["month", "year"].contains(frequency) || monthDay == nil)
+            && (frequency == "year" || month == nil)
+    }
+
+    private static func validDate(_ value: String) -> Bool {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.isLenient = false
+        guard let date = formatter.date(from: value) else { return false }
+        return formatter.string(from: date) == value
+    }
+}
+
 public struct RuntimeTask: Codable, Equatable, Sendable {
     public let id: String
     public let rawText: String
@@ -10,6 +73,7 @@ public struct RuntimeTask: Codable, Equatable, Sendable {
     public var deadlineDate: String?
     public var durationMinutes: Int?
     public var priority: String?
+    public var recurrence: RuntimeRecurrenceRule?
     public var status: String
     public let createdAt: String
     public var updatedAt: String
@@ -24,6 +88,7 @@ public struct RuntimeTask: Codable, Equatable, Sendable {
         deadlineDate: String? = nil,
         durationMinutes: Int? = nil,
         priority: String? = nil,
+        recurrence: RuntimeRecurrenceRule? = nil,
         status: String,
         createdAt: String,
         updatedAt: String,
@@ -37,6 +102,7 @@ public struct RuntimeTask: Codable, Equatable, Sendable {
         self.deadlineDate = deadlineDate
         self.durationMinutes = durationMinutes
         self.priority = priority
+        self.recurrence = recurrence
         self.status = status
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -58,11 +124,36 @@ public struct RuntimeDateIntent: Codable, Equatable, Sendable {
     public let kind: String
     public let which: String?
     public let day: String?
+    public let n: Int?
+    public let unit: String?
+    public let part: String?
+    public let anchor: String?
+    public let year: Int?
+    public let month: Int?
+    public let dayNumber: Int?
 
-    public init(kind: String, which: String? = nil, day: String? = nil) {
+    public init(
+        kind: String,
+        which: String? = nil,
+        day: String? = nil,
+        n: Int? = nil,
+        unit: String? = nil,
+        part: String? = nil,
+        anchor: String? = nil,
+        year: Int? = nil,
+        month: Int? = nil,
+        dayNumber: Int? = nil
+    ) {
         self.kind = kind
         self.which = which
         self.day = day
+        self.n = n
+        self.unit = unit
+        self.part = part
+        self.anchor = anchor
+        self.year = year
+        self.month = month
+        self.dayNumber = dayNumber
     }
 }
 
@@ -76,6 +167,12 @@ public struct RuntimeAction: Codable, Equatable, Sendable {
     public let time: String?
     public let durationMinutes: Int?
     public let priority: String?
+    public let recurrence: RuntimeRecurrenceRule?
+    public let recurrenceOperation: String?
+    public let analysisKind: String?
+    public let horizonDays: Int?
+    public let budgetMinutes: Int?
+    public let hypotheticalDurationMinutes: Int?
     public let confidence: Double?
 
     public init(
@@ -88,6 +185,12 @@ public struct RuntimeAction: Codable, Equatable, Sendable {
         time: String? = nil,
         durationMinutes: Int? = nil,
         priority: String? = nil,
+        recurrence: RuntimeRecurrenceRule? = nil,
+        recurrenceOperation: String? = nil,
+        analysisKind: String? = nil,
+        horizonDays: Int? = nil,
+        budgetMinutes: Int? = nil,
+        hypotheticalDurationMinutes: Int? = nil,
         confidence: Double? = nil
     ) {
         self.type = type
@@ -99,6 +202,12 @@ public struct RuntimeAction: Codable, Equatable, Sendable {
         self.time = time
         self.durationMinutes = durationMinutes
         self.priority = priority
+        self.recurrence = recurrence
+        self.recurrenceOperation = recurrenceOperation
+        self.analysisKind = analysisKind
+        self.horizonDays = horizonDays
+        self.budgetMinutes = budgetMinutes
+        self.hypotheticalDurationMinutes = hypotheticalDurationMinutes
         self.confidence = confidence
     }
 }
@@ -283,7 +392,6 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
     public let notificationCleanupIDs: [String]
     public let pendingNotificationResponses: [RuntimeNotificationResponse]
     public let taskOperations: [RuntimeTaskOperation]
-    public let planningPreferences: RuntimePlanningPreferences
 
     public init(
         version: Int = RuntimePersistentState.currentVersion,
@@ -297,8 +405,7 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         calendarCleanupEventIDs: [String] = [],
         notificationCleanupIDs: [String] = [],
         pendingNotificationResponses: [RuntimeNotificationResponse] = [],
-        taskOperations: [RuntimeTaskOperation]? = nil,
-        planningPreferences: RuntimePlanningPreferences = .default
+        taskOperations: [RuntimeTaskOperation]? = nil
     ) {
         self.version = version
         self.tasks = tasks
@@ -319,7 +426,6 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
                 task: $0
             )
         }
-        self.planningPreferences = planningPreferences
     }
 
     public static let empty = RuntimePersistentState(tasks: [], undoSnapshots: [])
@@ -368,8 +474,7 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
                         occurredAt: $0.updatedAt,
                         task: $0
                     )
-                },
-                planningPreferences: .default
+                }
             )
         } else {
             migrated = self
@@ -398,7 +503,6 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
               Set(migrated.taskOperations.map(\.id)).count
                 == migrated.taskOperations.count,
               migrated.taskOperations.allSatisfy(\.isValid),
-              migrated.planningPreferences.isValid,
               migrated.nextSequence > 0 else {
             throw RuntimeStateError.invalidState
         }
@@ -433,7 +537,6 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         case notificationCleanupIDs
         case pendingNotificationResponses
         case taskOperations
-        case planningPreferences
     }
 
     public init(from decoder: Decoder) throws {
@@ -481,10 +584,6 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
                 task: $0
             )
         }
-        planningPreferences = try container.decodeIfPresent(
-            RuntimePlanningPreferences.self,
-            forKey: .planningPreferences
-        ) ?? .default
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -504,7 +603,6 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
             forKey: .pendingNotificationResponses
         )
         try container.encode(taskOperations, forKey: .taskOperations)
-        try container.encode(planningPreferences, forKey: .planningPreferences)
     }
 
     private static func validatePipeline(_ state: RuntimePersistentState) throws {
@@ -596,17 +694,34 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
             && bounded(action.time, maxBytes: 16)
             && (action.durationMinutes.map { (5...480).contains($0) } ?? true)
             && (action.priority.map { ["high", "normal", "low"].contains($0) } ?? true)
+            && (action.recurrence?.isValid ?? true)
+            && (action.recurrenceOperation.map {
+                ["skip", "stop"].contains($0)
+            } ?? true)
+            && (action.analysisKind.map {
+                ["capacity", "explain", "what_if"].contains($0)
+            } ?? true)
+            && (action.horizonDays.map { (1...31).contains($0) } ?? true)
+            && (action.budgetMinutes.map { (5...10_080).contains($0) } ?? true)
+            && (action.hypotheticalDurationMinutes.map {
+                (5...480).contains($0)
+            } ?? true)
             && (action.confidence.map { $0.isFinite && (0...1).contains($0) } ?? true)
-            && (action.when.map {
-                validIdentifier($0.kind)
-                    && bounded($0.which, maxBytes: 32)
-                    && bounded($0.day, maxBytes: 32)
-            } ?? true)
-            && (action.deadline.map {
-                validIdentifier($0.kind)
-                    && bounded($0.which, maxBytes: 32)
-                    && bounded($0.day, maxBytes: 32)
-            } ?? true)
+            && (action.when.map(validDateIntent) ?? true)
+            && (action.deadline.map(validDateIntent) ?? true)
+    }
+
+    private static func validDateIntent(_ value: RuntimeDateIntent) -> Bool {
+        validIdentifier(value.kind)
+            && bounded(value.which, maxBytes: 32)
+            && bounded(value.day, maxBytes: 32)
+            && bounded(value.unit, maxBytes: 32)
+            && bounded(value.part, maxBytes: 32)
+            && bounded(value.anchor, maxBytes: 32)
+            && (value.n.map { (1...10_000).contains($0) } ?? true)
+            && (value.year.map { (1...9999).contains($0) } ?? true)
+            && (value.month.map { (1...12).contains($0) } ?? true)
+            && (value.dayNumber.map { (1...31).contains($0) } ?? true)
     }
 
     private static func bounded(_ value: String?, maxBytes: Int) -> Bool {
@@ -647,6 +762,7 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
                   validDate(task.deadlineDate),
                   (task.durationMinutes.map { (5...480).contains($0) } ?? true),
                   (task.priority.map { ["high", "normal", "low"].contains($0) } ?? true),
+                  (task.recurrence?.isValid ?? true),
                   (task.sourceArchive.map { $0.utf8.count <= 20_000 } ?? true),
                   task.dueDate == nil || task.deadlineDate == nil
                     || task.dueDate! <= task.deadlineDate! else {
@@ -832,7 +948,7 @@ public struct TaskRuntime: Sendable {
                   let raw = bounded(action.raw, maxBytes: 20_000) else {
                 return .rejected
             }
-            let dueDate: String?
+            var dueDate: String?
             switch resolve(action.when, now: now, timezone: timezone) {
             case .date(let resolved): dueDate = resolved
             case .ambiguous: return .clarification
@@ -850,6 +966,15 @@ public struct TaskRuntime: Sendable {
                   action.priority.map({ ["high", "normal", "low"].contains($0) }) ?? true
             else { return .clarification }
             if let dueDate, let deadlineDate, dueDate > deadlineDate {
+                return .clarification
+            }
+            if action.recurrence != nil && dueDate == nil {
+                dueDate = String(now.prefix(10))
+            }
+            if let recurrence = action.recurrence,
+               let endDate = recurrence.endDate,
+               let dueDate,
+               endDate < dueDate {
                 return .clarification
             }
             let assignedID: String
@@ -875,13 +1000,14 @@ public struct TaskRuntime: Sendable {
                 deadlineDate: deadlineDate,
                 durationMinutes: action.durationMinutes,
                 priority: action.priority,
+                recurrence: action.recurrence,
                 status: "open",
                 createdAt: now,
                 updatedAt: now
             )))
         }
 
-        guard ["complete", "drop", "reschedule", "amend", "keep"].contains(action.type)
+        guard ["complete", "drop", "reschedule", "amend", "keep", "recurrence"].contains(action.type)
         else { return .rejected }
         guard let target = resolvedTarget(action.target) else {
             return .clarification
@@ -892,6 +1018,13 @@ public struct TaskRuntime: Sendable {
         if action.type == "complete" { return .success(.complete(target)) }
         if action.type == "drop" { return .success(.drop(target)) }
         if action.type == "keep" { return .success(.keep(target)) }
+        if action.type == "recurrence" {
+            guard let operation = action.recurrenceOperation,
+                  ["skip", "stop"].contains(operation) else {
+                return .clarification
+            }
+            return .success(.recurrence(target, operation))
+        }
         if action.type == "amend" {
             guard let task = bounded(action.task, maxBytes: 10_000) else {
                 return .clarification
@@ -949,6 +1082,8 @@ public struct TaskRuntime: Sendable {
             resolved = base
         case "tomorrow":
             resolved = calendar.date(byAdding: .day, value: 1, to: base)
+        case "yesterday":
+            resolved = calendar.date(byAdding: .day, value: -1, to: base)
         case "weekday":
             let weekdays = [
                 "sun": 1, "mon": 2, "tue": 3, "wed": 4,
@@ -961,6 +1096,92 @@ public struct TaskRuntime: Sendable {
             var delta = (target - current + 7) % 7
             if delta == 0 && intent.which != "this" { delta = 7 }
             resolved = calendar.date(byAdding: .day, value: delta, to: base)
+        case "offset":
+            guard let amount = intent.n, amount > 0 else { return .invalid }
+            let component: Calendar.Component
+            switch intent.unit {
+            case "day": component = .day
+            case "week": component = .weekOfYear
+            case "month": component = .month
+            case "year": component = .year
+            default: return .invalid
+            }
+            resolved = calendar.date(byAdding: component, value: amount, to: base)
+        case "weekend":
+            let current = calendar.component(.weekday, from: base)
+            if intent.which == "this", current == 1 || current == 7 {
+                resolved = base
+            } else {
+                var daysToSaturday = (7 - current + 7) % 7
+                if intent.which == "next" {
+                    if current != 1 { daysToSaturday += 7 }
+                }
+                resolved = calendar.date(
+                    byAdding: .day, value: daysToSaturday, to: base
+                )
+            }
+        case "week":
+            let current = calendar.component(.weekday, from: base)
+            let daysSinceMonday = (current + 5) % 7
+            guard let thisMonday = calendar.date(
+                byAdding: .day, value: -daysSinceMonday, to: base
+            ) else { return .invalid }
+            let weekOffset = intent.which == "next" ? 7 : 0
+            let partOffset: Int
+            switch intent.part {
+            case nil, "start", "early": partOffset = 0
+            case "mid": partOffset = 2
+            case "end", "late": partOffset = 4
+            default: return .invalid
+            }
+            resolved = calendar.date(
+                byAdding: .day, value: weekOffset + partOffset, to: thisMonday
+            )
+        case "month":
+            var parts = calendar.dateComponents([.year, .month], from: base)
+            parts.day = 1
+            guard var month = calendar.date(from: parts) else { return .invalid }
+            if intent.which == "next" {
+                guard let advanced = calendar.date(byAdding: .month, value: 1, to: month)
+                else { return .invalid }
+                month = advanced
+            }
+            if intent.anchor == "end" || intent.part == "late" {
+                resolved = calendar.date(byAdding: DateComponents(month: 1, day: -1), to: month)
+            } else if intent.part == "mid" {
+                resolved = calendar.date(byAdding: .day, value: 14, to: month)
+            } else {
+                resolved = month
+            }
+        case "month_day", "ordinal_day":
+            guard let dayNumber = intent.dayNumber else { return .invalid }
+            var parts = calendar.dateComponents([.year, .month], from: base)
+            if let month = intent.month { parts.month = month }
+            parts.day = dayNumber
+            guard var candidate = calendar.date(from: parts),
+                  calendar.component(.day, from: candidate) == dayNumber else {
+                return .invalid
+            }
+            if candidate < base {
+                let component: Calendar.Component = intent.month == nil ? .month : .year
+                guard let advanced = calendar.date(
+                    byAdding: component, value: 1, to: candidate
+                ) else { return .invalid }
+                candidate = advanced
+            }
+            resolved = candidate
+        case "absolute":
+            guard let year = intent.year,
+                  let month = intent.month,
+                  let day = intent.dayNumber else { return .invalid }
+            resolved = calendar.date(from: DateComponents(
+                calendar: calendar, timeZone: zone,
+                year: year, month: month, day: day
+            )).flatMap { candidate in
+                let values = calendar.dateComponents([.year, .month, .day], from: candidate)
+                return values.year == year && values.month == month && values.day == day
+                    ? candidate : nil
+            }
         default:
             return .invalid
         }
@@ -978,7 +1199,7 @@ public struct TaskRuntime: Sendable {
         case .capture(let task):
             tasks.append(task)
         case .complete(let target):
-            update(target, now: now) { $0.status = "done" }
+            complete(target, now: now)
         case .drop(let target):
             update(target, now: now) { $0.status = "dropped" }
         case .reschedule(let target, let date, let time):
@@ -993,6 +1214,12 @@ public struct TaskRuntime: Sendable {
             update(target, now: now) { $0.task = task }
         case .keep(let target):
             update(target, now: now) { _ in }
+        case .recurrence(let target, let operation):
+            if operation == "stop" {
+                update(target, now: now) { $0.recurrence = nil }
+            } else {
+                skip(target, now: now)
+            }
         }
         tasks.sort { $0.id < $1.id }
     }
@@ -1006,6 +1233,125 @@ public struct TaskRuntime: Sendable {
         change(&tasks[index])
         tasks[index].updatedAt = now
     }
+
+    private mutating func complete(_ target: String, now: String) {
+        guard let index = tasks.firstIndex(where: { $0.id == target }) else { return }
+        guard var recurrence = tasks[index].recurrence else {
+            tasks[index].status = "done"
+            tasks[index].updatedAt = now
+            return
+        }
+        recurrence.completed += 1
+        if recurrence.count.map({ recurrence.completed >= $0 }) == true {
+            tasks[index].status = "done"
+            tasks[index].recurrence = recurrence
+            tasks[index].updatedAt = now
+            return
+        }
+        let base = recurrence.anchor == "completion"
+            ? String(now.prefix(10))
+            : (tasks[index].dueDate ?? String(now.prefix(10)))
+        guard let next = nextRecurrenceDate(after: base, rule: recurrence),
+              recurrence.endDate.map({ next <= $0 }) ?? true else {
+            tasks[index].status = "done"
+            tasks[index].recurrence = recurrence
+            tasks[index].updatedAt = now
+            return
+        }
+        tasks[index].dueDate = next
+        tasks[index].status = "open"
+        tasks[index].recurrence = recurrence
+        tasks[index].updatedAt = now
+    }
+
+    private mutating func skip(_ target: String, now: String) {
+        guard let index = tasks.firstIndex(where: { $0.id == target }),
+              let recurrence = tasks[index].recurrence,
+              let base = tasks[index].dueDate else { return }
+        guard let next = nextRecurrenceDate(after: base, rule: recurrence),
+              recurrence.endDate.map({ next <= $0 }) ?? true else {
+            tasks[index].status = "done"
+            tasks[index].updatedAt = now
+            return
+        }
+        tasks[index].dueDate = next
+        tasks[index].updatedAt = now
+    }
+
+    private func nextRecurrenceDate(
+        after value: String,
+        rule: RuntimeRecurrenceRule
+    ) -> String? {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.isLenient = false
+        guard let date = formatter.date(from: value) else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let next: Date?
+        switch rule.frequency {
+        case "day":
+            next = calendar.date(byAdding: .day, value: rule.interval, to: date)
+        case "week":
+            let weekdayValues = [
+                "sun": 1, "mon": 2, "tue": 3, "wed": 4,
+                "thu": 5, "fri": 6, "sat": 7,
+            ]
+            let selected = rule.weekdays.compactMap { weekdayValues[$0] }.sorted()
+            if selected.isEmpty {
+                next = calendar.date(byAdding: .day, value: 7 * rule.interval, to: date)
+            } else {
+                let current = calendar.component(.weekday, from: date)
+                if let later = selected.first(where: { $0 > current }) {
+                    next = calendar.date(byAdding: .day, value: later - current, to: date)
+                } else if let first = selected.first {
+                    next = calendar.date(
+                        byAdding: .day,
+                        value: 7 * rule.interval - (current - first),
+                        to: date
+                    )
+                } else { next = nil }
+            }
+        case "month":
+            guard let advanced = calendar.date(
+                byAdding: .month, value: rule.interval, to: date
+            ) else { return nil }
+            if let day = rule.monthDay {
+                next = dateClampingDay(day, around: advanced, calendar: calendar)
+            } else { next = advanced }
+        case "year":
+            guard let advanced = calendar.date(
+                byAdding: .year, value: rule.interval, to: date
+            ) else { return nil }
+            if let month = rule.month, let day = rule.monthDay {
+                var parts = calendar.dateComponents([.year], from: advanced)
+                parts.month = month
+                parts.day = 1
+                next = calendar.date(from: parts).flatMap {
+                    dateClampingDay(day, around: $0, calendar: calendar)
+                }
+            } else { next = advanced }
+        default:
+            next = nil
+        }
+        return next.map(formatter.string)
+    }
+
+    private func dateClampingDay(
+        _ requestedDay: Int,
+        around date: Date,
+        calendar: Calendar
+    ) -> Date? {
+        guard let range = calendar.range(of: .day, in: .month, for: date) else {
+            return nil
+        }
+        var parts = calendar.dateComponents([.year, .month], from: date)
+        parts.day = min(requestedDay, range.count)
+        return calendar.date(from: parts)
+    }
 }
 
 private enum PreparedMutation {
@@ -1015,6 +1361,7 @@ private enum PreparedMutation {
     case reschedule(String, String?, String?)
     case amend(String, String)
     case keep(String)
+    case recurrence(String, String)
 
     var kind: String {
         switch self {
@@ -1024,6 +1371,7 @@ private enum PreparedMutation {
         case .reschedule: return "reschedule"
         case .amend: return "amend"
         case .keep: return "keep"
+        case .recurrence: return "recurrence"
         }
     }
 }

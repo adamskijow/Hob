@@ -360,7 +360,6 @@ import Testing
     let migrated = try old.validated()
     #expect(migrated.version == RuntimePersistentState.currentVersion)
     #expect(migrated.taskOperations == [operation])
-    #expect(migrated.planningPreferences == .default)
 }
 
 @Test func pureReplanRequestsDoNotInventTaskMutationsOrUndoHistory() {

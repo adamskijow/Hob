@@ -570,7 +570,7 @@ public enum RuntimeSchedulePlanner {
             && TimeZone(identifier: request.timezone) != nil
             && validClock(request.workStart)
             && validClock(request.workEnd)
-            && (1...14).contains(request.horizonDays)
+            && (1...31).contains(request.horizonDays)
             && (5...480).contains(request.defaultDurationMinutes)
             && (0...120).contains(request.transitionBufferMinutes)
             && !request.workDays.isEmpty

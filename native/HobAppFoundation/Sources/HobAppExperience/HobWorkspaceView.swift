@@ -81,6 +81,7 @@ public struct HobWorkspaceView: View {
                     morningDigest
                     composer
                     feedback
+                    planningAnalysis
                 }
                 .navigationTitle("Hob")
                 .toolbar { workspaceToolbar }
@@ -125,6 +126,18 @@ public struct HobWorkspaceView: View {
         }
         .sheet(isPresented: $showsCalendarSettings) {
             HobCalendarSettingsView(controller: controller)
+        }
+        .alert(
+            controller.longRangeConfirmation ?? "Check that date",
+            isPresented: Binding(
+                get: { controller.longRangeConfirmation != nil },
+                set: { if !$0 { controller.cancelLongRangeSubmission() } }
+            )
+        ) {
+            Button("Yes") { controller.confirmLongRangeSubmission() }
+            Button("Cancel", role: .cancel) {
+                controller.cancelLongRangeSubmission()
+            }
         }
     }
 
@@ -458,10 +471,28 @@ public struct HobWorkspaceView: View {
                         || controller.isWorking
                 )
             }
+            if controller.task(taskID: item.taskID)?.recurrence != nil {
+                Divider()
+                HStack {
+                    Button("Skip this occurrence", systemImage: "forward.end") {
+                        controller.skipOccurrence(taskID: item.taskID)
+                        selectedDigestItem = nil
+                    }
+                    .disabled(controller.isWorking)
+                    Spacer()
+                    Button("Stop repeating", role: .destructive) {
+                        controller.stopRepeating(taskID: item.taskID)
+                        selectedDigestItem = nil
+                    }
+                    .disabled(controller.isWorking)
+                }
+            }
         }
         .padding(24)
         .frame(maxWidth: 480)
-        .presentationDetents([.height(230)])
+        .presentationDetents([
+            .height(controller.task(taskID: item.taskID)?.recurrence == nil ? 230 : 300)
+        ])
         .presentationDragIndicator(.visible)
     }
 
@@ -509,6 +540,60 @@ public struct HobWorkspaceView: View {
         } else if let notice = controller.notice {
             Label(notice, systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var planningAnalysis: some View {
+        if let analysis = controller.planningAnalysis {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline) {
+                    Label("Planning check", systemImage: "sparkles")
+                        .font(.headline)
+                        .foregroundStyle(.tint)
+                    Spacer()
+                    Button("Dismiss", systemImage: "xmark") {
+                        controller.dismissPlanningAnalysis()
+                    }
+                    .labelStyle(.iconOnly)
+                }
+                Text(analysis.headline)
+                    .font(.title3.bold())
+                ForEach(analysis.details, id: \.self) { detail in
+                    Text(detail)
+                        .foregroundStyle(.secondary)
+                }
+                HStack {
+                    Text("\(analysis.requiredMinutes)m needed")
+                    Spacer()
+                    Text("\(analysis.capacityMinutes)m available")
+                }
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                if !analysis.assumptions.isEmpty {
+                    DisclosureGroup("Assumptions") {
+                        VStack(alignment: .leading, spacing: 5) {
+                            ForEach(analysis.assumptions, id: \.self) { assumption in
+                                Text(assumption)
+                            }
+                        }
+                        .padding(.top, 5)
+                    }
+                    .font(.callout)
+                }
+                Label("Read-only — your tasks and schedule did not change.", systemImage: "eye")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(
+                HobTheme.surface(for: colorScheme),
+                in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(HobTheme.border(for: colorScheme), lineWidth: 1)
+            }
         }
     }
 
@@ -776,7 +861,22 @@ public struct HobWorkspaceView: View {
         if let deadline = task.deadlineDate { values.append("due \(deadline)") }
         if let duration = task.durationMinutes { values.append("\(duration)m") }
         if let priority = task.priority, priority != "normal" { values.append(priority) }
+        if let recurrence = task.recurrence { values.append(recurrenceLabel(recurrence)) }
         return values.isEmpty ? "No stated constraints" : values.joined(separator: " · ")
+    }
+
+    private func recurrenceLabel(_ recurrence: RuntimeRecurrenceRule) -> String {
+        let interval = recurrence.interval == 1 ? "" : " every \(recurrence.interval)"
+        switch recurrence.frequency {
+        case "day": return recurrence.interval == 1 ? "daily" : "every \(recurrence.interval) days"
+        case "week":
+            let days = recurrence.weekdays.map { $0.capitalized }.joined(separator: ", ")
+            if !days.isEmpty { return recurrence.interval == 1 ? "weekly: \(days)" : "\(interval) weeks: \(days)" }
+            return recurrence.interval == 1 ? "weekly" : "every \(recurrence.interval) weeks"
+        case "month": return recurrence.interval == 1 ? "monthly" : "every \(recurrence.interval) months"
+        case "year": return recurrence.interval == 1 ? "yearly" : "every \(recurrence.interval) years"
+        default: return "repeating"
+        }
     }
 
     private func timeRange(_ block: RuntimeScheduleBlock) -> String {
