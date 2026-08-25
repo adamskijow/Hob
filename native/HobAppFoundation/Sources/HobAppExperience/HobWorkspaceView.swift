@@ -91,6 +91,7 @@ public struct HobWorkspaceView: View {
             NavigationStack {
                 workspaceScroll {
                     scheduleContent
+                    planOnDeckAction
                     taskList
                 }
                 .navigationTitle("Schedule")
@@ -159,14 +160,30 @@ public struct HobWorkspaceView: View {
             replanView(schedule, proposal: proposal, diff: diff)
         } else if let schedule = controller.adoptedSchedule {
             adopted(schedule)
-        } else if let proposal = controller.proposal {
+        } else if let proposal = controller.proposal,
+                  !proposal.blocks.isEmpty || !proposal.unscheduled.isEmpty {
             proposalView(proposal)
         } else {
             ContentUnavailableView(
                 "No schedule yet",
                 systemImage: "calendar",
-                description: Text("Add work from Today and Hob will plan it here.")
+                description: Text("Untimed work stays on deck until you ask Hob to plan it.")
             )
+        }
+    }
+
+    @ViewBuilder private var planOnDeckAction: some View {
+        if controller.hasUnplannedOnDeckTasks {
+            VStack(alignment: .leading, spacing: 8) {
+                Button("Plan on-deck work", systemImage: "calendar.badge.plus") {
+                    controller.planOnDeckWork()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(controller.isWorking)
+                Text("Hob will propose times first. Nothing is adopted automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -347,7 +364,7 @@ public struct HobWorkspaceView: View {
                 .accessibilityHidden(true)
             Text("What needs to get done?")
                 .font(.largeTitle.bold())
-            Text("Include deadlines, priority, and effort naturally. Hob will turn them into a realistic timeline.")
+            Text("Include dates, priority, and effort naturally. Untimed work stays on deck.")
                 .foregroundStyle(.secondary)
         }
     }
@@ -474,13 +491,13 @@ public struct HobWorkspaceView: View {
                     ProgressView()
                         .controlSize(.small)
                 } else {
-                    Label("Plan it", systemImage: "arrow.up.circle.fill")
+                    Label("Send", systemImage: "arrow.up.circle.fill")
                 }
             }
             .buttonStyle(.borderedProminent)
             .disabled(!controller.canSubmit)
             .keyboardShortcut(.return, modifiers: [.command])
-            .accessibilityHint("Interprets the message, saves its tasks, and builds a schedule proposal")
+            .accessibilityHint("Interprets the message and applies the requested task changes")
         }
     }
 

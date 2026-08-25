@@ -101,6 +101,25 @@ import Testing
     #expect(digest.items.first?.summary == "Buy poster board · overdue")
 }
 
+@Test func undatedWorkStaysOnDeckWithoutReceivingATime() throws {
+    let zone = try #require(TimeZone(identifier: "America/New_York"))
+    let today = try #require(ISO8601DateFormatter().date(
+        from: "2026-08-25T06:30:00-04:00"
+    ))
+    var task = digestTask(
+        id: "on-deck", task: "Buy poster board", dueDate: "2026-08-25"
+    )
+    task.dueDate = nil
+
+    let digest = RuntimeMorningDigestBuilder.build(
+        for: today, tasks: [task], proposal: nil, timezone: zone
+    )
+
+    #expect(digest.items.map(\.taskID) == ["on-deck"])
+    #expect(digest.items.first?.time == nil)
+    #expect(digest.items.first?.summary == "Buy poster board")
+}
+
 @Test func upcomingMorningDigestsCoverSevenLocalDates() throws {
     let zone = try #require(TimeZone(identifier: "America/New_York"))
     let today = try #require(ISO8601DateFormatter().date(
@@ -151,6 +170,7 @@ private func digestProposal(
         }),
         blocks: blocks,
         unscheduled: [],
-        assumptions: []
+        assumptions: [],
+        plannedUntimedTaskIDs: blocks.map(\.taskID)
     )
 }

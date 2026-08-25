@@ -67,6 +67,7 @@ public struct RuntimeScheduleRequest: Codable, Equatable, Sendable {
     public let transitionBufferMinutes: Int
     public let workDays: [Int]
     public let busy: [RuntimeBusyInterval]
+    public let includedUntimedTaskIDs: [String]
 
     public init(
         proposalID: String,
@@ -79,7 +80,8 @@ public struct RuntimeScheduleRequest: Codable, Equatable, Sendable {
         defaultDurationMinutes: Int = 30,
         transitionBufferMinutes: Int = 0,
         workDays: [Int] = [1, 2, 3, 4, 5],
-        busy: [RuntimeBusyInterval] = []
+        busy: [RuntimeBusyInterval] = [],
+        includedUntimedTaskIDs: [String] = []
     ) {
         self.proposalID = proposalID
         self.generatedAt = generatedAt
@@ -92,6 +94,7 @@ public struct RuntimeScheduleRequest: Codable, Equatable, Sendable {
         self.transitionBufferMinutes = transitionBufferMinutes
         self.workDays = workDays.sorted()
         self.busy = busy
+        self.includedUntimedTaskIDs = includedUntimedTaskIDs.sorted()
     }
 }
 
@@ -147,6 +150,7 @@ public struct RuntimeScheduleProposal: Codable, Equatable, Identifiable, Sendabl
     public let blocks: [RuntimeScheduleBlock]
     public let unscheduled: [RuntimeUnscheduledTask]
     public let assumptions: [String]
+    public let plannedUntimedTaskIDs: [String]
 
     public init(
         id: String,
@@ -158,7 +162,8 @@ public struct RuntimeScheduleProposal: Codable, Equatable, Identifiable, Sendabl
         taskVersions: [String: String],
         blocks: [RuntimeScheduleBlock],
         unscheduled: [RuntimeUnscheduledTask],
-        assumptions: [String]
+        assumptions: [String],
+        plannedUntimedTaskIDs: [String] = []
     ) {
         self.id = id
         self.generatedAt = generatedAt
@@ -170,6 +175,29 @@ public struct RuntimeScheduleProposal: Codable, Equatable, Identifiable, Sendabl
         self.blocks = blocks
         self.unscheduled = unscheduled
         self.assumptions = assumptions
+        self.plannedUntimedTaskIDs = plannedUntimedTaskIDs.sorted()
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, generatedAt, startDate, timezone, workStart, workEnd
+        case taskVersions, blocks, unscheduled, assumptions, plannedUntimedTaskIDs
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        generatedAt = try values.decode(String.self, forKey: .generatedAt)
+        startDate = try values.decode(String.self, forKey: .startDate)
+        timezone = try values.decode(String.self, forKey: .timezone)
+        workStart = try values.decode(String.self, forKey: .workStart)
+        workEnd = try values.decode(String.self, forKey: .workEnd)
+        taskVersions = try values.decode([String: String].self, forKey: .taskVersions)
+        blocks = try values.decode([RuntimeScheduleBlock].self, forKey: .blocks)
+        unscheduled = try values.decode([RuntimeUnscheduledTask].self, forKey: .unscheduled)
+        assumptions = try values.decode([String].self, forKey: .assumptions)
+        plannedUntimedTaskIDs = try values.decodeIfPresent(
+            [String].self, forKey: .plannedUntimedTaskIDs
+        ) ?? []
     }
 }
 
@@ -325,7 +353,13 @@ public enum RuntimeScheduleValidator {
               proposal.taskVersions.count <= 10_000,
               proposal.blocks.count <= 10_000,
               proposal.unscheduled.count <= 10_000,
-              proposal.assumptions.count <= 10_000 else { return false }
+              proposal.assumptions.count <= 10_000,
+              proposal.plannedUntimedTaskIDs.count <= 10_000,
+              Set(proposal.plannedUntimedTaskIDs).count
+                == proposal.plannedUntimedTaskIDs.count,
+              proposal.plannedUntimedTaskIDs.allSatisfy({
+                identifier($0, maximum: 128) && proposal.taskVersions[$0] != nil
+              }) else { return false }
         guard proposal.taskVersions.allSatisfy({
             identifier($0.key, maximum: 128) && timestamp($0.value)
         }) else { return false }
@@ -418,8 +452,11 @@ public enum RuntimeSchedulePlanner {
               let generatedAt = ISO8601DateFormatter().date(from: request.generatedAt)
         else { throw RuntimeScheduleError.invalidRequest }
 
+        let includedUntimed = Set(request.includedUntimedTaskIDs)
         let open = tasks.filter {
-            $0.status == "open" && !$0.isMissedTimedItem(on: request.startDate)
+            $0.status == "open"
+                && !$0.isMissedTimedItem(on: request.startDate)
+                && ($0.dueTime != nil || includedUntimed.contains($0.id))
         }
         let versions = Dictionary(uniqueKeysWithValues: open.map { ($0.id, $0.updatedAt) })
         let ordered = open.sorted(by: taskOrder)
@@ -507,7 +544,10 @@ public enum RuntimeSchedulePlanner {
             taskVersions: versions,
             blocks: blocks.sorted { $0.startAt < $1.startAt },
             unscheduled: unscheduled,
-            assumptions: assumptions
+            assumptions: assumptions,
+            plannedUntimedTaskIDs: open.compactMap {
+                $0.dueTime == nil && includedUntimed.contains($0.id) ? $0.id : nil
+            }
         )
         guard RuntimeScheduleValidator.valid(proposal) else {
             throw RuntimeScheduleError.invalidRequest
@@ -538,6 +578,13 @@ public enum RuntimeSchedulePlanner {
             && request.workDays.allSatisfy { (1...7).contains($0) }
             && request.workStart < request.workEnd
             && request.busy.count <= 10_000
+            && request.includedUntimedTaskIDs.count <= 10_000
+            && Set(request.includedUntimedTaskIDs).count
+                == request.includedUntimedTaskIDs.count
+            && request.includedUntimedTaskIDs.allSatisfy {
+                let value = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                return !value.isEmpty && value == $0 && value.utf8.count <= 128
+            }
             && busyIsValid
     }
 

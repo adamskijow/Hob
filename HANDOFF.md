@@ -12,10 +12,10 @@ Nothing has been uploaded to TestFlight or either App Store.
 ## Exact state
 
 - Branch: `main`
-- Current increment base commit: `0d69ca8`
+- Current increment base commit: `50d9e9e`
 - Native app version: `0.1` build `1`
 - Latest public tag: `v0.9.13`, for the legacy Open Local edition
-- Tests: 484 Python and 69 native
+- Tests: 484 Python and 71 native
 - CI: recheck after this increment
 - iPhone: signed current calendar build installed; relaunch was blocked by the lock screen
 - Mac: signed current calendar build installed at `/Applications/Hob.app`
@@ -55,6 +55,9 @@ Retired launch-agent files are under
   the same compact 24-hour selector as the morning digest.
 - Untimed work carries forward. Timed appointments stay on their stated date;
   missed ones remain recoverable instead of moving to another day.
+- Untimed work no longer receives an automatic clock time. It stays on deck
+  until the user asks Hob to plan it.
+- Removed work-hour and task-duration questions from first-run setup.
 
 ## Next verification
 

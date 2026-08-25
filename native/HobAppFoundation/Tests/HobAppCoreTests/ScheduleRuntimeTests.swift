@@ -44,7 +44,8 @@ import HobAppStorage
             busy: [RuntimeBusyInterval(
                 startAt: "2026-06-29T09:00:00-04:00",
                 endAt: "2026-06-29T10:00:00-04:00"
-            )]
+            )],
+            includedUntimedTaskIDs: ["a1", "a2"]
         )
     )
 
@@ -76,13 +77,41 @@ import HobAppStorage
             startDate: "2026-06-29",
             timezone: "America/New_York",
             workStart: "09:00",
-            workEnd: "09:20"
+            workEnd: "09:20",
+            includedUntimedTaskIDs: ["a1"]
         )
     )
 
     #expect(proposal.blocks.isEmpty)
     #expect(proposal.unscheduled.map(\.taskID) == ["a1"])
     #expect(proposal.assumptions == ["write report: 30m default estimate"])
+}
+
+@Test func plannerDoesNotInventTimesForUntimedWork() throws {
+    let task = RuntimeTask(
+        id: "on-deck",
+        rawText: "Buy poster board",
+        task: "buy poster board",
+        dueDate: nil,
+        dueTime: nil,
+        status: "open",
+        createdAt: "2026-06-29T08:00:00-04:00",
+        updatedAt: "2026-06-29T08:00:00-04:00"
+    )
+    let proposal = try RuntimeSchedulePlanner.propose(
+        tasks: [task],
+        request: RuntimeScheduleRequest(
+            proposalID: "no-invented-time",
+            generatedAt: "2026-06-29T08:00:00-04:00",
+            startDate: "2026-06-29",
+            timezone: "America/New_York"
+        )
+    )
+
+    #expect(proposal.blocks.isEmpty)
+    #expect(proposal.unscheduled.isEmpty)
+    #expect(proposal.taskVersions.isEmpty)
+    #expect(proposal.plannedUntimedTaskIDs.isEmpty)
 }
 
 @Test func plannerCarriesUntimedWorkButNotTimedAppointments() throws {
@@ -112,7 +141,8 @@ import HobAppStorage
         startDate: "2026-06-29",
         timezone: "America/New_York",
         workStart: "09:00",
-        workEnd: "17:00"
+        workEnd: "17:00",
+        includedUntimedTaskIDs: ["errand"]
     )
 
     let proposal = try RuntimeSchedulePlanner.propose(
@@ -222,7 +252,8 @@ import HobAppStorage
             workEnd: "18:00",
             defaultDurationMinutes: 60,
             transitionBufferMinutes: 10,
-            workDays: [1, 2, 3, 4, 5]
+            workDays: [1, 2, 3, 4, 5],
+            includedUntimedTaskIDs: ["weekend-task"]
         )
     )
 

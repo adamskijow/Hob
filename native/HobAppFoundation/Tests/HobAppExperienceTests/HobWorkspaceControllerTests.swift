@@ -244,7 +244,7 @@ func setupReviewCanAlwaysCloseWithoutWeakeningFirstRun() {
 }
 
 @Test @MainActor
-func naturalMessageBuildsAndAdoptsAPersistentSchedule() async throws {
+func captureStaysUntimedUntilUserPlansAndAdoptsIt() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("hob-workspace-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -291,12 +291,21 @@ func naturalMessageBuildsAndAdoptsAPersistentSchedule() async throws {
 
     #expect(controller.draft.isEmpty)
     #expect(controller.tasks.map(\.task) == ["finish taxes", "call Mom"])
-    #expect(controller.proposal?.blocks.count == 2)
-    #expect(controller.proposal?.blocks.first?.startAt == "2026-06-29T10:00:00-04:00")
+    #expect(controller.proposal?.blocks.isEmpty == true)
+    #expect(controller.hasUnplannedOnDeckTasks)
+    #expect(controller.notice == "Captured 2 tasks.")
     #expect(controller.adoptedSchedule == nil)
     #expect(controller.morningDigest?.items.map(\.task) == ["finish taxes"])
     #expect(notifications.morningTime == "07:00")
     #expect(notifications.morningDigests.count == 7)
+
+    controller.planOnDeckWork()
+    try await waitUntilIdle(controller)
+
+    #expect(controller.proposal?.blocks.count == 2)
+    #expect(controller.proposal?.blocks.first?.startAt == "2026-06-29T10:00:00-04:00")
+    #expect(controller.proposal?.plannedUntimedTaskIDs.count == 2)
+    #expect(!controller.hasUnplannedOnDeckTasks)
 
     controller.adoptProposal()
     try await waitUntilIdle(controller)
@@ -468,7 +477,8 @@ func manualSyncPullsRemoteTasksAndBuildsAProposal() async throws {
     try await waitUntilIdle(controller)
 
     #expect(controller.tasks == [task])
-    #expect(controller.proposal?.blocks.map(\.task) == ["call Mom"])
+    #expect(controller.proposal?.blocks.isEmpty == true)
+    #expect(controller.hasUnplannedOnDeckTasks)
     #expect(controller.syncNeedsAttention == false)
     #expect(controller.notice == "Tasks updated from iCloud.")
 }
@@ -560,6 +570,8 @@ func calendarIntegrationDefaultsOffAndSchedulesStayUsable() async throws {
     #expect(!controller.calendarIntegrationEnabled)
     #expect(calendar.busyRequestCount == 0)
 
+    controller.planOnDeckWork()
+    try await waitUntilIdle(controller)
     controller.adoptProposal()
     try await waitUntilIdle(controller)
     #expect(calendar.writeCount == 0)

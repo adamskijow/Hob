@@ -415,7 +415,8 @@ import Testing
         proposalID: "durable-proposal",
         generatedAt: timestamp,
         startDate: "2026-06-29",
-        timezone: "America/New_York"
+        timezone: "America/New_York",
+        includedUntimedTaskIDs: ["a1"]
     ))
     #expect(proposal.blocks.count == 1)
 
@@ -447,7 +448,8 @@ import Testing
         proposalID: "stale",
         generatedAt: "2026-06-29T08:00:00-04:00",
         startDate: "2026-06-29",
-        timezone: "America/New_York"
+        timezone: "America/New_York",
+        includedUntimedTaskIDs: ["a1"]
     ))
     _ = try await runtime.adoptSchedule(
         proposalID: "stale",
@@ -469,7 +471,8 @@ import Testing
         proposalID: "replacement",
         generatedAt: "2026-06-29T08:02:00-04:00",
         startDate: "2026-06-29",
-        timezone: "America/New_York"
+        timezone: "America/New_York",
+        includedUntimedTaskIDs: ["a1", "a2"]
     ))
     let current = try #require(await runtime.snapshot().adoptedSchedule?.proposal)
     let diff = RuntimeScheduleDiff(current: current, proposed: replacement)

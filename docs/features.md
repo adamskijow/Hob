@@ -9,10 +9,10 @@ valid action set. Ambiguous or unsafe output changes nothing.
 
 ## Planning
 
-Hob builds a timeline from:
+Fixed appointments keep their stated times. Untimed work stays on deck until
+the user asks Hob to schedule it. An explicit planning request builds a proposal
+from:
 
-- working days and hours;
-- default task length and transition time;
 - stated dates, fixed times, deadlines, priority, and effort;
 - optional opaque Calendar busy intervals.
 
@@ -47,9 +47,8 @@ aligned, including offline edits.
 
 ## Setup
 
-First run checks Apple Intelligence and offers iCloud, Calendar, reminders,
-working days, working hours, task length, and transition time. Connection state
-and manual sync live in the gear menu.
+First run checks Apple Intelligence and offers iCloud, Calendar, and reminders.
+Connection state and manual sync live in the gear menu.
 
 ## Current limits
 

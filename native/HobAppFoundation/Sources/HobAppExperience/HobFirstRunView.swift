@@ -11,10 +11,6 @@ struct HobFirstRunView: View {
     let finish: () -> Void
 
     @State private var step = 0
-    @State private var workHours = "09:00|17:30"
-    @State private var workDays = "weekdays"
-    @State private var defaultDuration = 30
-    @State private var transition = 0
 
     var body: some View {
         NavigationStack {
@@ -23,7 +19,6 @@ struct HobFirstRunView: View {
                     switch step {
                     case 0: welcome
                     case 1: connections
-                    case 2: rhythm
                     default: ready
                     }
                 }
@@ -33,8 +28,7 @@ struct HobFirstRunView: View {
                     if step > 0 { Button("Back") { step -= 1 } }
                     Spacer()
                     Button(finalButtonTitle) {
-                        if step == 2 { saveRhythm() }
-                        if step == 3 { finish() } else { step += 1 }
+                        if step == 2 { finish() } else { step += 1 }
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(primaryButtonIsDisabled)
@@ -51,7 +45,6 @@ struct HobFirstRunView: View {
                     }
                 }
             }
-            .onAppear { loadRhythm() }
         }
         .tint(HobTheme.accent(for: colorScheme))
     }
@@ -63,7 +56,7 @@ struct HobFirstRunView: View {
                 .foregroundStyle(.tint)
                 .accessibilityHidden(true)
             Text("A plan you can actually follow").font(.largeTitle.bold())
-            Text("Describe the work. Hob uses Apple Intelligence on this device and builds a schedule you approve.")
+            Text("Describe the work. Hob uses Apple Intelligence on this device and keeps it on deck until you ask for a schedule.")
             Label("Messages and Calendar details stay on this device.", systemImage: "lock.shield")
             Label("Tasks sync privately through your iCloud account.", systemImage: "icloud")
         }
@@ -135,35 +128,6 @@ struct HobFirstRunView: View {
         }
     }
 
-    private var rhythm: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("When should Hob plan work?").font(.title.bold())
-            Picker("Hours", selection: $workHours) {
-                Text("8:00–4:00").tag("08:00|16:00")
-                Text("9:00–5:30").tag("09:00|17:30")
-                Text("10:00–6:00").tag("10:00|18:00")
-            }
-            Picker("Days", selection: $workDays) {
-                Text("Monday–Friday").tag("weekdays")
-                Text("Every day").tag("everyday")
-            }
-            Picker("Default task length", selection: $defaultDuration) {
-                Text("15 minutes").tag(15)
-                Text("30 minutes").tag(30)
-                Text("60 minutes").tag(60)
-            }
-            Picker("Space between tasks", selection: $transition) {
-                Text("None").tag(0)
-                Text("5 minutes").tag(5)
-                Text("10 minutes").tag(10)
-                Text("15 minutes").tag(15)
-            }
-            Text("Specific times and effort in your message override these defaults.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-        }
-    }
-
     private var ready: some View {
         VStack(alignment: .leading, spacing: 14) {
             Image(systemName: readySymbol)
@@ -172,7 +136,7 @@ struct HobFirstRunView: View {
                 .accessibilityHidden(true)
             Text(readyTitle).font(.largeTitle.bold())
             Text("Try: “Finish taxes by Friday, high priority, about 90 minutes.”")
-            Text("Hob proposes a timeline first. Calendar changes require approval when integration is on.")
+            Text("Untimed work stays on deck. Ask Hob to plan it when you want time blocks. Calendar changes still require approval.")
                 .foregroundStyle(.secondary)
             if !controller.modelReadiness.isReady {
                 Label(modelAttentionMessage, systemImage: "exclamationmark.triangle")
@@ -182,12 +146,12 @@ struct HobFirstRunView: View {
     }
 
     private var finalButtonTitle: String {
-        guard step == 3 else { return "Continue" }
+        guard step == 2 else { return "Continue" }
         return reviewingExistingSetup ? "Done" : "Start using Hob"
     }
 
     private var primaryButtonIsDisabled: Bool {
-        if step == 3 {
+        if step == 2 {
             return !Self.canFinish(
                 reviewingExistingSetup: reviewingExistingSetup,
                 modelReadiness: controller.modelReadiness,
@@ -252,30 +216,4 @@ struct HobFirstRunView: View {
         }
     }
 
-    private func loadRhythm() {
-        let value = controller.planningPreferences
-        let pair = "\(value.workStart)|\(value.workEnd)"
-        if ["08:00|16:00", "09:00|17:30", "10:00|18:00"].contains(pair) {
-            workHours = pair
-        }
-        workDays = value.workDays == Array(1...7) ? "everyday" : "weekdays"
-        if [15, 30, 60].contains(value.defaultDurationMinutes) {
-            defaultDuration = value.defaultDurationMinutes
-        }
-        if [0, 5, 10, 15].contains(value.transitionBufferMinutes) {
-            transition = value.transitionBufferMinutes
-        }
-    }
-
-    private func saveRhythm() {
-        let hours = workHours.split(separator: "|").map(String.init)
-        guard hours.count == 2 else { return }
-        controller.updatePlanningPreferences(
-            workStart: hours[0],
-            workEnd: hours[1],
-            workDays: workDays == "everyday" ? Array(1...7) : Array(1...5),
-            defaultDurationMinutes: defaultDuration,
-            transitionBufferMinutes: transition
-        )
-    }
 }

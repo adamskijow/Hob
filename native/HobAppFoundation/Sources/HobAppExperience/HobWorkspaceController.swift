@@ -210,6 +210,17 @@ public final class HobWorkspaceController: ObservableObject {
             && runtime != nil
     }
 
+    public var hasUnplannedOnDeckTasks: Bool {
+        let planned = Set(
+            proposal?.plannedUntimedTaskIDs
+                ?? adoptedSchedule?.proposal.plannedUntimedTaskIDs
+                ?? []
+        )
+        return tasks.contains {
+            $0.status == "open" && $0.dueTime == nil && !planned.contains($0.id)
+        }
+    }
+
     public var scheduleDiff: RuntimeScheduleDiff? {
         guard let current = adoptedSchedule?.proposal,
               let proposal,
@@ -505,9 +516,15 @@ public final class HobWorkspaceController: ObservableObject {
                 }
                 try await self.cleanupCalendarEventsIfNeeded()
                 try await self.cleanupNotificationsIfNeeded()
-                _ = try await runtime.proposeSchedule(
-                    try self.scheduleRequest(at: instant)
-                )
+                let explicitlyPlannedIDs = response.outcome.appliedKinds == ["replan"]
+                    ? response.outcome.tasks.filter {
+                        $0.status == "open" && $0.dueTime == nil
+                    }.map(\.id)
+                    : nil
+                _ = try await runtime.proposeSchedule(try self.scheduleRequest(
+                    at: instant,
+                    includedUntimedTaskIDs: explicitlyPlannedIDs
+                ))
                 await self.syncTasks()
                 if response.outcome.appliedKinds == ["replan"] {
                     self.notice = "Built a new plan from what changed."
@@ -519,10 +536,10 @@ public final class HobWorkspaceController: ObservableObject {
                     self.notice = "Undid the last task change."
                 } else if response.outcome.appliedKinds.allSatisfy({ $0 == "capture" }) {
                     self.notice = actions.count == 1
-                        ? "Captured and planned one task."
-                        : "Captured and planned \(actions.count) tasks."
+                        ? "Captured one task."
+                        : "Captured \(actions.count) tasks."
                 } else {
-                    self.notice = "Updated the tasks and built a new plan."
+                    self.notice = "Updated the tasks."
                 }
             case .clarificationRequired:
                 self.notice = "I need a clearer date or task before changing anything."
@@ -531,6 +548,25 @@ public final class HobWorkspaceController: ObservableObject {
             case .rejected, .noChange:
                 self.notice = "Nothing changed. Try describing the task another way."
             }
+            await self.refresh()
+        }
+    }
+
+    public func planOnDeckWork() {
+        let taskIDs = tasks.filter {
+            $0.status == "open" && $0.dueTime == nil
+        }.map(\.id)
+        guard !taskIDs.isEmpty else {
+            notice = "Nothing untimed is waiting on deck."
+            return
+        }
+        run {
+            guard let runtime = self.runtime else { return }
+            _ = try await runtime.proposeSchedule(try self.scheduleRequest(
+                at: self.now(),
+                includedUntimedTaskIDs: taskIDs
+            ))
+            self.notice = "Built a proposed schedule for on-deck work."
             await self.refresh()
         }
     }
@@ -818,7 +854,24 @@ public final class HobWorkspaceController: ObservableObject {
 
     public func refresh() async {
         guard let runtime else { return }
-        let snapshot = await runtime.snapshot()
+        var snapshot = await runtime.snapshot()
+        if snapshot.adoptedSchedule == nil,
+           let previous = snapshot.latestProposal {
+            let taskByID = Dictionary(uniqueKeysWithValues: snapshot.tasks.map {
+                ($0.id, $0)
+            })
+            let planned = Set(previous.plannedUntimedTaskIDs)
+            let hasLegacyAutomaticBlock = previous.blocks.contains { block in
+                taskByID[block.taskID]?.dueTime == nil && !planned.contains(block.taskID)
+            }
+            if hasLegacyAutomaticBlock,
+               let replacement = try? scheduleRequest(
+                    at: now(), includedUntimedTaskIDs: []
+               ) {
+                _ = try? await runtime.proposeSchedule(replacement)
+                snapshot = await runtime.snapshot()
+            }
+        }
         tasks = snapshot.tasks
         proposal = snapshot.latestProposal
         adoptedSchedule = snapshot.adoptedSchedule
@@ -982,7 +1035,8 @@ public final class HobWorkspaceController: ObservableObject {
 
     private func scheduleRequest(
         at instant: Date,
-        preferences: RuntimePlanningPreferences? = nil
+        preferences: RuntimePlanningPreferences? = nil,
+        includedUntimedTaskIDs: [String]? = nil
     ) throws -> RuntimeScheduleRequest {
         let preferences = preferences ?? planningPreferences
         let end = gregorianCalendar.date(
@@ -1011,7 +1065,11 @@ public final class HobWorkspaceController: ObservableObject {
             defaultDurationMinutes: preferences.defaultDurationMinutes,
             transitionBufferMinutes: preferences.transitionBufferMinutes,
             workDays: preferences.workDays,
-            busy: busy
+            busy: busy,
+            includedUntimedTaskIDs: includedUntimedTaskIDs
+                ?? proposal?.plannedUntimedTaskIDs
+                ?? adoptedSchedule?.proposal.plannedUntimedTaskIDs
+                ?? []
         )
     }
 

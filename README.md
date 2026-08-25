@@ -11,10 +11,10 @@
   <img src="https://img.shields.io/badge/iPhone%20%2B%20Mac-black?logo=apple&logoColor=white" alt="iPhone and Mac">
 </p>
 
-Hob is a local-first planner for iPhone and Mac. Describe work naturally and
-Hob builds a realistic timeline around your calendar. Apple's Foundation Models
-framework interprets messages on the device; tasks sync through your private
-iCloud account.
+Hob is a local-first planner for iPhone and Mac. Describe work naturally.
+Appointments keep their stated times; untimed work stays on deck until you ask
+Hob to schedule it. Apple's Foundation Models framework interprets messages on
+the device, and tasks sync through your private iCloud account.
 
 ## Current build
 
@@ -28,7 +28,7 @@ edition stays in the repository for migration and regression coverage.
 - Optionally plans around selected Apple calendars, including shared and subscribed calendars.
 - Keeps today current and offers timed morning and evening check-ins.
 - Rolls untimed work forward while leaving missed appointments for rescheduling.
-- Adopts plans locally or adds them to a chosen calendar.
+- Builds a timed proposal only when asked, then adopts it locally or adds it to a chosen calendar.
 - Sends optional start reminders with Done, Snooze, and Replan actions.
 - Syncs tasks privately between iPhone and Mac through iCloud.
 - Preserves schedules, undo, and recovery state across restarts.

@@ -1178,7 +1178,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     @available(iOS 26.0, macOS 26.0, *)
     struct Replan: Tool {
         let collector: Collector; let name = "replan_schedule"
-        let description = "Use when changed circumstances require a new plan but no individual task changed."
+        let description = "Use when the user explicitly asks Hob to plan, schedule, time-block, or rebuild their existing on-deck work and no individual task changed."
         func call(arguments: EvidenceArgs) async throws -> String {
             await collector.append(.replan); return "Replan requested."
         }

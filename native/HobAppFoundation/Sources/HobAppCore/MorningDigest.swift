@@ -88,6 +88,8 @@ public enum RuntimeMorningDigestBuilder {
         if let proposal, RuntimeScheduleValidator.valid(proposal) {
             for block in proposal.blocks {
                 guard let task = open[block.taskID],
+                      task.dueTime != nil
+                        || proposal.plannedUntimedTaskIDs.contains(task.id),
                       let start = ISO8601DateFormatter().date(from: block.startAt),
                       dayString(start, calendar: calendar) == day else { continue }
                 items.append(RuntimeMorningDigestItem(
@@ -103,7 +105,7 @@ public enum RuntimeMorningDigestBuilder {
         let due = open.values
             .filter { task in
                 !included.contains(task.id)
-                    && task.dueDate.map { $0 <= day } == true
+                    && (task.dueDate == nil || task.dueDate.map { $0 <= day } == true)
             }
             .sorted {
                 ($0.dueDate ?? "", $0.dueTime ?? "", $0.createdAt, $0.id)
