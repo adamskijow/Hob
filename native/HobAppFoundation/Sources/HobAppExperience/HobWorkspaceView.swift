@@ -83,7 +83,7 @@ public struct HobWorkspaceView: View {
                     conversation
                     planningAnalysis
                 }
-                .navigationTitle("Hob")
+                .navigationTitle("")
                 .toolbar { workspaceToolbar }
             }
             .tabItem { Label("Today", systemImage: "sun.max.fill") }
@@ -363,23 +363,21 @@ public struct HobWorkspaceView: View {
     }
 
     private var introduction: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Capsule()
-                .fill(
-                    LinearGradient(
-                        colors: [HobTheme.gold, HobTheme.copper],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
-                .frame(width: 46, height: 5)
-                .padding(.bottom, 8)
-                .accessibilityHidden(true)
-            Text("What needs to get done?")
-                .font(.largeTitle.bold())
-            Text("Add work, make changes, or ask about your plan naturally. Untimed work stays on deck.")
-                .foregroundStyle(.secondary)
+        HStack(spacing: 12) {
+            HobTeapotIcon()
+                .frame(width: 46, height: 46)
+            Text("Hob")
+                .font(.system(size: 42, weight: .bold, design: .rounded))
         }
+        .foregroundStyle(
+            LinearGradient(
+                colors: [HobTheme.gold, HobTheme.accent(for: colorScheme)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Hob")
     }
 
     @ViewBuilder private var morningDigest: some View {
@@ -548,9 +546,6 @@ public struct HobWorkspaceView: View {
             }
             .onSubmit { controller.submit() }
             HStack {
-                Text("Tell Hob what changed or ask about the plan.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 Spacer()
                 Button {
                     controller.submit()
