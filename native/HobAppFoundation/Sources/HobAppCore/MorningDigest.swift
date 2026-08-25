@@ -44,6 +44,21 @@ public struct RuntimeMorningDigest: Equatable, Identifiable, Sendable {
             ? (visible + ["+\(remainder) more in Hob"]).joined(separator: "\n")
             : visible.joined(separator: "\n")
     }
+
+    public var eveningRecapBody: String {
+        guard !items.isEmpty else {
+            return "Nothing is still open from today. Anything else to capture?"
+        }
+        let visible = items.prefix(4).enumerated().map { index, item in
+            "\(index + 1): \(item.summary)"
+        }
+        let remainder = items.count - visible.count
+        let openItems = remainder > 0
+            ? visible + ["+\(remainder) more in Hob"]
+            : visible
+        return (["Tell Hob naturally and it’ll check things off."] + openItems)
+            .joined(separator: "\n")
+    }
 }
 
 public extension RuntimeMorningDigestItem {

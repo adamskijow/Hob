@@ -51,6 +51,28 @@ import Testing
 
     #expect(digest.items.isEmpty)
     #expect(digest.notificationBody == "Nothing on deck today.")
+    #expect(
+        digest.eveningRecapBody
+            == "Nothing is still open from today. Anything else to capture?"
+    )
+}
+
+@Test func eveningRecapAsksNaturallyAndListsOpenWork() throws {
+    let zone = try #require(TimeZone(identifier: "America/New_York"))
+    let today = try #require(ISO8601DateFormatter().date(
+        from: "2026-08-24T18:30:00-04:00"
+    ))
+    let digest = RuntimeMorningDigestBuilder.build(
+        for: today,
+        tasks: [digestTask(
+            id: "taxes", task: "Finish taxes", dueDate: "2026-08-24"
+        )],
+        proposal: nil,
+        timezone: zone
+    )
+
+    #expect(digest.eveningRecapBody.contains("Tell Hob naturally"))
+    #expect(digest.eveningRecapBody.contains("1: Finish taxes"))
 }
 
 @Test func upcomingMorningDigestsCoverSevenLocalDates() throws {

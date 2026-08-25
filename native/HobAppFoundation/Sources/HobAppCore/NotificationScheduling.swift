@@ -82,6 +82,12 @@ public protocol RuntimeNotificationScheduling: AnyObject {
         now: Date
     ) async throws
     func cancelMorningDigests() async
+    func replaceEveningRecaps(
+        _ digests: [RuntimeMorningDigest],
+        time: String,
+        now: Date
+    ) async throws
+    func cancelEveningRecaps() async
     func snooze(
         response: RuntimeNotificationResponse,
         minutes: Int

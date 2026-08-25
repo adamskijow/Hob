@@ -10,6 +10,7 @@ public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
     fileprivate enum Identifier {
         static let category = "HOB_SCHEDULE_BLOCK"
         static let morningPrefix = "hob.morning."
+        static let eveningPrefix = "hob.evening."
         static let done = "HOB_DONE"
         static let snooze = "HOB_SNOOZE"
         static let replan = "HOB_REPLAN"
@@ -127,6 +128,64 @@ public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
         now: Date
     ) async throws {
         #if os(iOS)
+        try await replaceDailyNotifications(
+            digests,
+            time: time,
+            now: now,
+            identifierPrefix: Identifier.morningPrefix,
+            title: "Morning. Here is today.",
+            body: \.notificationBody
+        )
+        #else
+        await cancelMorningDigests()
+        #endif
+    }
+
+    public func cancelMorningDigests() async {
+        await cancelDailyNotifications(prefix: Identifier.morningPrefix)
+    }
+
+    public func replaceEveningRecaps(
+        _ digests: [RuntimeMorningDigest],
+        time: String,
+        now: Date
+    ) async throws {
+        #if os(iOS)
+        try await replaceDailyNotifications(
+            digests,
+            time: time,
+            now: now,
+            identifierPrefix: Identifier.eveningPrefix,
+            title: "What got done today?",
+            body: \.eveningRecapBody
+        )
+        #else
+        await cancelEveningRecaps()
+        #endif
+    }
+
+    public func cancelEveningRecaps() async {
+        await cancelDailyNotifications(prefix: Identifier.eveningPrefix)
+    }
+
+    private func cancelDailyNotifications(prefix: String) async {
+        let pending = await center.pendingNotificationRequests()
+        let identifiers = pending.map(\.identifier).filter {
+            $0.hasPrefix(prefix)
+        }
+        center.removePendingNotificationRequests(withIdentifiers: identifiers)
+        center.removeDeliveredNotifications(withIdentifiers: identifiers)
+    }
+
+    #if os(iOS)
+    private func replaceDailyNotifications(
+        _ digests: [RuntimeMorningDigest],
+        time: String,
+        now: Date,
+        identifierPrefix: String,
+        title: String,
+        body: KeyPath<RuntimeMorningDigest, String>
+    ) async throws {
         guard authorization == .authorized else {
             throw RuntimeNotificationError.permissionDenied
         }
@@ -136,12 +195,12 @@ public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
               digests.allSatisfy({
                   TimeZone(identifier: $0.timezone) != nil
                       && $0.items.count <= 10_000
-                      && $0.notificationBody.utf8.count <= 4_000
+                      && $0[keyPath: body].utf8.count <= 4_000
               }) else {
             throw RuntimeNotificationError.invalidRequest
         }
 
-        await cancelMorningDigests()
+        await cancelDailyNotifications(prefix: identifierPrefix)
         var scheduled: [String] = []
         do {
             for digest in digests {
@@ -155,10 +214,10 @@ public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
                     throw RuntimeNotificationError.invalidRequest
                 }
                 guard fire > now else { continue }
-                let identifier = Identifier.morningPrefix + digest.date
+                let identifier = identifierPrefix + digest.date
                 let content = UNMutableNotificationContent()
-                content.title = "Morning. Here is today."
-                content.body = digest.notificationBody
+                content.title = title
+                content.body = digest[keyPath: body]
                 content.sound = .default
                 var calendar = Calendar(identifier: .gregorian)
                 calendar.timeZone = timezone
@@ -183,19 +242,8 @@ public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
             center.removePendingNotificationRequests(withIdentifiers: scheduled)
             throw RuntimeNotificationError.schedulingFailed
         }
-        #else
-        await cancelMorningDigests()
-        #endif
     }
-
-    public func cancelMorningDigests() async {
-        let pending = await center.pendingNotificationRequests()
-        let identifiers = pending.map(\.identifier).filter {
-            $0.hasPrefix(Identifier.morningPrefix)
-        }
-        center.removePendingNotificationRequests(withIdentifiers: identifiers)
-        center.removeDeliveredNotifications(withIdentifiers: identifiers)
-    }
+    #endif
 
     public func cancel(notificationIDs: [String]) {
         center.removePendingNotificationRequests(withIdentifiers: notificationIDs)

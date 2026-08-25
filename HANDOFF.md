@@ -12,11 +12,11 @@ Nothing has been uploaded to TestFlight or either App Store.
 ## Exact state
 
 - Branch: `main`
-- Current increment base commit: `305804d`
+- Current increment base commit: `ec7a8be`
 - Native app version: `0.1` build `1`
 - Latest public tag: `v0.9.13`, for the legacy Open Local edition
-- Tests: 484 Python and 65 native
-- CI: green on Ubuntu and macOS at `305804d`; recheck after this increment
+- Tests: 484 Python and 66 native
+- CI: green on Ubuntu and macOS at `ec7a8be`; recheck after this increment
 - iPhone: signed current calendar build installed; relaunch was blocked by the lock screen
 - Mac: signed current calendar build installed at `/Applications/Hob.app`
 - Legacy `com.local.hob` and `com.local.hob.menu` login agents: disabled and retired
@@ -51,6 +51,8 @@ Retired launch-agent files are under
   an exact live Foundation Models regression.
 - Replaced the four inline digest times with one compact 24-hour selector.
 - Made setup review dismissible without weakening the first-run model check.
+- Added an optional evening completion recap, off by default at 8:00 PM, with
+  the same compact 24-hour selector as the morning digest.
 
 ## Next verification
 
@@ -59,6 +61,8 @@ calendars and output calendar, then add an event to a shared or subscribed
 calendar. Confirm the next proposal avoids it and an adopted plan appears in
 the chosen output calendar.
 Confirm the compact digest-time selector stays put while the gear menu scrolls.
+Enable Evening recap, choose a time a few minutes ahead, and confirm tapping its
+notification opens Hob for a natural completion report.
 
 ## Product rules
 

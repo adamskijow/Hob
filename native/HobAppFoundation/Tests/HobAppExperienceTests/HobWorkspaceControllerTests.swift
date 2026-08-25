@@ -120,6 +120,9 @@ private final class StubNotifications: RuntimeNotificationScheduling {
     var morningDigests: [RuntimeMorningDigest] = []
     var morningTime: String?
     var morningCancellations = 0
+    var eveningRecaps: [RuntimeMorningDigest] = []
+    var eveningTime: String?
+    var eveningCancellations = 0
     private var handler: (@MainActor @Sendable (
         RuntimeNotificationResponse
     ) async -> Void)?
@@ -159,6 +162,20 @@ private final class StubNotifications: RuntimeNotificationScheduling {
     func cancelMorningDigests() async {
         morningCancellations += 1
         morningDigests = []
+    }
+
+    func replaceEveningRecaps(
+        _ digests: [RuntimeMorningDigest],
+        time: String,
+        now: Date
+    ) async throws {
+        eveningRecaps = digests
+        eveningTime = time
+    }
+
+    func cancelEveningRecaps() async {
+        eveningCancellations += 1
+        eveningRecaps = []
     }
 
     func cancel(notificationIDs: [String]) {
@@ -550,7 +567,7 @@ func calendarIntegrationDefaultsOffAndSchedulesStayUsable() async throws {
 }
 
 @Test @MainActor
-func dailyDigestSupportsEveryHourAndPersistsTheSelection() async throws {
+func dailyCheckInsAreIndependentAndSupportEveryHour() async throws {
     #expect(HobWorkspaceController.validMorningDigestTimes.count == 24)
     #expect(HobWorkspaceController.validMorningDigestTimes.first == "00:00")
     #expect(HobWorkspaceController.validMorningDigestTimes.last == "23:00")
@@ -564,11 +581,12 @@ func dailyDigestSupportsEveryHourAndPersistsTheSelection() async throws {
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     defaults.set("23:00", forKey: "hob.morning.digest.time")
+    let notifications = StubNotifications()
     let controller = HobWorkspaceController(
         store: TaskStateStore(directoryURL: directory),
         interpreter: StubInterpreter(actions: []),
         calendarStore: StubCalendar(),
-        notificationStore: StubNotifications(),
+        notificationStore: notifications,
         syncStore: StubSync(),
         defaults: defaults,
         timezone: try #require(TimeZone(identifier: "America/New_York"))
@@ -578,6 +596,23 @@ func dailyDigestSupportsEveryHourAndPersistsTheSelection() async throws {
     controller.setMorningDigestTime("00:00")
     #expect(controller.morningDigestTime == "00:00")
     #expect(defaults.string(forKey: "hob.morning.digest.time") == "00:00")
+
+    #expect(!controller.eveningRecapEnabled)
+    #expect(controller.eveningRecapTime == "20:00")
+    controller.setEveningRecapTime("23:00")
+    controller.setEveningRecapEnabled(true)
+    try await Task.sleep(for: .milliseconds(50))
+
+    #expect(controller.eveningRecapEnabled)
+    #expect(controller.eveningRecapTime == "23:00")
+    #expect(notifications.eveningTime == "23:00")
+    #expect(notifications.eveningRecaps.count == 7)
+    #expect(defaults.bool(forKey: "hob.evening.recap.enabled"))
+    #expect(defaults.string(forKey: "hob.evening.recap.time") == "23:00")
+
+    controller.setEveningRecapEnabled(false)
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(notifications.eveningRecaps.isEmpty)
 }
 
 @Test @MainActor

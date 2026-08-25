@@ -172,7 +172,7 @@ public struct HobWorkspaceView: View {
 
     private var connectionsMenu: some View {
         Menu {
-            Section("Morning") { morningMenuItems }
+            Section("Check-ins") { checkInMenuItems }
             Section("Calendar") { calendarMenuItems }
             Section("Reminders") { reminderMenuItems }
             Section("iCloud") { syncMenuItems }
@@ -186,7 +186,7 @@ public struct HobWorkspaceView: View {
         .accessibilityLabel("Connections and setup")
     }
 
-    @ViewBuilder private var morningMenuItems: some View {
+    @ViewBuilder private var checkInMenuItems: some View {
         Toggle(
             "Daily digest",
             isOn: Binding(
@@ -194,12 +194,51 @@ public struct HobWorkspaceView: View {
                 set: { controller.setMorningDigestEnabled($0) }
             )
         )
+        checkInTimeMenu(
+            title: "Digest time",
+            selection: controller.morningDigestTime,
+            enabled: controller.morningDigestEnabled,
+            set: controller.setMorningDigestTime
+        )
+        Divider()
+        Toggle(
+            "Evening recap",
+            isOn: Binding(
+                get: { controller.eveningRecapEnabled },
+                set: { controller.setEveningRecapEnabled($0) }
+            )
+        )
+        checkInTimeMenu(
+            title: "Recap time",
+            selection: controller.eveningRecapTime,
+            enabled: controller.eveningRecapEnabled,
+            set: controller.setEveningRecapTime
+        )
+        if (controller.morningDigestEnabled || controller.eveningRecapEnabled),
+           controller.notificationAuthorization != .authorized {
+            Label("Enable notifications below", systemImage: "bell.slash")
+        } else {
+            if controller.morningDigestNeedsAttention {
+                Label("Digest needs attention", systemImage: "exclamationmark.triangle")
+            }
+            if controller.eveningRecapNeedsAttention {
+                Label("Recap needs attention", systemImage: "exclamationmark.triangle")
+            }
+        }
+    }
+
+    private func checkInTimeMenu(
+        title: String,
+        selection: String,
+        enabled: Bool,
+        set: @escaping (String) -> Void
+    ) -> some View {
         Menu {
             ForEach(HobWorkspaceController.validMorningDigestTimes, id: \.self) { time in
                 Button {
-                    controller.setMorningDigestTime(time)
+                    set(time)
                 } label: {
-                    if time == controller.morningDigestTime {
+                    if time == selection {
                         Label(
                             HobWorkspaceController.morningDigestTimeLabel(time),
                             systemImage: "checkmark"
@@ -211,17 +250,11 @@ public struct HobWorkspaceView: View {
             }
         } label: {
             Label(
-                "Digest time: \(HobWorkspaceController.morningDigestTimeLabel(controller.morningDigestTime))",
+                "\(title): \(HobWorkspaceController.morningDigestTimeLabel(selection))",
                 systemImage: "clock"
             )
         }
-        .disabled(!controller.morningDigestEnabled)
-        if controller.morningDigestEnabled,
-           controller.notificationAuthorization != .authorized {
-            Label("Enable notifications below", systemImage: "bell.slash")
-        } else if controller.morningDigestNeedsAttention {
-            Label("Needs attention", systemImage: "exclamationmark.triangle")
-        }
+        .disabled(!enabled)
     }
 
     @ViewBuilder private var calendarMenuItems: some View {

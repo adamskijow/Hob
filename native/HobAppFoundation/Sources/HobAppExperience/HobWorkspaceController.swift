@@ -43,6 +43,9 @@ public final class HobWorkspaceController: ObservableObject {
     @Published public private(set) var morningDigestEnabled: Bool
     @Published public private(set) var morningDigestTime: String
     @Published public private(set) var morningDigestNeedsAttention = false
+    @Published public private(set) var eveningRecapEnabled: Bool
+    @Published public private(set) var eveningRecapTime: String
+    @Published public private(set) var eveningRecapNeedsAttention = false
     @Published public private(set) var syncAvailability: RuntimeTaskSyncAvailability
     @Published public private(set) var syncNeedsAttention = false
     @Published public private(set) var planningPreferences: RuntimePlanningPreferences = .default
@@ -63,6 +66,8 @@ public final class HobWorkspaceController: ObservableObject {
     private enum DefaultsKey {
         static let morningDigestEnabled = "hob.morning.digest.enabled"
         static let morningDigestTime = "hob.morning.digest.time"
+        static let eveningRecapEnabled = "hob.evening.recap.enabled"
+        static let eveningRecapTime = "hob.evening.recap.time"
         static let calendarIntegrationEnabled = "hob.calendar.integration.enabled"
         static let inputCalendarIDs = "hob.calendar.input.ids"
         static let outputCalendarID = "hob.calendar.output.id"
@@ -170,6 +175,13 @@ public final class HobWorkspaceController: ObservableObject {
         self.morningDigestTime = savedDigestTime.flatMap {
             Self.validMorningDigestTimes.contains($0) ? $0 : nil
         } ?? "07:00"
+        self.eveningRecapEnabled = defaults.bool(
+            forKey: DefaultsKey.eveningRecapEnabled
+        )
+        let savedRecapTime = defaults.string(forKey: DefaultsKey.eveningRecapTime)
+        self.eveningRecapTime = savedRecapTime.flatMap {
+            Self.validMorningDigestTimes.contains($0) ? $0 : nil
+        } ?? "20:00"
         self.timezone = timezone
         self.now = now
         self.modelReadiness = modelReadiness
@@ -293,6 +305,19 @@ public final class HobWorkspaceController: ObservableObject {
         morningDigestTime = time
         defaults.set(time, forKey: DefaultsKey.morningDigestTime)
         Task { await refreshMorningDigestNotifications() }
+    }
+
+    public func setEveningRecapEnabled(_ enabled: Bool) {
+        eveningRecapEnabled = enabled
+        defaults.set(enabled, forKey: DefaultsKey.eveningRecapEnabled)
+        Task { await refreshEveningRecapNotifications() }
+    }
+
+    public func setEveningRecapTime(_ time: String) {
+        guard Self.validMorningDigestTimes.contains(time) else { return }
+        eveningRecapTime = time
+        defaults.set(time, forKey: DefaultsKey.eveningRecapTime)
+        Task { await refreshEveningRecapNotifications() }
     }
 
     public func setUsesAllInputCalendars(_ usesAll: Bool) {
@@ -611,7 +636,7 @@ public final class HobWorkspaceController: ObservableObject {
                     throw error
                 }
             }
-            self.notice = "Morning digest and start reminders enabled."
+            self.notice = "Notifications enabled."
             await self.refresh()
         }
     }
@@ -812,6 +837,10 @@ public final class HobWorkspaceController: ObservableObject {
             tasks: snapshot.tasks,
             proposal: activeProposal
         )
+        await refreshEveningRecapNotifications(
+            tasks: snapshot.tasks,
+            proposal: activeProposal
+        )
     }
 
     private func refreshMorningDigestNotifications(
@@ -852,6 +881,47 @@ public final class HobWorkspaceController: ObservableObject {
             morningDigestNeedsAttention = false
         } catch {
             morningDigestNeedsAttention = true
+        }
+    }
+
+    private func refreshEveningRecapNotifications(
+        tasks: [RuntimeTask]? = nil,
+        proposal: RuntimeScheduleProposal? = nil
+    ) async {
+        guard eveningRecapEnabled,
+              notificationStore.authorization == .authorized else {
+            await notificationStore.cancelEveningRecaps()
+            eveningRecapNeedsAttention = false
+            return
+        }
+        let resolvedTasks: [RuntimeTask]
+        let resolvedProposal: RuntimeScheduleProposal?
+        if let tasks {
+            resolvedTasks = tasks
+            resolvedProposal = proposal
+        } else if let runtime {
+            let snapshot = await runtime.snapshot()
+            resolvedTasks = snapshot.tasks
+            resolvedProposal = snapshot.adoptedSchedule?.proposal ?? snapshot.latestProposal
+        } else {
+            await notificationStore.cancelEveningRecaps()
+            return
+        }
+        do {
+            try await notificationStore.replaceEveningRecaps(
+                RuntimeMorningDigestBuilder.upcoming(
+                    from: now(),
+                    days: 7,
+                    tasks: resolvedTasks,
+                    proposal: resolvedProposal,
+                    timezone: timezone
+                ),
+                time: eveningRecapTime,
+                now: now()
+            )
+            eveningRecapNeedsAttention = false
+        } catch {
+            eveningRecapNeedsAttention = true
         }
     }
 
