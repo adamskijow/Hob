@@ -66,6 +66,7 @@ public struct HobWorkspaceView: View {
     @State private var selectedDigestItem: RuntimeMorningDigestItem?
     @State private var editedDigestTitle = ""
     @State private var taskNote = ""
+    @FocusState private var composerFocused: Bool
 
     public init() {
         _controller = StateObject(wrappedValue: HobWorkspaceController())
@@ -105,6 +106,24 @@ public struct HobWorkspaceView: View {
         .tint(HobTheme.accent(for: colorScheme))
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { controller.syncNow() }
+        }
+        .onChange(of: selectedTab) { _, _ in
+            composerFocused = false
+        }
+        .onChange(of: showsOnboarding) { _, isPresented in
+            if isPresented { composerFocused = false }
+        }
+        .onChange(of: showsCalendarSettings) { _, isPresented in
+            if isPresented { composerFocused = false }
+        }
+        .onChange(of: selectedDigestItem?.id) { _, taskID in
+            if taskID != nil { composerFocused = false }
+        }
+        .onChange(of: controller.longRangeConfirmation) { _, confirmation in
+            if confirmation != nil { composerFocused = false }
+        }
+        .onChange(of: controller.errorMessage) { _, error in
+            if error != nil { composerFocused = true }
         }
         .onReceive(
             NotificationCenter.default.publisher(
@@ -151,7 +170,12 @@ public struct HobWorkspaceView: View {
             }
             .frame(maxWidth: 760, alignment: .leading)
             .padding(24)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                composerFocused = false
+            }
         }
+        .scrollDismissesKeyboard(.interactively)
         .background { HobAppBackground().ignoresSafeArea() }
     }
 
@@ -552,11 +576,12 @@ public struct HobWorkspaceView: View {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .stroke(HobTheme.border(for: colorScheme), lineWidth: 1)
             }
-            .onSubmit { controller.submit() }
+            .focused($composerFocused)
+            .onSubmit { submitDraft() }
             HStack {
                 Spacer()
                 Button {
-                    controller.submit()
+                    submitDraft()
                 } label: {
                     if controller.isWorking {
                         ProgressView()
@@ -580,6 +605,11 @@ public struct HobWorkspaceView: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(HobTheme.border(for: colorScheme), lineWidth: 1)
         }
+    }
+
+    private func submitDraft() {
+        composerFocused = false
+        controller.submit()
     }
 
     @ViewBuilder private var conversationReply: some View {
