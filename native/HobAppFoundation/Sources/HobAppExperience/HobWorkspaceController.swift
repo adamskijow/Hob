@@ -64,6 +64,8 @@ public final class HobWorkspaceController: ObservableObject {
     private let modelProbe: (@Sendable () async throws -> Void)?
     private let defaults: UserDefaults
     private var pendingLongRangeSubmission: PendingLongRangeSubmission?
+    private var focusedTaskIDs: [String] = []
+    private var unresolvedMessage: String?
 
     private struct PendingLongRangeSubmission {
         let text: String
@@ -225,7 +227,8 @@ public final class HobWorkspaceController: ObservableObject {
                 ?? []
         )
         return tasks.contains {
-            $0.status == "open" && $0.dueTime == nil && !planned.contains($0.id)
+            $0.status == "open" && !$0.isWaiting
+                && $0.dueTime == nil && !planned.contains($0.id)
         }
     }
 
@@ -472,7 +475,58 @@ public final class HobWorkspaceController: ObservableObject {
     }
 
     public func taskStatusLabel(_ task: RuntimeTask) -> String {
-        task.isMissedTimedItem(on: day(now())) ? "Missed" : task.status.capitalized
+        if task.isWaiting { return "Waiting" }
+        return task.isMissedTimedItem(on: day(now())) ? "Missed" : task.status.capitalized
+    }
+
+    public func addNote(taskID: String, text: String) {
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, clean.utf8.count <= 10_000 else { return }
+        updateTask(taskID: taskID, action: RuntimeAction(
+            type: "note", target: taskID, note: clean
+        ), success: "Note saved.")
+    }
+
+    public func setWaiting(taskID: String, waiting: Bool) {
+        updateTask(
+            taskID: taskID,
+            action: RuntimeAction(type: waiting ? "wait" : "resume", target: taskID),
+            success: waiting ? "Moved to Waiting." : "Back on deck."
+        )
+    }
+
+    private func updateTask(
+        taskID: String,
+        action: RuntimeAction,
+        success: String
+    ) {
+        run {
+            guard let runtime = self.runtime,
+                  self.tasks.contains(where: { $0.id == taskID && $0.status == "open" })
+            else { return }
+            let instant = self.now()
+            let timestamp = self.timestamp(instant)
+            let requestID = UUID().uuidString
+            let response = try await runtime.process(RuntimeTurnRequest(
+                requestID: requestID,
+                message: success,
+                now: timestamp,
+                timezone: self.timezone.identifier,
+                actions: [action]
+            ))
+            try? await runtime.markDelivered(dedupeKey: "turn:\(requestID)", at: timestamp)
+            guard response.outcome.disposition == .applied else {
+                self.notice = "That task could not be updated."
+                return
+            }
+            try await self.cleanupCalendarEventsIfNeeded()
+            try await self.cleanupNotificationsIfNeeded()
+            _ = try await runtime.proposeSchedule(try self.scheduleRequest(at: instant))
+            await self.syncTasks()
+            self.focusedTaskIDs = [taskID]
+            self.notice = success
+            await self.refresh()
+        }
     }
 
     public func renameTask(taskID: String, to title: String) {
@@ -538,12 +592,22 @@ public final class HobWorkspaceController: ObservableObject {
             let instant = self.now()
             let timestamp = self.timestamp(instant)
             let current = await runtime.snapshot().tasks
-            let interpreted = try await self.interpreter.interpret(
-                message: text,
-                now: timestamp,
-                timezone: self.timezone.identifier,
-                tasks: current
-            )
+            let interpreted: [RuntimeAction]
+            do {
+                interpreted = try await self.interpreter.interpret(
+                    message: text,
+                    now: timestamp,
+                    timezone: self.timezone.identifier,
+                    tasks: current,
+                    context: RuntimeConversationContext(
+                        focusedTaskIDs: self.focusedTaskIDs,
+                        unresolvedMessage: self.unresolvedMessage
+                    )
+                )
+            } catch {
+                self.unresolvedMessage = text
+                throw error
+            }
             let actions = self.stableActions(
                 interpreted,
                 tasks: current,
@@ -563,6 +627,19 @@ public final class HobWorkspaceController: ObservableObject {
                     self.draft = ""
                 }
                 self.notice = nil
+                return
+            }
+            if actions.count == 1, actions[0].type == "query" {
+                self.notice = try RuntimeTaskQueryEngine.answer(
+                    action: actions[0],
+                    tasks: current,
+                    now: instant,
+                    timezone: self.timezone
+                )
+                self.unresolvedMessage = nil
+                if self.draft.trimmingCharacters(in: .whitespacesAndNewlines) == text {
+                    self.draft = ""
+                }
                 return
             }
             if let confirmation = self.longRangeMessage(
@@ -607,6 +684,8 @@ public final class HobWorkspaceController: ObservableObject {
             )
             switch response.outcome.disposition {
             case .applied:
+                self.unresolvedMessage = nil
+                self.focusedTaskIDs = Array(actions.compactMap(\.target).prefix(8))
                 if self.draft.trimmingCharacters(in: .whitespacesAndNewlines) == text {
                     self.draft = ""
                 }
@@ -638,6 +717,7 @@ public final class HobWorkspaceController: ObservableObject {
                     self.notice = "Updated the tasks."
                 }
             case .clarificationRequired:
+                self.unresolvedMessage = text
                 self.notice = "I need a clearer date or task before changing anything."
             case .confirmationRequired:
                 self.notice = "Review the task before I apply it."
@@ -693,7 +773,7 @@ public final class HobWorkspaceController: ObservableObject {
 
     public func planOnDeckWork() {
         let taskIDs = tasks.filter {
-            $0.status == "open" && $0.dueTime == nil
+            $0.status == "open" && !$0.isWaiting && $0.dueTime == nil
         }.map(\.id)
         guard !taskIDs.isEmpty else {
             notice = "Nothing untimed is waiting on deck."
@@ -1314,11 +1394,20 @@ public final class HobWorkspaceController: ObservableObject {
                 notice = "That schedule is no longer active."
                 return
             }
-            try await notificationStore.snooze(
-                response: response,
-                minutes: 15
-            )
-            notice = "Snoozed \(response.task) for 15 minutes."
+            let key = "hob.snooze.\(response.proposalID).\(response.blockID)"
+            let prior = defaults.integer(forKey: key)
+            let step = RuntimeSnoozeSequence.step(after: prior)
+            defaults.set(prior + 1, forKey: key)
+            if let minutes = step.minutes {
+                try await notificationStore.snooze(
+                    response: response,
+                    minutes: minutes
+                )
+                let next = step.nextLabel.map { " Next snooze: \($0)." } ?? ""
+                notice = "Snoozed \(response.task) for \(step.label)." + next
+            } else {
+                notice = "Snoozed \(response.task) indefinitely. It stays on deck."
+            }
         case .replan:
             guard taskIsOpen else {
                 notice = "That task was already closed."
@@ -1455,6 +1544,11 @@ public final class HobWorkspaceController: ObservableObject {
                 priority: action.priority,
                 recurrence: action.recurrence,
                 recurrenceOperation: action.recurrenceOperation,
+                note: action.note,
+                clearFields: action.clearFields,
+                queryKind: action.queryKind,
+                queryTerm: action.queryTerm,
+                queryPeriod: action.queryPeriod,
                 analysisKind: action.analysisKind,
                 horizonDays: action.horizonDays,
                 budgetMinutes: action.budgetMinutes,

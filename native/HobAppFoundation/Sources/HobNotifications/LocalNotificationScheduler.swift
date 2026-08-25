@@ -98,7 +98,7 @@ public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
         guard authorization == .authorized else {
             throw RuntimeNotificationError.permissionDenied
         }
-        guard response.isValid, (1...240).contains(minutes) else {
+        guard response.isValid, (1...1_440).contains(minutes) else {
             throw RuntimeNotificationError.invalidRequest
         }
         let content = Self.content(
@@ -269,7 +269,7 @@ public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
                 ),
                 UNNotificationAction(
                     identifier: Identifier.snooze,
-                    title: "Snooze 15m"
+                    title: "Snooze longer"
                 ),
                 UNNotificationAction(
                     identifier: Identifier.replan,

@@ -7,6 +7,10 @@ Describe several tasks naturally, including dates, times, deadlines, priority,
 and effort. Hob creates typed tasks only after the local Apple model returns a
 valid action set. Ambiguous or unsafe output changes nothing.
 
+The same composer can rename tasks, change or clear constraints, attach notes,
+and park work that is waiting on someone. A follow-up such as “make that 4 PM”
+uses the task from the preceding interaction.
+
 Dates can be relative, named, or absolute. Hob confirms dates more than two
 years away before saving them.
 
@@ -40,9 +44,14 @@ state update together.
 ## Execution and replanning
 
 Accepted blocks can create local start reminders. Reminder actions support
-Done, Snooze, and Replan. Hob can compare an adopted schedule with a new
-proposal before updating Calendar. Cancellation removes Hob's Calendar events
-and reminders durably.
+Done, Snooze, and Replan. Repeated snoozes grow from 15 minutes to 1 hour,
+4 hours, and 12 hours, then become indefinite. Hob can compare an adopted
+schedule with a new proposal before updating Calendar. Cancellation removes
+Hob's Calendar events and reminders durably.
+
+Natural questions can retrieve today's work, another date, overdue or waiting
+tasks, text matches, and recent completion history. Queries never change state.
+Tasks left on deck for seven days prompt a brief keep, move, or drop decision.
 
 The iPhone can also send the current digest each morning. It is on by default
 at 7:00 AM; the gear menu can change the time or turn it off. Hob refreshes the

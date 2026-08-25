@@ -74,6 +74,9 @@ public struct RuntimeTask: Codable, Equatable, Sendable {
     public var durationMinutes: Int?
     public var priority: String?
     public var recurrence: RuntimeRecurrenceRule?
+    public var note: String?
+    public var waitingSince: String?
+    public var completionHistory: [String]?
     public var status: String
     public let createdAt: String
     public var updatedAt: String
@@ -89,6 +92,9 @@ public struct RuntimeTask: Codable, Equatable, Sendable {
         durationMinutes: Int? = nil,
         priority: String? = nil,
         recurrence: RuntimeRecurrenceRule? = nil,
+        note: String? = nil,
+        waitingSince: String? = nil,
+        completionHistory: [String]? = nil,
         status: String,
         createdAt: String,
         updatedAt: String,
@@ -103,6 +109,9 @@ public struct RuntimeTask: Codable, Equatable, Sendable {
         self.durationMinutes = durationMinutes
         self.priority = priority
         self.recurrence = recurrence
+        self.note = note
+        self.waitingSince = waitingSince
+        self.completionHistory = completionHistory
         self.status = status
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -118,6 +127,10 @@ public extension RuntimeTask {
             && dueTime != nil
             && dueDate.map { $0 < day } == true
     }
+
+    var isWaiting: Bool { waitingSince != nil }
+
+    var completedAt: String? { completionHistory?.last }
 }
 
 public struct RuntimeDateIntent: Codable, Equatable, Sendable {
@@ -169,6 +182,11 @@ public struct RuntimeAction: Codable, Equatable, Sendable {
     public let priority: String?
     public let recurrence: RuntimeRecurrenceRule?
     public let recurrenceOperation: String?
+    public let note: String?
+    public let clearFields: [String]?
+    public let queryKind: String?
+    public let queryTerm: String?
+    public let queryPeriod: String?
     public let analysisKind: String?
     public let horizonDays: Int?
     public let budgetMinutes: Int?
@@ -187,6 +205,11 @@ public struct RuntimeAction: Codable, Equatable, Sendable {
         priority: String? = nil,
         recurrence: RuntimeRecurrenceRule? = nil,
         recurrenceOperation: String? = nil,
+        note: String? = nil,
+        clearFields: [String]? = nil,
+        queryKind: String? = nil,
+        queryTerm: String? = nil,
+        queryPeriod: String? = nil,
         analysisKind: String? = nil,
         horizonDays: Int? = nil,
         budgetMinutes: Int? = nil,
@@ -204,6 +227,11 @@ public struct RuntimeAction: Codable, Equatable, Sendable {
         self.priority = priority
         self.recurrence = recurrence
         self.recurrenceOperation = recurrenceOperation
+        self.note = note
+        self.clearFields = clearFields
+        self.queryKind = queryKind
+        self.queryTerm = queryTerm
+        self.queryPeriod = queryPeriod
         self.analysisKind = analysisKind
         self.horizonDays = horizonDays
         self.budgetMinutes = budgetMinutes
@@ -698,6 +726,18 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
             && (action.recurrenceOperation.map {
                 ["skip", "stop"].contains($0)
             } ?? true)
+            && bounded(action.note, maxBytes: 10_000)
+            && (action.clearFields.map {
+                $0.count <= 8 && Set($0).count == $0.count
+                    && $0.allSatisfy {
+                        ["date", "time", "deadline", "duration", "priority", "note"].contains($0)
+                    }
+            } ?? true)
+            && (action.queryKind.map {
+                ["today", "date", "all", "overdue", "week", "search", "done", "waiting"].contains($0)
+            } ?? true)
+            && bounded(action.queryTerm, maxBytes: 1_000)
+            && (action.queryPeriod.map { ["today", "week", "all"].contains($0) } ?? true)
             && (action.analysisKind.map {
                 ["capacity", "explain", "what_if"].contains($0)
             } ?? true)
@@ -763,6 +803,11 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
                   (task.durationMinutes.map { (5...480).contains($0) } ?? true),
                   (task.priority.map { ["high", "normal", "low"].contains($0) } ?? true),
                   (task.recurrence?.isValid ?? true),
+                  (task.note.map { $0.utf8.count <= 10_000 } ?? true),
+                  (task.waitingSince.map { validTimestamp($0) } ?? true),
+                  (task.completionHistory.map {
+                      $0.count <= 10_000 && $0.allSatisfy(validTimestamp)
+                  } ?? true),
                   (task.sourceArchive.map { $0.utf8.count <= 20_000 } ?? true),
                   task.dueDate == nil || task.deadlineDate == nil
                     || task.dueDate! <= task.deadlineDate! else {
@@ -1007,7 +1052,10 @@ public struct TaskRuntime: Sendable {
             )))
         }
 
-        guard ["complete", "drop", "reschedule", "amend", "keep", "recurrence"].contains(action.type)
+        guard [
+            "complete", "drop", "reschedule", "amend", "revise", "note",
+            "wait", "resume", "keep", "recurrence",
+        ].contains(action.type)
         else { return .rejected }
         guard let target = resolvedTarget(action.target) else {
             return .clarification
@@ -1018,6 +1066,17 @@ public struct TaskRuntime: Sendable {
         if action.type == "complete" { return .success(.complete(target)) }
         if action.type == "drop" { return .success(.drop(target)) }
         if action.type == "keep" { return .success(.keep(target)) }
+        if action.type == "wait" { return .success(.wait(target)) }
+        if action.type == "resume" { return .success(.resume(target)) }
+        if action.type == "note" {
+            guard let note = bounded(action.note, maxBytes: 10_000) else {
+                return .clarification
+            }
+            let existing = tasks.first(where: { $0.id == target })?.note ?? ""
+            guard existing.utf8.count + note.utf8.count + (existing.isEmpty ? 0 : 1)
+                    <= 10_000 else { return .clarification }
+            return .success(.note(target, note))
+        }
         if action.type == "recurrence" {
             guard let operation = action.recurrenceOperation,
                   ["skip", "stop"].contains(operation) else {
@@ -1030,6 +1089,66 @@ public struct TaskRuntime: Sendable {
                 return .clarification
             }
             return .success(.amend(target, task))
+        }
+        if action.type == "revise" {
+            let clear = Set(action.clearFields ?? [])
+            let revisedTask = action.task.flatMap { bounded($0, maxBytes: 10_000) }
+            if action.task != nil && revisedTask == nil { return .clarification }
+            let revisedNote = action.note.flatMap { bounded($0, maxBytes: 10_000) }
+            if action.note != nil && revisedNote == nil { return .clarification }
+            let revisedDate: String?
+            if let when = action.when {
+                switch resolve(when, now: now, timezone: timezone) {
+                case .date(let value): revisedDate = value
+                case .ambiguous: return .clarification
+                case .invalid: return .rejected
+                }
+            } else {
+                revisedDate = nil
+            }
+            let revisedDeadline: String?
+            if let deadline = action.deadline {
+                switch resolve(deadline, now: now, timezone: timezone) {
+                case .date(let value): revisedDeadline = value
+                case .ambiguous: return .clarification
+                case .invalid: return .rejected
+                }
+            } else {
+                revisedDeadline = nil
+            }
+            let revisedTime = validTime(action.time)
+            if action.time != nil && revisedTime == nil { return .clarification }
+            guard action.durationMinutes.map({ (5...480).contains($0) }) ?? true,
+                  action.priority.map({ ["high", "normal", "low"].contains($0) }) ?? true
+            else { return .clarification }
+            guard revisedTask != nil || revisedNote != nil || action.when != nil
+                    || action.deadline != nil || revisedTime != nil
+                    || action.durationMinutes != nil || action.priority != nil
+                    || !clear.isEmpty else {
+                return .clarification
+            }
+            guard let current = tasks.first(where: { $0.id == target }) else {
+                return .clarification
+            }
+            let finalDate = clear.contains("date") ? nil
+                : (action.when != nil ? revisedDate : current.dueDate)
+            let finalDeadline = clear.contains("deadline") ? nil
+                : (action.deadline != nil ? revisedDeadline : current.deadlineDate)
+            if let finalDate, let finalDeadline, finalDate > finalDeadline {
+                return .clarification
+            }
+            return .success(.revise(target, TaskRevision(
+                task: revisedTask,
+                dueDate: revisedDate,
+                hasDueDate: action.when != nil,
+                dueTime: revisedTime,
+                deadlineDate: revisedDeadline,
+                hasDeadlineDate: action.deadline != nil,
+                durationMinutes: action.durationMinutes,
+                priority: action.priority,
+                note: revisedNote,
+                clearFields: clear
+            )))
         }
         switch resolve(action.when, now: now, timezone: timezone) {
         case .date(let dueDate):
@@ -1212,6 +1331,33 @@ public struct TaskRuntime: Sendable {
             }
         case .amend(let target, let task):
             update(target, now: now) { $0.task = task }
+        case .revise(let target, let revision):
+            update(target, now: now) { task in
+                if revision.clearFields.contains("date") { task.dueDate = nil }
+                if revision.clearFields.contains("time") { task.dueTime = nil }
+                if revision.clearFields.contains("deadline") { task.deadlineDate = nil }
+                if revision.clearFields.contains("duration") { task.durationMinutes = nil }
+                if revision.clearFields.contains("priority") { task.priority = nil }
+                if revision.clearFields.contains("note") { task.note = nil }
+                if let value = revision.task { task.task = value }
+                if revision.hasDueDate { task.dueDate = revision.dueDate }
+                if let value = revision.dueTime {
+                    task.dueTime = value
+                    if task.dueDate == nil { task.dueDate = String(now.prefix(10)) }
+                }
+                if revision.hasDeadlineDate { task.deadlineDate = revision.deadlineDate }
+                if let value = revision.durationMinutes { task.durationMinutes = value }
+                if let value = revision.priority { task.priority = value }
+                if let value = revision.note { task.note = value }
+            }
+        case .note(let target, let note):
+            update(target, now: now) { task in
+                task.note = task.note.map { "\($0)\n\(note)" } ?? note
+            }
+        case .wait(let target):
+            update(target, now: now) { $0.waitingSince = now }
+        case .resume(let target):
+            update(target, now: now) { $0.waitingSince = nil }
         case .keep(let target):
             update(target, now: now) { _ in }
         case .recurrence(let target, let operation):
@@ -1236,14 +1382,22 @@ public struct TaskRuntime: Sendable {
 
     private mutating func complete(_ target: String, now: String) {
         guard let index = tasks.firstIndex(where: { $0.id == target }) else { return }
+        var history = tasks[index].completionHistory ?? []
+        history.append(now)
+        if history.count > 10_000 {
+            history.removeFirst(history.count - 10_000)
+        }
+        tasks[index].completionHistory = history
         guard var recurrence = tasks[index].recurrence else {
             tasks[index].status = "done"
+            tasks[index].waitingSince = nil
             tasks[index].updatedAt = now
             return
         }
         recurrence.completed += 1
         if recurrence.count.map({ recurrence.completed >= $0 }) == true {
             tasks[index].status = "done"
+            tasks[index].waitingSince = nil
             tasks[index].recurrence = recurrence
             tasks[index].updatedAt = now
             return
@@ -1254,6 +1408,7 @@ public struct TaskRuntime: Sendable {
         guard let next = nextRecurrenceDate(after: base, rule: recurrence),
               recurrence.endDate.map({ next <= $0 }) ?? true else {
             tasks[index].status = "done"
+            tasks[index].waitingSince = nil
             tasks[index].recurrence = recurrence
             tasks[index].updatedAt = now
             return
@@ -1360,6 +1515,10 @@ private enum PreparedMutation {
     case drop(String)
     case reschedule(String, String?, String?)
     case amend(String, String)
+    case revise(String, TaskRevision)
+    case note(String, String)
+    case wait(String)
+    case resume(String)
     case keep(String)
     case recurrence(String, String)
 
@@ -1370,10 +1529,27 @@ private enum PreparedMutation {
         case .drop: return "drop"
         case .reschedule: return "reschedule"
         case .amend: return "amend"
+        case .revise: return "revise"
+        case .note: return "note"
+        case .wait: return "wait"
+        case .resume: return "resume"
         case .keep: return "keep"
         case .recurrence: return "recurrence"
         }
     }
+}
+
+private struct TaskRevision {
+    let task: String?
+    let dueDate: String?
+    let hasDueDate: Bool
+    let dueTime: String?
+    let deadlineDate: String?
+    let hasDeadlineDate: Bool
+    let durationMinutes: Int?
+    let priority: String?
+    let note: String?
+    let clearFields: Set<String>
 }
 
 private enum Preparation {

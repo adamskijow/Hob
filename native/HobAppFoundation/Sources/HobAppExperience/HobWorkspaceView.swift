@@ -64,6 +64,7 @@ public struct HobWorkspaceView: View {
     @State private var selectedTab: WorkspaceTab = .today
     @State private var selectedDigestItem: RuntimeMorningDigestItem?
     @State private var editedDigestTitle = ""
+    @State private var taskNote = ""
 
     public init() {
         _controller = StateObject(wrappedValue: HobWorkspaceController())
@@ -395,6 +396,7 @@ public struct HobWorkspaceView: View {
                     ForEach(Array(digest.items.prefix(6).enumerated()), id: \.element.id) { index, item in
                         Button {
                             editedDigestTitle = item.task
+                            taskNote = ""
                             selectedDigestItem = item
                         } label: {
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -420,6 +422,13 @@ public struct HobWorkspaceView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                }
+                if let stale = digest.items.max(by: { $0.daysOnDeck < $1.daysOnDeck }),
+                   stale.isStale {
+                    Text("“\(stale.task)” has been on deck \(stale.daysOnDeck) days. Tell Hob naturally whether it stays, moves, or gets dropped.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -471,6 +480,28 @@ public struct HobWorkspaceView: View {
                         || controller.isWorking
                 )
             }
+            if let task = controller.task(taskID: item.taskID) {
+                Divider()
+                if let note = task.note, !note.isEmpty {
+                    Text(note)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                HStack {
+                    TextField("Add a note", text: $taskNote)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Save note") {
+                        controller.addNote(taskID: item.taskID, text: taskNote)
+                        taskNote = ""
+                    }
+                    .disabled(taskNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                Button(task.isWaiting ? "Return to deck" : "Waiting on someone") {
+                    controller.setWaiting(taskID: item.taskID, waiting: !task.isWaiting)
+                    selectedDigestItem = nil
+                }
+                .disabled(controller.isWorking)
+            }
             if controller.task(taskID: item.taskID)?.recurrence != nil {
                 Divider()
                 HStack {
@@ -491,7 +522,7 @@ public struct HobWorkspaceView: View {
         .padding(24)
         .frame(maxWidth: 480)
         .presentationDetents([
-            .height(controller.task(taskID: item.taskID)?.recurrence == nil ? 230 : 300)
+            .medium
         ])
         .presentationDragIndicator(.visible)
     }
@@ -862,6 +893,8 @@ public struct HobWorkspaceView: View {
         if let duration = task.durationMinutes { values.append("\(duration)m") }
         if let priority = task.priority, priority != "normal" { values.append(priority) }
         if let recurrence = task.recurrence { values.append(recurrenceLabel(recurrence)) }
+        if task.isWaiting { values.append("waiting") }
+        if task.note != nil { values.append("note") }
         return values.isEmpty ? "No stated constraints" : values.joined(separator: " · ")
     }
 

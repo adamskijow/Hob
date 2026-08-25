@@ -8,6 +8,41 @@ public protocol RuntimeMessageInterpreting: Sendable {
         timezone: String,
         tasks: [RuntimeTask]
     ) async throws -> [RuntimeAction]
+
+    func interpret(
+        message: String,
+        now: String,
+        timezone: String,
+        tasks: [RuntimeTask],
+        context: RuntimeConversationContext
+    ) async throws -> [RuntimeAction]
+}
+
+public extension RuntimeMessageInterpreting {
+    func interpret(
+        message: String,
+        now: String,
+        timezone: String,
+        tasks: [RuntimeTask],
+        context: RuntimeConversationContext
+    ) async throws -> [RuntimeAction] {
+        try await interpret(message: message, now: now, timezone: timezone, tasks: tasks)
+    }
+}
+
+public struct RuntimeConversationContext: Equatable, Sendable {
+    public let focusedTaskIDs: [String]
+    public let unresolvedMessage: String?
+
+    public init(focusedTaskIDs: [String] = [], unresolvedMessage: String? = nil) {
+        self.focusedTaskIDs = Array(focusedTaskIDs.prefix(8))
+        self.unresolvedMessage = unresolvedMessage.flatMap {
+            let clean = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            return clean.isEmpty ? nil : String(clean.prefix(2_000))
+        }
+    }
+
+    public static let empty = RuntimeConversationContext()
 }
 
 public enum RuntimeInterpretationError: Error, Equatable, Sendable {
@@ -160,6 +195,10 @@ public enum RuntimeGeneratedActions {
                     options: [.caseInsensitive, .diacriticInsensitive],
                     locale: Locale(identifier: "en_US_POSIX")
                 ) ?? "",
+                action.priority ?? "",
+                action.durationMinutes.map(String.init) ?? "",
+                action.clearFields?.joined(separator: ",") ?? "",
+                action.note ?? "",
             ].joined(separator: "|")
         }
         return Set(signatures).count == signatures.count

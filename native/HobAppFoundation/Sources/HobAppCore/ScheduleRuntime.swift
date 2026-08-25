@@ -455,6 +455,7 @@ public enum RuntimeSchedulePlanner {
         let includedUntimed = Set(request.includedUntimedTaskIDs)
         let open = tasks.filter {
             $0.status == "open"
+                && !$0.isWaiting
                 && !$0.isMissedTimedItem(on: request.startDate)
                 && ($0.dueTime != nil || includedUntimed.contains($0.id))
         }

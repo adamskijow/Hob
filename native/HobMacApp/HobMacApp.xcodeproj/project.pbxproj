@@ -47,6 +47,8 @@
 		M10000000000000000000001 /* MorningDigest.swift in Sources */ = {isa = PBXBuildFile; fileRef = M20000000000000000000001 /* MorningDigest.swift */; };
 		M10000000000000000000002 /* MorningDigest.swift in Agent Sources */ = {isa = PBXBuildFile; fileRef = M20000000000000000000001 /* MorningDigest.swift */; };
 		N10000000000000000000001 /* PlanningAnalysis.swift in Sources */ = {isa = PBXBuildFile; fileRef = N20000000000000000000001 /* PlanningAnalysis.swift */; };
+		O10000000000000000000001 /* TaskQueries.swift in Sources */ = {isa = PBXBuildFile; fileRef = O20000000000000000000001 /* TaskQueries.swift */; };
+		P10000000000000000000001 /* SnoozeSequence.swift in Sources */ = {isa = PBXBuildFile; fileRef = P20000000000000000000001 /* SnoozeSequence.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -129,6 +131,8 @@
 		L20000000000000000000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		M20000000000000000000001 /* MorningDigest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MorningDigest.swift; path = ../HobAppFoundation/Sources/HobAppCore/MorningDigest.swift; sourceTree = "<group>"; };
 		N20000000000000000000001 /* PlanningAnalysis.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PlanningAnalysis.swift; path = ../HobAppFoundation/Sources/HobAppCore/PlanningAnalysis.swift; sourceTree = "<group>"; };
+		O20000000000000000000001 /* TaskQueries.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TaskQueries.swift; path = ../HobAppFoundation/Sources/HobAppCore/TaskQueries.swift; sourceTree = "<group>"; };
+		P20000000000000000000001 /* SnoozeSequence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SnoozeSequence.swift; path = ../HobAppFoundation/Sources/HobAppCore/SnoozeSequence.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -196,6 +200,8 @@
 				K20000000000000000000002 /* HobFirstRunView.swift */,
 				M20000000000000000000001 /* MorningDigest.swift */,
 				N20000000000000000000001 /* PlanningAnalysis.swift */,
+				O20000000000000000000001 /* TaskQueries.swift */,
+				P20000000000000000000001 /* SnoozeSequence.swift */,
 			);
 			name = Sources;
 			sourceTree = "<group>";
@@ -369,6 +375,8 @@
 				K10000000000000000000003 /* HobFirstRunView.swift in Sources */,
 				M10000000000000000000001 /* MorningDigest.swift in Sources */,
 				N10000000000000000000001 /* PlanningAnalysis.swift in Sources */,
+				O10000000000000000000001 /* TaskQueries.swift in Sources */,
+				P10000000000000000000001 /* SnoozeSequence.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

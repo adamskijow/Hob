@@ -37,6 +37,22 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         timezone: String,
         tasks: [RuntimeTask]
     ) async throws -> [RuntimeAction] {
+        try await interpret(
+            message: message,
+            now: now,
+            timezone: timezone,
+            tasks: tasks,
+            context: .empty
+        )
+    }
+
+    public func interpret(
+        message: String,
+        now: String,
+        timezone: String,
+        tasks: [RuntimeTask],
+        context: RuntimeConversationContext
+    ) async throws -> [RuntimeAction] {
         let clean = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty, clean.utf8.count <= 20_000 else {
             throw RuntimeInterpretationError.unsupportedMessage
@@ -50,7 +66,8 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 now: now,
                 timezone: timezone,
                 open: open,
-                recentChange: Self.hasRecentChange(tasks: tasks, now: now)
+                recentChange: Self.hasRecentChange(tasks: tasks, now: now),
+                context: context
             )
         }
         #endif
@@ -64,27 +81,122 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         now: String,
         timezone: String,
         open: [RuntimeTask],
-        recentChange: Bool
+        recentChange: Bool,
+        context: RuntimeConversationContext
     ) async throws -> [RuntimeAction] {
+        let intent = try? await classifyIntent(message)
+        let changeKind = try? await classifyChange(message)
+        if ["resume", "other"].contains(changeKind),
+           open.contains(where: \.isWaiting) {
+            let resumeCollector = Collector()
+            _ = try? await LanguageModelSession(
+                tools: [Resume(collector: resumeCollector)],
+                instructions: """
+                Call resume_waiting only when the user's own words say a waiting
+                task's blocker cleared or ask to put it back into active work.
+                Do not call it for questions, new scheduling, or other edits.
+                Copy exact targeting words.
+                """
+            ).respond(to: """
+                Waiting tasks: \(open.enumerated().filter { $0.element.isWaiting }.map { "\($0.offset + 1). \($0.element.task)" })
+                User message: \(message)
+                """)
+            let proposals = await resumeCollector.values()
+            if !proposals.isEmpty {
+                return try await validate(
+                    proposals, message: message, open: open,
+                    recentChange: recentChange,
+                    focusedIndices: Set(context.focusedTaskIDs.compactMap { id in
+                        open.firstIndex(where: { $0.id == id }).map { $0 + 1 }
+                    })
+                )
+            }
+        }
+        var isRetrieval = false
+        if intent == "retrieval", changeKind == "other" {
+            isRetrieval = (try? await confirmsRetrieval(message)) == true
+        }
+        if isRetrieval {
+            if let query = try? await extractQuery(message),
+               let actions = try? await validate(
+                    [.query(query)], message: message, open: open,
+                    recentChange: recentChange
+               ) {
+                return actions
+            }
+            if let action = try? await extractSimpleQuery(message) {
+                return [action]
+            }
+        }
         let collector = Collector()
-        var tools: [any Tool] = [
-            Acknowledge(collector: collector), Undo(collector: collector),
-            Replan(collector: collector), Capture(collector: collector),
-        ]
-        if !open.isEmpty {
+        let isChange = intent == "change"
+            || (changeKind != nil && changeKind != "other")
+        var tools: [any Tool] = [Undo(collector: collector)]
+        if !isChange {
             tools += [
-                Progress(collector: collector), BulkComplete(collector: collector),
-                BulkMove(collector: collector), Complete(collector: collector),
-                Drop(collector: collector), Move(collector: collector),
-                Amend(collector: collector), Keep(collector: collector),
-                Recurrence(collector: collector), Analyze(collector: collector),
+                Acknowledge(collector: collector),
+                Replan(collector: collector), Capture(collector: collector),
             ]
+        }
+        if !open.isEmpty {
+            if isChange {
+                switch changeKind {
+                case "metadata":
+                    tools += [
+                        SetPriority(collector: collector),
+                        SetDuration(collector: collector),
+                        ClearField(collector: collector),
+                    ]
+                case "note": tools.append(Note(collector: collector))
+                case "wait": tools.append(Wait(collector: collector))
+                case "resume": tools.append(Resume(collector: collector))
+                case "move": tools.append(Move(collector: collector))
+                case "rename": tools.append(Amend(collector: collector))
+                case "drop": tools.append(Drop(collector: collector))
+                case "keep": tools.append(Keep(collector: collector))
+                case "recurrence": tools.append(Recurrence(collector: collector))
+                default:
+                    tools += [
+                        Drop(collector: collector), Move(collector: collector),
+                        Amend(collector: collector),
+                        SetPriority(collector: collector),
+                        SetDuration(collector: collector),
+                        ClearField(collector: collector), Note(collector: collector),
+                        Wait(collector: collector), Resume(collector: collector),
+                        Keep(collector: collector), Recurrence(collector: collector),
+                    ]
+                }
+            } else {
+                tools += [
+                    Progress(collector: collector),
+                    BulkComplete(collector: collector),
+                    BulkMove(collector: collector), Complete(collector: collector),
+                    Drop(collector: collector), Move(collector: collector),
+                    Amend(collector: collector), Note(collector: collector),
+                    Wait(collector: collector), Resume(collector: collector),
+                    Keep(collector: collector), Recurrence(collector: collector),
+                ]
+            }
         }
         let prompt = """
         Current instant: \(now)
         Timezone: \(timezone)
         Recent undo available: \(recentChange)
-        Open tasks: \(open.enumerated().map { "\($0.offset + 1). \($0.element.task)" })
+        Open tasks: \(open.enumerated().map {
+            let details = [
+                $0.element.dueDate.map { "date=\($0)" },
+                $0.element.dueTime.map { "time=\($0)" },
+                $0.element.deadlineDate.map { "deadline=\($0)" },
+                $0.element.durationMinutes.map { "duration=\($0)m" },
+                $0.element.priority.map { "priority=\($0)" },
+                $0.element.waitingSince.map { _ in "waiting" },
+            ].compactMap { $0 }.joined(separator: ", ")
+            return "\($0.offset + 1). \($0.element.task)\(details.isEmpty ? "" : " [\(details)]")"
+        })
+        Focused task numbers: \(context.focusedTaskIDs.compactMap { id in
+            open.firstIndex(where: { $0.id == id }).map { $0 + 1 }
+        })
+        Earlier unresolved message: \(context.unresolvedMessage ?? "none")
         User message: \(message)
         """
         let instructions = """
@@ -101,6 +213,14 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         coordinated dates and clocks in order, including pairings expressed with
         "respectively". Keep every other obligation and its clock out of each
         individual task label.
+        Use focused task numbers to resolve words such as it, that, the second
+        one, or a bare follow-up change. The earlier unresolved message is
+        context only; combine it with the current answer without treating it as
+        a new instruction. Use query_tasks for questions asking to retrieve or
+        search task state or completion history. Use revise_task for changes to
+        an existing task's title, date, clock, deadline, estimate, or priority.
+        Use add_note, wait_for_someone, and resume_waiting for durable task
+        details and blocked work.
         """
         var succeeded = false
         for _ in 0..<2 where !succeeded {
@@ -123,7 +243,17 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             throw RuntimeInterpretationError.invalidOutput
         }
         let firstPass = await collector.values()
-        if !open.isEmpty,
+        if changeKind == "metadata" {
+            _ = try? await LanguageModelSession(
+                tools: [SetPriority(collector: collector)],
+                instructions: "Call set_task_priority once only when the user explicitly sets an existing task's priority."
+            ).respond(to: prompt)
+            _ = try? await LanguageModelSession(
+                tools: [SetDuration(collector: collector)],
+                instructions: "Call set_task_estimate once only when the user explicitly sets an existing task's estimated duration."
+            ).respond(to: prompt)
+        }
+        if intent == "report", !open.isEmpty,
            !firstPass.contains(where: {
                switch $0 {
                case .bulkComplete, .bulkMove, .acknowledge, .analysis, .recurrence:
@@ -204,7 +334,10 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         do {
             return try await validate(
                 reviewed, message: message, open: open,
-                recentChange: recentChange
+                recentChange: recentChange,
+                focusedIndices: Set(context.focusedTaskIDs.compactMap { id in
+                    open.firstIndex(where: { $0.id == id }).map { $0 + 1 }
+                })
             )
         } catch {
             guard open.isEmpty else { throw error }
@@ -217,7 +350,8 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         _ rawProposals: [Proposal],
         message: String,
         open: [RuntimeTask],
-        recentChange: Bool
+        recentChange: Bool,
+        focusedIndices: Set<Int> = []
     ) async throws -> [RuntimeAction] {
         guard !rawProposals.isEmpty, rawProposals.count <= 32 else {
             throw RuntimeInterpretationError.invalidOutput
@@ -231,6 +365,44 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                     of: right.evidence, options: [.caseInsensitive, .diacriticInsensitive]
                   ) else { return false }
             return leftRange.lowerBound < rightRange.lowerBound
+        }
+        if let query = proposals.compactMap({ proposal -> QueryArgs? in
+            if case .query(let value) = proposal { return value }
+            return nil
+        }).first {
+            guard RuntimeConstraintEvidence.contains(query.evidence, in: message),
+                  ["today", "date", "all", "overdue", "week", "search", "done", "waiting"].contains(query.kind)
+            else { throw RuntimeInterpretationError.invalidOutput }
+            let term = query.term.trimmingCharacters(in: .whitespacesAndNewlines)
+            if query.kind == "search" && term.isEmpty {
+                throw RuntimeInterpretationError.invalidOutput
+            }
+            let when = RuntimeConstraintEvidence.contains(
+                query.date.dateEvidence, in: message
+            ) ? try dateIntent(
+                kind: query.date.dateKind,
+                weekday: query.date.dateWeekday,
+                which: query.date.dateWhich,
+                n: query.date.dateN,
+                unit: query.date.dateUnit,
+                part: query.date.datePart,
+                anchor: query.date.dateAnchor,
+                year: query.date.dateYear,
+                month: query.date.dateMonth,
+                day: query.date.dateDay,
+                evidence: query.date.dateEvidence
+            ) : nil
+            guard query.kind != "date" || when != nil else {
+                throw RuntimeInterpretationError.invalidOutput
+            }
+            return [RuntimeAction(
+                type: "query",
+                when: when,
+                queryKind: query.kind,
+                queryTerm: term.isEmpty ? nil : term,
+                queryPeriod: ["today", "week", "all"].contains(query.period)
+                    ? query.period : nil
+            )]
         }
         if let analysis = proposals.compactMap({ proposal -> AnalysisArgs? in
             if case .analysis(let value) = proposal { return value }
@@ -412,7 +584,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 ))
             case .complete(let value):
                 guard let target = resolvedTarget(
-                    value, message: message, open: open
+                    value, message: message, open: open, focused: focusedIndices
                 ), !hasConflictingProposal(
                     target: target, proposals: proposals,
                     message: message, open: open
@@ -426,7 +598,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 ))
             case .drop(let value):
                 guard let target = resolvedTarget(
-                    value, message: message, open: open
+                    value, message: message, open: open, focused: focusedIndices
                 ) else { continue }
                 let explicit = explicitReferencedTarget(
                     value.evidence, openCount: open.count
@@ -442,26 +614,194 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 result.append(RuntimeAction(type: "drop", target: String(target)))
             case .move(let value):
                 guard let target = resolvedTarget(
-                    value.target, message: message, open: open
-                ), try await audit(
-                    "scheduled or moved to a stated date or time",
-                    target: target, message: message, open: open
+                    value.target, message: message, open: open, focused: focusedIndices
                 ) else { continue }
+                let focusedFollowUp = focusedIndices.contains(target)
+                    && !Set(["it", "that", "this"])
+                        .isDisjoint(with: Set(words(message)))
+                let moveApproved: Bool
+                if focusedFollowUp {
+                    moveApproved = true
+                } else {
+                    moveApproved = try await audit(
+                        "scheduled or moved to a stated date or time",
+                        target: target, message: message, open: open
+                    )
+                }
+                guard moveApproved else { continue }
                 var destination = value.destination
                 destination.targetIndex = target
-                guard RuntimeConstraintEvidence.contains(
+                if destination.scheduleKind != "none",
+                   !RuntimeConstraintEvidence.contains(
                     destination.dateEvidence, in: message
-                ) else { continue }
-                let action = try moveAction(destination, message: message)
+                   ) { continue }
+                let initial = try moveAction(destination, message: message)
+                let recovered = initial.time ?? recoveredTime(
+                        task: open[target - 1].task,
+                        evidence: value.target.evidence,
+                        text: destination.clockText,
+                        interpretation: destination.clockInterpretation,
+                        originalMessage: message
+                    )
+                let action = RuntimeAction(
+                    type: initial.type, target: initial.target,
+                    when: initial.when, time: recovered,
+                    confidence: initial.confidence
+                )
                 guard action.when != nil || action.time != nil else { continue }
                 result.append(action)
             case .amend(let value):
-                guard supports(value.target, message: message, open: open) else { continue }
+                guard supports(
+                    value.target, message: message, open: open,
+                    focused: focusedIndices
+                ) else { continue }
                 let task = value.task.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !task.isEmpty else { continue }
                 result.append(RuntimeAction(
                     type: "amend", task: task, target: String(value.target.targetIndex)
                 ))
+            case .revise(let value):
+                guard supports(
+                    value.target, message: message, open: open,
+                    focused: focusedIndices
+                ), RuntimeConstraintEvidence.contains(value.evidence, in: message)
+                else { continue }
+                let title = RuntimeConstraintEvidence.contains(
+                    value.taskEvidence, in: message
+                ) ? value.task.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+                let occurrence = RuntimeConstraintEvidence.contains(
+                    value.date.dateEvidence, in: message
+                ) ? try dateIntent(
+                    kind: value.date.dateKind, weekday: value.date.dateWeekday,
+                    which: value.date.dateWhich, n: value.date.dateN,
+                    unit: value.date.dateUnit, part: value.date.datePart,
+                    anchor: value.date.dateAnchor, year: value.date.dateYear,
+                    month: value.date.dateMonth, day: value.date.dateDay,
+                    evidence: value.date.dateEvidence
+                ) : nil
+                let deadline = RuntimeConstraintEvidence.contains(
+                    value.deadline.dateEvidence, in: message
+                ) ? try dateIntent(
+                    kind: value.deadline.dateKind,
+                    weekday: value.deadline.dateWeekday,
+                    which: value.deadline.dateWhich,
+                    n: value.deadline.dateN,
+                    unit: value.deadline.dateUnit,
+                    part: value.deadline.datePart,
+                    anchor: value.deadline.dateAnchor,
+                    year: value.deadline.dateYear,
+                    month: value.deadline.dateMonth,
+                    day: value.deadline.dateDay,
+                    evidence: value.deadline.dateEvidence
+                ) : nil
+                let duration = (5...480).contains(value.durationMinutes)
+                    && RuntimeConstraintEvidence.isSupportedDuration(
+                        value.durationEvidence, in: message
+                    ) ? value.durationMinutes : nil
+                let time = recoveredTime(
+                    task: open[value.target.targetIndex - 1].task,
+                    evidence: value.evidence,
+                    text: value.clockText,
+                    interpretation: value.clockInterpretation,
+                    originalMessage: message
+                )
+                let priority = RuntimeConstraintEvidence.contains(
+                    value.priorityEvidence, in: message
+                ) && ["high", "normal", "low"].contains(value.priority)
+                    ? value.priority : nil
+                let allowedClear = Set(["date", "time", "deadline", "duration", "priority", "note"])
+                let clear = Array(Set(value.clearFields).intersection(allowedClear)).sorted()
+                guard !title.isEmpty || occurrence != nil || deadline != nil
+                        || duration != nil || time != nil || priority != nil
+                        || !clear.isEmpty else { continue }
+                result.append(RuntimeAction(
+                    type: "revise",
+                    task: title.isEmpty ? nil : title,
+                    target: String(value.target.targetIndex),
+                    when: occurrence,
+                    deadline: deadline,
+                    time: time,
+                    durationMinutes: duration,
+                    priority: priority,
+                    clearFields: clear
+                ))
+            case .priority(let value):
+                let target = uniquelyGroundedTarget(message: message, open: open)
+                    ?? value.target.targetIndex
+                guard (uniquelyGroundedTarget(message: message, open: open) != nil
+                        || supports(
+                            value.target, message: message, open: open,
+                            focused: focusedIndices
+                        )),
+                      (RuntimeConstraintEvidence.contains(value.evidence, in: message)
+                        || Set(words(message)).contains(value.level)),
+                      ["high", "normal", "low"].contains(value.level)
+                else { continue }
+                result.append(RuntimeAction(
+                    type: "revise", target: String(target),
+                    priority: value.level
+                ))
+            case .duration(let value):
+                let target = uniquelyGroundedTarget(message: message, open: open)
+                    ?? value.target.targetIndex
+                guard (uniquelyGroundedTarget(message: message, open: open) != nil
+                        || supports(
+                            value.target, message: message, open: open,
+                            focused: focusedIndices
+                        )), (5...480).contains(value.minutes),
+                      (RuntimeConstraintEvidence.isSupportedDuration(
+                        value.evidence, in: message
+                      ) || groundedDuration(value.minutes, in: message))
+                else { continue }
+                result.append(RuntimeAction(
+                    type: "revise", target: String(target),
+                    durationMinutes: value.minutes
+                ))
+            case .clearField(let value):
+                guard supports(
+                    value.target, message: message, open: open,
+                    focused: focusedIndices
+                ), RuntimeConstraintEvidence.contains(value.evidence, in: message),
+                      ["date", "time", "deadline", "duration", "priority", "note"].contains(value.field)
+                else { continue }
+                result.append(RuntimeAction(
+                    type: "revise", target: String(value.target.targetIndex),
+                    clearFields: [value.field]
+                ))
+            case .note(let value):
+                let target = uniquelyGroundedTarget(message: message, open: open)
+                    ?? value.target.targetIndex
+                guard (uniquelyGroundedTarget(message: message, open: open) != nil
+                    || supports(
+                    value.target, message: message, open: open,
+                    focused: focusedIndices
+                )), RuntimeConstraintEvidence.contains(value.text, in: message)
+                else { continue }
+                let text = value.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty {
+                    result.append(RuntimeAction(
+                        type: "note", target: String(target), note: text
+                    ))
+                }
+            case .wait(let value):
+                let target = uniquelyGroundedTarget(message: message, open: open)
+                    ?? value.targetIndex
+                guard (uniquelyGroundedTarget(message: message, open: open) != nil
+                    || supports(
+                    value, message: message, open: open,
+                    focused: focusedIndices
+                )) else { continue }
+                result.append(RuntimeAction(type: "wait", target: String(target)))
+            case .resume(let value):
+                let target = uniquelyGroundedTarget(message: message, open: open)
+                    ?? value.targetIndex
+                guard (uniquelyGroundedTarget(message: message, open: open) != nil
+                    || supports(
+                    value, message: message, open: open,
+                    focused: focusedIndices
+                )), (1...open.count).contains(target), open[target - 1].isWaiting
+                else { continue }
+                result.append(RuntimeAction(type: "resume", target: String(target)))
             case .keep(let value):
                 guard supports(value, message: message, open: open) else { continue }
                 result.append(RuntimeAction(type: "keep", target: String(value.targetIndex)))
@@ -474,7 +814,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                     type: "recurrence", target: String(value.targetIndex),
                     recurrenceOperation: value.operation
                 ))
-            case .bulkComplete, .bulkMove, .analysis:
+            case .bulkComplete, .bulkMove, .analysis, .query:
                 break
             }
         }
@@ -493,8 +833,17 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         }
         var seen = Set<String>()
         result = result.filter { action in
-            let signature = [action.type, action.target ?? "", action.task ?? ""]
-                .joined(separator: "|")
+            var parts = [
+                action.type, action.target ?? "", action.task ?? "",
+                action.when.map(String.init(describing:)) ?? "",
+                action.deadline.map(String.init(describing:)) ?? "",
+                action.time ?? "",
+            ]
+            parts.append(action.durationMinutes.map(String.init) ?? "")
+            parts.append(action.priority ?? "")
+            parts.append(action.note ?? "")
+            parts.append(action.clearFields?.joined(separator: ",") ?? "")
+            let signature = parts.joined(separator: "|")
             return seen.insert(signature).inserted
         }
         result.sort { lhs, rhs in
@@ -539,16 +888,26 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     private static func supports(
         _ value: TargetArgs,
         message: String,
-        open: [RuntimeTask]
+        open: [RuntimeTask],
+        focused: Set<Int> = []
     ) -> Bool {
-        guard (1...open.count).contains(value.targetIndex),
-              RuntimeConstraintEvidence.contains(value.evidence, in: message)
+        guard (1...open.count).contains(value.targetIndex) else { return false }
+        let messageWords = Set(informativeWords(message))
+        let groundedMatches = open.indices.filter { index in
+            let taskWords = Set(informativeWords(open[index].task))
+            return !taskWords.isDisjoint(with: messageWords)
+        }
+        if groundedMatches == [value.targetIndex - 1] { return true }
+        guard RuntimeConstraintEvidence.contains(value.evidence, in: message)
         else { return false }
         if open.count == 1 { return true }
         let evidence = Set(words(value.evidence))
-        let task = Set(words(open[value.targetIndex - 1].task).filter { $0.count >= 3 })
+        let task = Set(informativeWords(open[value.targetIndex - 1].task))
         if !task.isDisjoint(with: evidence) { return true }
         if evidence.contains(String(value.targetIndex)) { return true }
+        let deictic = !Set(["it", "that", "this", "one", "them"])
+            .isDisjoint(with: evidence)
+        if deictic && focused.contains(value.targetIndex) { return true }
         let ordinals = [
             1: "first", 2: "second", 3: "third", 4: "fourth", 5: "fifth",
             6: "sixth", 7: "seventh", 8: "eighth", 9: "ninth", 10: "tenth",
@@ -556,10 +915,31 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         return ordinals[value.targetIndex].map(evidence.contains) ?? false
     }
 
+    private static func uniquelyGroundedTarget(
+        message: String,
+        open: [RuntimeTask]
+    ) -> Int? {
+        let messageWords = Set(informativeWords(message))
+        let matches = open.indices.filter { index in
+            let taskWords = Set(informativeWords(open[index].task))
+            return !taskWords.isDisjoint(with: messageWords)
+        }
+        return matches.count == 1 ? matches[0] + 1 : nil
+    }
+
+    private static func informativeWords(_ text: String) -> [String] {
+        let ignored = Set([
+            "the", "and", "for", "with", "from", "that", "this", "then",
+            "into", "onto", "task", "item", "one",
+        ])
+        return words(text).filter { $0.count >= 3 && !ignored.contains($0) }
+    }
+
     private static func resolvedTarget(
         _ value: TargetArgs,
         message: String,
-        open: [RuntimeTask]
+        open: [RuntimeTask],
+        focused: Set<Int> = []
     ) -> Int? {
         let evidenceWords = Set(words(value.evidence))
         let ordinals = [
@@ -571,7 +951,13 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 || ordinals[index].map(evidenceWords.contains) == true
         }
         if explicit.count == 1 { return explicit[0] }
-        if supports(value, message: message, open: open) { return value.targetIndex }
+        let deicticWords = evidenceWords.union(words(message))
+        let deictic = !Set(["it", "that", "this", "one", "them"])
+            .isDisjoint(with: deicticWords)
+        if deictic, focused.count == 1 { return focused.first }
+        if supports(
+            value, message: message, open: open, focused: focused
+        ) { return value.targetIndex }
         guard RuntimeConstraintEvidence.contains(value.evidence, in: message) else {
             return nil
         }
@@ -637,6 +1023,15 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
 
     private static func explicitNumbers(in text: String) -> Set<Int> {
         Set(text.split { !$0.isNumber }.compactMap { Int($0) })
+    }
+
+    private static func groundedDuration(_ minutes: Int, in message: String) -> Bool {
+        let tokens = Set(words(message))
+        let hasUnit = !Set([
+            "m", "min", "mins", "minute", "minutes",
+            "h", "hr", "hrs", "hour", "hours",
+        ]).isDisjoint(with: tokens)
+        return hasUnit && explicitNumbers(in: message).contains(minutes)
     }
 
     private static func hasTaskWord(_ evidence: String, open: [RuntimeTask]) -> Bool {
@@ -1131,7 +1526,10 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             text: text, interpretation: interpretation,
             originalMessage: originalMessage
         ) { return exact }
-        guard interpretation == "am" || interpretation == "pm" else { return nil }
+        let groundedInterpretation = explicitMeridiem(in: text)
+            ?? explicitMeridiem(in: originalMessage) ?? interpretation
+        guard groundedInterpretation == "am" || groundedInterpretation == "pm"
+        else { return nil }
         let source = RuntimeConstraintEvidence.contains(evidence, in: originalMessage)
             ? evidence : originalMessage
         let pattern = #"\b(?:\d{1,2}:\d{2}|\d{3,4}|\d{1,2}\s*(?:a\.?m\.?|p\.?m\.?))\b"#
@@ -1151,8 +1549,17 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             .map { ns.substring(with: $0.range) }
         guard let candidate else { return nil }
         return RuntimeGeneratedClock.normalizeEvidence(
-            candidate, interpretation: interpretation, in: originalMessage
+            candidate, interpretation: groundedInterpretation, in: originalMessage
         )
+    }
+
+    private static func explicitMeridiem(in text: String) -> String? {
+        let compact = text.lowercased()
+            .replacingOccurrences(of: ".", with: "")
+            .replacingOccurrences(of: " ", with: "")
+        if compact.contains("am") { return "am" }
+        if compact.contains("pm") { return "pm" }
+        return nil
     }
 
     private static func words(_ text: String) -> [String] {
@@ -1197,8 +1604,9 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             value.recurrenceWeekdays,
             evidence: value.recurrenceEvidence
         )
+        let frequency = weekdays.isEmpty ? value.recurrenceFrequency : "week"
         let rule = RuntimeRecurrenceRule(
-            frequency: value.recurrenceFrequency,
+            frequency: frequency,
             interval: max(1, value.recurrenceInterval),
             weekdays: weekdays,
             monthDay: value.recurrenceMonthDay > 0
@@ -1223,8 +1631,9 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             value.recurrenceWeekdays,
             evidence: value.recurrenceEvidence
         )
+        let frequency = weekdays.isEmpty ? value.recurrenceFrequency : "week"
         let rule = RuntimeRecurrenceRule(
-            frequency: value.recurrenceFrequency,
+            frequency: frequency,
             interval: max(1, value.recurrenceInterval),
             weekdays: weekdays,
             monthDay: value.recurrenceMonthDay > 0
@@ -1368,34 +1777,33 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     private static func auditedRecurrenceRule(
         _ message: String
     ) async throws -> RuntimeRecurrenceRule? {
-        for _ in 0..<2 {
-            let response = try await LanguageModelSession(instructions: """
-                Decide whether the obligation repeats. Start with exactly one of
-                NONE, DAILY, WEEKLY, MONTHLY, or YEARLY. Then explain briefly.
-                A named weekday with “every” is weekly. Do not infer repetition
-                from an ordinary date.
-                """).respond(to: "User message: \(message)")
-            guard let first = response.content.uppercased().split(whereSeparator: {
-                !$0.isLetter
-            }).first.map(String.init) else { continue }
-            let frequency: String?
-            switch first {
-            case "DAILY": frequency = "day"
-            case "WEEKLY": frequency = "week"
-            case "MONTHLY": frequency = "month"
-            case "YEARLY": frequency = "year"
-            case "NONE": return nil
-            default: frequency = nil
+        let instructions = """
+            Decide whether the obligation repeats. A named weekday with “every”
+            is weekly. An ordinary date is not recurrence. “Water plants every
+            Monday” is weekly. Return only the recurrence frequency.
+            """
+        var values: [String] = []
+        for _ in 0..<5 {
+            if let value = try? await LanguageModelSession(
+                instructions: instructions
+            ).respond(
+                to: "User message: \(message)",
+                generating: RecurrenceAuditArgs.self
+            ).content.frequency {
+                values.append(value)
             }
-            guard let frequency else { continue }
-            let rule = RuntimeRecurrenceRule(
-                frequency: frequency,
-                weekdays: frequency == "week"
-                    ? groundedRecurrenceWeekdays([], evidence: message) : []
-            )
-            if rule.isValid { return rule }
         }
-        throw RuntimeInterpretationError.invalidOutput
+        guard let frequency = Dictionary(grouping: values, by: { $0 })
+            .max(by: { $0.value.count < $1.value.count })?.key
+        else { throw RuntimeInterpretationError.invalidOutput }
+        guard frequency != "none" else { return nil }
+        let weekdays = groundedRecurrenceWeekdays([], evidence: message)
+        let normalized = weekdays.isEmpty ? frequency : "week"
+        let rule = RuntimeRecurrenceRule(
+            frequency: normalized,
+            weekdays: normalized == "week" ? weekdays : []
+        )
+        return rule.isValid ? rule : nil
     }
 
     @available(iOS 26.0, macOS 26.0, *)
@@ -1426,6 +1834,163 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             evidence: result.evidence
         )
     }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func classifyIntent(
+        _ message: String
+    ) async throws -> String {
+        let instructions = """
+        First classify the user's intent. Retrieval means asking to view, list,
+        find, search, or recall saved task state. Change means editing, moving,
+        parking, resuming, or annotating a task. Report means saying what
+        happened. New task means adding an obligation. Planning means capacity,
+        explanation, what-if, or a schedule request. Changing a saved task's
+        priority or estimate is change, even when a duration appears. “Make the
+        report high priority and 90 minutes” is change. Planning is reserved for
+        questions such as “will it fit?” or “what if it takes 90 minutes?” and
+        explicit requests to build a schedule. For retrieval only,
+        classify the requested saved task state. Use today, date, all, overdue,
+        week, search, done, or waiting. Completed-history questions use done.
+        Finding words in saved tasks uses search. Copy evidence exactly from the
+        user message. For every non-retrieval intent use kind none.
+        """
+        var results: [IntentClassificationArgs] = []
+        for _ in 0..<3 {
+            if let value = try? await LanguageModelSession(
+                instructions: instructions
+            ).respond(
+                to: "User message: \(message)",
+                generating: IntentClassificationArgs.self
+            ).content {
+                results.append(value)
+            }
+        }
+        guard !results.isEmpty else { throw RuntimeInterpretationError.invalidOutput }
+        return Dictionary(grouping: results, by: \.intent)
+            .max { $0.value.count < $1.value.count }?.key ?? results[0].intent
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func confirmsRetrieval(_ message: String) async throws -> Bool {
+        let instructions = """
+        Decide whether the user asks Hob to return information from saved tasks.
+        Retrieval means the user wants to see, find, list, or recall saved task
+        information. New task means adding an obligation, regardless of its
+        date. Task change means editing, annotating, moving, parking, resuming,
+        completing, or dropping work. Report describes what happened.
+        “What did I finish this week?” is retrieval. “Add bananas in ten years”
+        is new task. “Note that the gate code is 4412” and “I’m waiting on Sam”
+        are task changes.
+        """
+        var modes: [String] = []
+        for _ in 0..<5 {
+            if let value = try? await LanguageModelSession(
+                instructions: instructions
+            ).respond(
+                to: "User message: \(message)",
+                generating: RetrievalAuditArgs.self
+            ).content.mode {
+                modes.append(value)
+            }
+        }
+        guard !modes.isEmpty else { return false }
+        return modes.count { $0 == "retrieval" } >= 4
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func classifyChange(_ message: String) async throws -> String {
+        let instructions = """
+            Classify an instruction that changes an existing task. Metadata sets
+            or removes priority, estimate, deadline, date, clock, or another
+            constraint. Note attaches durable detail. Wait parks blocked work.
+            Resume returns blocked work to the deck. Move changes its date or
+            clock. Rename changes its title. Drop removes it. Keep leaves stale
+            work active. Recurrence changes a repeating series. Use other for a
+            question, report, new task, planning request, or social message.
+            “Note that the gate code is 4412” is note. “I’m waiting on Sam for
+            the report” is wait. “Sam replied; put the report back” is resume.
+            “Make that 4pm” is move because it changes a clock.
+            “What did I finish this week?” and “What is waiting?” are questions,
+            so they are other.
+            """
+        var values: [String] = []
+        for _ in 0..<5 {
+            if let value = try? await LanguageModelSession(
+                instructions: instructions
+            ).respond(
+                to: "User message: \(message)",
+                generating: ChangeClassificationArgs.self
+            ).content.kind {
+                values.append(value)
+            }
+        }
+        guard !values.isEmpty else { throw RuntimeInterpretationError.invalidOutput }
+        return Dictionary(grouping: values, by: { $0 })
+            .max { $0.value.count < $1.value.count }?.key ?? "other"
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func extractQuery(_ message: String) async throws -> QueryArgs {
+        let instructions = """
+            Classify a read-only request for saved task state. Completed-history
+            questions use status completed. Waiting work uses status waiting.
+            The kind describes the time or search scope: today, date, all,
+            overdue, week, search, done, or waiting. Copy evidence exactly.
+            """
+        for _ in 0..<3 {
+            guard let result = try? await LanguageModelSession(
+                instructions: instructions
+            ).respond(
+                to: "User message: \(message)",
+                generating: QueryClassificationArgs.self
+            ).content else { continue }
+            guard result.kind != "none",
+                  RuntimeConstraintEvidence.contains(result.evidence, in: message)
+            else { continue }
+            let kind = result.status == "completed" ? "done"
+                : (result.status == "waiting" ? "waiting" : result.kind)
+            return QueryArgs(
+                kind: kind,
+                date: result.date,
+                term: result.term,
+                period: result.period,
+                evidence: result.evidence
+            )
+        }
+        throw RuntimeInterpretationError.invalidOutput
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func extractSimpleQuery(_ message: String) async throws -> RuntimeAction {
+        let result = try await LanguageModelSession(instructions: """
+            Classify a confirmed read-only task question. Done means completion
+            history. Waiting means blocked tasks. Search means matching task
+            text. Week means the coming or current week. Choose only the scope
+            the user asked for; do not invent a search term.
+            """).respond(
+                to: "User message: \(message)",
+                generating: SimpleQueryClassificationArgs.self
+            ).content
+        guard ["today", "all", "overdue", "week", "search", "done", "waiting"]
+            .contains(result.kind) else {
+            throw RuntimeInterpretationError.invalidOutput
+        }
+        let term = result.term.trimmingCharacters(in: .whitespacesAndNewlines)
+        if result.kind == "search" {
+            guard !term.isEmpty,
+                  message.range(
+                    of: term,
+                    options: [.caseInsensitive, .diacriticInsensitive]
+                  ) != nil else { throw RuntimeInterpretationError.invalidOutput }
+        }
+        return RuntimeAction(
+            type: "query", queryKind: result.kind,
+            queryTerm: term.isEmpty ? nil : term,
+            queryPeriod: ["today", "week", "all"].contains(result.period)
+                ? result.period : nil
+        )
+    }
+
 
     private static func recurrenceInitialDate(
         _ rule: RuntimeRecurrenceRule?
@@ -1475,8 +2040,12 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         case acknowledge, undo, replan
         case progress(TargetArgs), capture(CaptureArgs), complete(TargetArgs)
         case drop(TargetArgs), move(MoveArgs), amend(AmendArgs), keep(TargetArgs)
+        case revise(ReviseArgs), note(NoteArgs), wait(TargetArgs), resume(TargetArgs)
+        case priority(PriorityArgs), duration(DurationEditArgs), clearField(ClearFieldArgs)
+        case query(QueryArgs)
         case bulkComplete(BulkCompleteArgs), bulkMove(BulkMoveArgs)
         case recurrence(RecurrenceArgs), analysis(AnalysisArgs)
+
     }
 
     @available(iOS 26.0, macOS 26.0, *) @Generable
@@ -1621,6 +2190,84 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         @Guide(description: "Replacement task label") var task: String
     }
     @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct ReviseArgs {
+        var target: TargetArgs
+        @Guide(description: "Full replacement task label, or none") var task: String
+        @Guide(description: "Exact words supporting the replacement label, or none") var taskEvidence: String
+        var date: DateConstraintArgs
+        var deadline: DateConstraintArgs
+        @Guide(description: "Exact replacement clock text, or none") var clockText: String
+        @Guide(.anyOf(["none", "am", "pm"])) var clockInterpretation: String
+        @Guide(description: "Replacement estimated minutes, or 0") var durationMinutes: Int
+        @Guide(description: "Exact effort words, or none") var durationEvidence: String
+        @Guide(.anyOf(["none", "high", "normal", "low"])) var priority: String
+        @Guide(description: "Exact priority words, or none") var priorityEvidence: String
+        @Guide(description: "Fields explicitly removed: date, time, deadline, duration, priority, or note") var clearFields: [String]
+        @Guide(description: "Exact user words requesting this edit") var evidence: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct NoteArgs {
+        var target: TargetArgs
+        @Guide(description: "Only the durable detail to attach, copied from the user") var text: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct PriorityArgs {
+        var target: TargetArgs
+        @Guide(.anyOf(["high", "normal", "low"])) var level: String
+        @Guide(description: "Exact user words setting priority") var evidence: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct DurationEditArgs {
+        var target: TargetArgs
+        @Guide(description: "Replacement estimated minutes") var minutes: Int
+        @Guide(description: "Exact user words stating the estimate") var evidence: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct ClearFieldArgs {
+        var target: TargetArgs
+        @Guide(.anyOf(["date", "time", "deadline", "duration", "priority", "note"])) var field: String
+        @Guide(description: "Exact user words removing this field") var evidence: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct QueryArgs {
+        @Guide(.anyOf(["today", "date", "all", "overdue", "week", "search", "done", "waiting"])) var kind: String
+        var date: DateConstraintArgs
+        @Guide(description: "Search words, or none") var term: String
+        @Guide(.anyOf(["today", "week", "all"])) var period: String
+        @Guide(description: "Exact user words asking this question") var evidence: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct QueryClassificationArgs {
+        @Guide(.anyOf(["none", "today", "date", "all", "overdue", "week", "search", "done", "waiting"])) var kind: String
+        @Guide(.anyOf(["open", "completed", "waiting", "any"])) var status: String
+        var date: DateConstraintArgs
+        @Guide(description: "Search words, or none") var term: String
+        @Guide(.anyOf(["today", "week", "all"])) var period: String
+        @Guide(description: "Exact user words asking for task state, or none") var evidence: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct SimpleQueryClassificationArgs {
+        @Guide(.anyOf(["today", "all", "overdue", "week", "search", "done", "waiting"])) var kind: String
+        @Guide(description: "Search words from the user, or none") var term: String
+        @Guide(.anyOf(["today", "week", "all"])) var period: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct IntentClassificationArgs {
+        @Guide(.anyOf(["change", "report", "new_task", "planning", "social", "retrieval"])) var intent: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct RetrievalAuditArgs {
+        @Guide(.anyOf(["retrieval", "new_task", "task_change", "report"])) var mode: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct ChangeClassificationArgs {
+        @Guide(.anyOf(["other", "metadata", "note", "wait", "resume", "move", "rename", "drop", "keep", "recurrence"])) var kind: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct RecurrenceAuditArgs {
+        @Guide(.anyOf(["none", "day", "week", "month", "year"])) var frequency: String
+    }
+    @available(iOS 26.0, macOS 26.0, *) @Generable
     struct BulkCompleteArgs {
         @Guide(description: "1-based task numbers explicitly excluded and left open") var excludedTargets: [Int]
         @Guide(description: "Exact user words expressing bulk completion") var evidence: String
@@ -1719,6 +2366,70 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         let description = "Replace the wording of one existing task when explicitly edited or renamed."
         func call(arguments: AmendArgs) async throws -> String {
             await collector.append(.amend(arguments)); return "Edited."
+        }
+    }
+    @available(iOS 26.0, macOS 26.0, *)
+    struct Revise: Tool {
+        let collector: Collector; let name = "revise_task"
+        let description = "Change the title, planned date, clock, deadline, estimate, priority, or remove one of those fields on an existing task. Use amend only for a title-only rename."
+        func call(arguments: ReviseArgs) async throws -> String {
+            await collector.append(.revise(arguments)); return "Task revision proposed."
+        }
+    }
+    @available(iOS 26.0, macOS 26.0, *)
+    struct Note: Tool {
+        let collector: Collector; let name = "add_note"
+        let description = "Attach a durable detail to an existing task without changing its title or schedule."
+        func call(arguments: NoteArgs) async throws -> String {
+            await collector.append(.note(arguments)); return "Note proposed."
+        }
+    }
+    @available(iOS 26.0, macOS 26.0, *)
+    struct SetPriority: Tool {
+        let collector: Collector; let name = "set_task_priority"
+        let description = "Set high, normal, or low priority on one existing task."
+        func call(arguments: PriorityArgs) async throws -> String {
+            await collector.append(.priority(arguments)); return "Priority proposed."
+        }
+    }
+    @available(iOS 26.0, macOS 26.0, *)
+    struct SetDuration: Tool {
+        let collector: Collector; let name = "set_task_estimate"
+        let description = "Set the estimated duration of one existing task in minutes."
+        func call(arguments: DurationEditArgs) async throws -> String {
+            await collector.append(.duration(arguments)); return "Estimate proposed."
+        }
+    }
+    @available(iOS 26.0, macOS 26.0, *)
+    struct ClearField: Tool {
+        let collector: Collector; let name = "clear_task_field"
+        let description = "Remove an explicitly named date, clock, deadline, estimate, priority, or note from one existing task."
+        func call(arguments: ClearFieldArgs) async throws -> String {
+            await collector.append(.clearField(arguments)); return "Clear proposed."
+        }
+    }
+    @available(iOS 26.0, macOS 26.0, *)
+    struct Wait: Tool {
+        let collector: Collector; let name = "wait_for_someone"
+        let description = "Park an existing task because progress is blocked on another person or external event."
+        func call(arguments: TargetArgs) async throws -> String {
+            await collector.append(.wait(arguments)); return "Waiting state proposed."
+        }
+    }
+    @available(iOS 26.0, macOS 26.0, *)
+    struct Resume: Tool {
+        let collector: Collector; let name = "resume_waiting"
+        let description = "Return an existing waiting task to the active deck because its blocker cleared."
+        func call(arguments: TargetArgs) async throws -> String {
+            await collector.append(.resume(arguments)); return "Resume proposed."
+        }
+    }
+    @available(iOS 26.0, macOS 26.0, *)
+    struct Query: Tool {
+        let collector: Collector; let name = "query_tasks"
+        let description = "Answer a read-only question about today's tasks, a date, the next week, overdue work, all open work, waiting work, completed history, or text search. Never use for capacity or what-if planning."
+        func call(arguments: QueryArgs) async throws -> String {
+            await collector.append(.query(arguments)); return "Task query proposed."
         }
     }
     @available(iOS 26.0, macOS 26.0, *)
@@ -1894,7 +2605,9 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             return nil
         }
         return RuntimeGeneratedClock.normalizeEvidence(
-            text, interpretation: interpretation, in: originalMessage
+            text,
+            interpretation: explicitMeridiem(in: text) ?? interpretation,
+            in: originalMessage
         )
     }
 

@@ -143,6 +143,8 @@ def test_portable_task_runtime_is_compiled_into_app_and_agent():
     assert "TaskRuntime.swift in Agent Sources" in project
     assert "ScheduleRuntime.swift in Sources" in project
     assert "ScheduleRuntime.swift in Agent Sources" in project
+    assert "TaskQueries.swift in Sources" in project
+    assert "SnoozeSequence.swift in Sources" in project
     assert "CalendarScheduling.swift in Sources" in project
     assert "EventKitScheduleStore.swift in Sources" in project
     assert "NotificationScheduling.swift in Sources" in project
@@ -166,7 +168,7 @@ def test_adopted_plans_have_actionable_durable_start_reminders():
     ).read_text(encoding="utf-8")
 
     assert 'title: "Done"' in notifications
-    assert 'title: "Snooze 15m"' in notifications
+    assert 'title: "Snooze longer"' in notifications
     assert 'title: "Replan"' in notifications
     assert "UNCalendarNotificationTrigger" in notifications
     assert "enqueueNotificationResponse" in storage

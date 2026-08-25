@@ -31,10 +31,20 @@ import Testing
                 "\(testCase.name): wrong applied actions"
             )
             #expect(
-                outcome.tasks == turn.expected.tasks,
+                portableTasks(outcome.tasks) == turn.expected.tasks,
                 "\(testCase.name): wrong task state"
             )
         }
+    }
+}
+
+private func portableTasks(_ tasks: [RuntimeTask]) -> [RuntimeTask] {
+    tasks.map { task in
+        var portable = task
+        portable.note = nil
+        portable.waitingSince = nil
+        portable.completionHistory = nil
+        return portable
     }
 }
 

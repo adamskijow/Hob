@@ -12,10 +12,10 @@ Nothing has been uploaded to TestFlight or either App Store.
 ## Exact state
 
 - Branch: `main`
-- Current increment base commit: `50d9e9e`
+- Current increment base commit: `68f22cb`
 - Native app version: `0.1` build `1`
 - Latest public tag: `v0.9.13`, for the legacy Open Local edition
-- Tests: 484 Python and 71 native
+- Tests: 484 Python and 93 native
 - CI: recheck after this increment
 - iPhone: signed current calendar build installed; relaunch was blocked by the lock screen
 - Mac: signed current calendar build installed at `/Applications/Hob.app`
@@ -58,6 +58,12 @@ Retired launch-agent files are under
 - Untimed work no longer receives an automatic clock time. It stays on deck
   until the user asks Hob to plan it.
 - Removed work-hour and task-duration questions from first-run setup.
+- Restored natural task queries and completion history.
+- Added multi-field conversational edits, notes, waiting state, and contextual
+  follow-ups.
+- Added stale-task decisions after seven days on deck.
+- Made repeated reminder snoozes grow through four intervals and then become
+  indefinite.
 
 ## Next verification
 

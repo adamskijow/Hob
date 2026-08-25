@@ -110,4 +110,86 @@ func modelUnderstandsWhatIfQuestions() async throws {
     )])
 }
 
+@Test
+func modelUnderstandsRecoveredParityFeatures() async throws {
+    let interpreter = AppleFoundationInterpreter()
+    guard interpreter.isAvailable else { return }
+    let first = RuntimeTask(
+        id: "a1", rawText: "call the bank", task: "call the bank",
+        dueDate: nil, dueTime: nil, status: "open",
+        createdAt: "2026-08-24T07:00:00-04:00",
+        updatedAt: "2026-08-24T07:00:00-04:00"
+    )
+    var report = RuntimeTask(
+        id: "a2", rawText: "finish the report", task: "finish the report",
+        dueDate: nil, dueTime: nil, durationMinutes: 30,
+        priority: "normal", status: "open",
+        createdAt: "2026-08-24T07:00:00-04:00",
+        updatedAt: "2026-08-24T07:00:00-04:00"
+    )
+    let done = RuntimeTask(
+        id: "a3", rawText: "file taxes", task: "file taxes",
+        dueDate: nil, dueTime: nil,
+        completionHistory: ["2026-08-24T12:00:00-04:00"],
+        status: "done",
+        createdAt: "2026-08-20T07:00:00-04:00",
+        updatedAt: "2026-08-24T12:00:00-04:00"
+    )
+    let now = "2026-08-25T08:00:00-04:00"
+    let zone = "America/New_York"
+
+    let query: [RuntimeAction]
+    do { query = try await interpreter.interpret(
+        message: "What did I finish this week?", now: now,
+        timezone: zone, tasks: [first, report, done]
+    ) } catch { Issue.record("query failed: \(error)"); return }
+    #expect(query.first?.type == "query")
+    #expect(query.first?.queryKind == "done")
+
+    let revision: [RuntimeAction]
+    do { revision = try await interpreter.interpret(
+        message: "Make the report high priority and 90 minutes", now: now,
+        timezone: zone, tasks: [first, report]
+    ) } catch { Issue.record("revision failed: \(error)"); return }
+    #expect(revision.allSatisfy { $0.type == "revise" && $0.target == "2" })
+    #expect(revision.contains { $0.priority == "high" })
+    #expect(revision.contains { $0.durationMinutes == 90 })
+
+    let note: [RuntimeAction]
+    do { note = try await interpreter.interpret(
+        message: "Note that the gate code for the report is 4412", now: now,
+        timezone: zone, tasks: [first, report]
+    ) } catch { Issue.record("note failed: \(error)"); return }
+    #expect(note.first?.type == "note")
+    #expect(note.first?.target == "2")
+    #expect(note.first?.note?.contains("4412") == true)
+
+    let waiting: [RuntimeAction]
+    do { waiting = try await interpreter.interpret(
+        message: "I'm waiting on Sam for the report", now: now,
+        timezone: zone, tasks: [first, report]
+    ) } catch { Issue.record("waiting failed: \(error)"); return }
+    #expect(waiting.first?.type == "wait")
+    #expect(waiting.first?.target == "2")
+
+    report.waitingSince = "2026-08-25T08:00:00-04:00"
+    let resumed: [RuntimeAction]
+    do { resumed = try await interpreter.interpret(
+        message: "Sam replied, put the report back on deck", now: now,
+        timezone: zone, tasks: [first, report]
+    ) } catch { Issue.record("resume failed: \(error)"); return }
+    #expect(resumed.first?.type == "resume")
+    #expect(resumed.first?.target == "2")
+
+    let followUp: [RuntimeAction]
+    do { followUp = try await interpreter.interpret(
+        message: "Make that 4pm", now: now,
+        timezone: zone, tasks: [first, report],
+        context: RuntimeConversationContext(focusedTaskIDs: ["a2"])
+    ) } catch { Issue.record("follow-up failed: \(error)"); return }
+    #expect(followUp.first?.type == "reschedule")
+    #expect(followUp.first?.target == "2")
+    #expect(followUp.first?.time == "16:00")
+}
+
 }
