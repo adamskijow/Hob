@@ -101,6 +101,28 @@ import Testing
     #expect(digest.items.first?.summary == "Buy poster board · overdue")
 }
 
+@Test func legacyTimedTaskWithoutDateDoesNotCarryIntoAnotherDay() throws {
+    let zone = try #require(TimeZone(identifier: "America/New_York"))
+    let today = try #require(ISO8601DateFormatter().date(
+        from: "2026-08-26T07:00:00-04:00"
+    ))
+    var appointment = digestTask(
+        id: "legacy-appointment", task: "Go to the office", dueDate: "2026-08-25"
+    )
+    appointment.dueDate = nil
+    appointment.dueTime = "10:30"
+
+    let digest = RuntimeMorningDigestBuilder.build(
+        for: today,
+        tasks: [appointment],
+        proposal: nil,
+        timezone: zone
+    )
+
+    #expect(appointment.isMissedTimedItem(on: "2026-08-26"))
+    #expect(digest.items.isEmpty)
+}
+
 @Test func undatedWorkStaysOnDeckWithoutReceivingATime() throws {
     let zone = try #require(TimeZone(identifier: "America/New_York"))
     let today = try #require(ISO8601DateFormatter().date(

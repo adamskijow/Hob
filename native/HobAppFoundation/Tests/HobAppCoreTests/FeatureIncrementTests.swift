@@ -3,6 +3,24 @@ import Foundation
 import Testing
 @testable import HobAppCore
 
+@Test func clockOnlyCaptureIsAnchoredToToday() {
+    var runtime = TaskRuntime()
+    let result = runtime.process(turn(
+        id: "clock-only",
+        now: "2026-08-25T09:00:00-04:00",
+        action: RuntimeAction(
+            type: "capture",
+            task: "go to the office",
+            raw: "go to the office at 10:30",
+            time: "10:30"
+        )
+    ))
+
+    #expect(result.outcome.disposition == .applied)
+    #expect(result.outcome.tasks.first?.dueDate == "2026-08-25")
+    #expect(result.outcome.tasks.first?.dueTime == "10:30")
+}
+
 @Test func groundedDateIntentsCoverOffsetsNamedDatesAndInvalidDates() throws {
     var runtime = TaskRuntime()
 

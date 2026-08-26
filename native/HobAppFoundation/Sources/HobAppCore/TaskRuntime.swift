@@ -125,7 +125,7 @@ public extension RuntimeTask {
     func isMissedTimedItem(on day: String) -> Bool {
         status == "open"
             && dueTime != nil
-            && dueDate.map { $0 < day } == true
+            && (dueDate ?? String(createdAt.prefix(10))) < day
     }
 
     var isWaiting: Bool { waitingSince != nil }
@@ -1021,6 +1021,9 @@ public struct TaskRuntime: Sendable {
             }
             let dueTime = validTime(action.time)
             if action.time != nil && dueTime == nil { return .clarification }
+            if dueTime != nil && dueDate == nil {
+                dueDate = String(now.prefix(10))
+            }
             guard action.durationMinutes.map({ (5...480).contains($0) }) ?? true,
                   action.priority.map({ ["high", "normal", "low"].contains($0) }) ?? true
             else { return .clarification }
