@@ -289,7 +289,7 @@ def build_week_forecast(
             continue
         remaining = remaining_minutes[item_id]
         if item.waiting_since:
-            reason = "waiting on someone else"
+            reason = "waiting"
         elif item.depends_on:
             unresolved = [
                 dependency

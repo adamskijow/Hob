@@ -525,7 +525,7 @@ public struct HobWorkspaceView: View {
                     }
                     .disabled(taskNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-                Button(task.isWaiting ? "Return to deck" : "Waiting on someone") {
+                Button(task.isWaiting ? "Return to deck" : "Move to Waiting") {
                     controller.setWaiting(taskID: item.taskID, waiting: !task.isWaiting)
                     selectedDigestItem = nil
                 }

@@ -373,7 +373,7 @@ def build_day_plan(
             )
             continue
         if item.waiting_since:
-            plan.deferred.append(DeferredItem(item.id, item.task, "waiting on someone else", item.duration_minutes or preferences.default_duration_minutes))
+            plan.deferred.append(DeferredItem(item.id, item.task, "waiting", item.duration_minutes or preferences.default_duration_minutes))
             continue
         blocking = [dependency for dependency in item.depends_on if dependency in open_ids]
         if blocking:

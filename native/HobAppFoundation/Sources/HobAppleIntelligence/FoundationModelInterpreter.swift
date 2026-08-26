@@ -249,7 +249,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         a new instruction. Use query_tasks for questions asking to retrieve or
         search task state or completion history. Use revise_task for changes to
         an existing task's title, date, clock, deadline, estimate, or priority.
-        Use add_note, wait_for_someone, and resume_waiting for durable task
+        Use add_note, park_waiting, and resume_waiting for durable task
         details and blocked work.
         """
         var succeeded = false
@@ -2678,8 +2678,8 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     }
     @available(iOS 26.0, macOS 26.0, *)
     struct Wait: Tool {
-        let collector: Collector; let name = "wait_for_someone"
-        let description = "Park an existing task because progress is blocked on another person or external event."
+        let collector: Collector; let name = "park_waiting"
+        let description = "Park an existing task because progress is blocked for now."
         func call(arguments: TargetArgs) async throws -> String {
             await collector.append(.wait(arguments)); return "Waiting state proposed."
         }

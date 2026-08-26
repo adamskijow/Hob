@@ -8,7 +8,7 @@ and effort. Hob creates typed tasks only after the local Apple model returns a
 valid action set. Ambiguous or unsafe output changes nothing.
 
 The same composer can rename tasks, change or clear constraints, attach notes,
-and park work that is waiting on someone. A follow-up such as “make that 4 PM”
+and park blocked work. A follow-up such as “make that 4 PM”
 uses the task from the preceding interaction.
 
 Dates can be relative, named, or absolute. Hob confirms dates more than two
