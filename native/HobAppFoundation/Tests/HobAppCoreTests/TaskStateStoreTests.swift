@@ -362,6 +362,32 @@ import Testing
     #expect(migrated.taskOperations == [operation])
 }
 
+@Test func versionEightMigrationRemovesUngroundedRecurrence() throws {
+    var task = state(task: "test").tasks[0]
+    task.recurrence = RuntimeRecurrenceRule(frequency: "week")
+    let operation = RuntimeTaskOperation(
+        id: "device-a:test",
+        taskID: task.id,
+        occurredAt: task.updatedAt,
+        sequence: 4,
+        task: task
+    )
+    let old = RuntimePersistentState(
+        version: 8,
+        tasks: [task],
+        undoSnapshots: [],
+        taskOperations: [operation]
+    )
+
+    let migrated = try old.validated()
+    #expect(migrated.version == RuntimePersistentState.currentVersion)
+    #expect(migrated.tasks.first?.recurrence == nil)
+    #expect(migrated.taskOperations.count == 2)
+    #expect(try RuntimeTaskOperationMerge.tasks(
+        from: migrated.taskOperations
+    ) == migrated.tasks)
+}
+
 @Test func pureReplanRequestsDoNotInventTaskMutationsOrUndoHistory() {
     var runtime = TaskRuntime(tasks: [RuntimeTask(
         id: "a1",
@@ -423,11 +449,17 @@ import Testing
     #expect(await afterProposalRestart.snapshot().latestProposal?.id == "durable-proposal")
     _ = try await afterProposalRestart.adoptSchedule(
         proposalID: "durable-proposal",
-        at: "2026-06-29T08:01:00-04:00"
+        at: "2026-06-29T08:01:00-04:00",
+        calendarEventIDs: ["legacy-calendar-block"]
     )
 
     let afterAdoptionRestart = try DurableTaskRuntime(store: store)
     #expect(await afterAdoptionRestart.snapshot().adoptedSchedule?.proposal.id == "durable-proposal")
+    let detached = try await afterAdoptionRestart.detachCalendarEventsFromAdoptedSchedule()
+    #expect(detached == ["legacy-calendar-block"])
+    #expect(await afterAdoptionRestart.snapshot().adoptedSchedule?.calendarEventIDs == [])
+    #expect(await afterAdoptionRestart.snapshot().calendarCleanupEventIDs == ["legacy-calendar-block"])
+    try await afterAdoptionRestart.acknowledgeCalendarCleanup(eventIDs: detached)
     try await afterAdoptionRestart.cancelAdoptedSchedule()
     #expect(await afterAdoptionRestart.snapshot().adoptedSchedule == nil)
 }

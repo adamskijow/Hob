@@ -10,7 +10,7 @@ Nothing has been uploaded.
 - On-device Foundation Models interpretation
 - Typed task persistence and undo
 - Deterministic schedule proposals
-- EventKit availability and explicit Calendar adoption
+- Optional read-only EventKit availability
 - Durable reminders, cancellation, and reviewed replans
 - Private bounded iCloud journal sync
 - First-run setup and connection menu

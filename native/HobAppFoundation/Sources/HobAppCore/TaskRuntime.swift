@@ -133,6 +133,34 @@ public extension RuntimeTask {
     var completedAt: String? { completionHistory?.last }
 }
 
+public enum RuntimeRecurrenceEvidence {
+    /// Recurrence is a durable mutation, so it needs literal repetition language
+    /// in the user's message in addition to model interpretation.
+    public static func isExplicit(in text: String) -> Bool {
+        let tokens = text.lowercased().split {
+            !$0.isLetter && !$0.isNumber
+        }.map(String.init)
+        let words = Set(tokens)
+        let markers: Set<String> = [
+            "every", "each", "per", "repeat", "repeats", "repeating",
+            "recurring", "recurs", "daily", "nightly", "weekly",
+            "biweekly", "monthly", "quarterly", "yearly", "annually",
+            "weekdays", "weekends",
+        ]
+        if !words.isDisjoint(with: markers) { return true }
+        let repeatedDays: Set<String> = [
+            "mondays", "tuesdays", "wednesdays", "thursdays", "fridays",
+            "saturdays", "sundays",
+        ]
+        if !words.isDisjoint(with: repeatedDays) { return true }
+        return tokens.indices.contains { index in
+            ["once", "twice"].contains(tokens[index])
+                && index + 1 < tokens.count
+                && ["a", "an", "per", "every", "each"].contains(tokens[index + 1])
+        }
+    }
+}
+
 public struct RuntimeDateIntent: Codable, Equatable, Sendable {
     public let kind: String
     public let which: String?
@@ -409,7 +437,7 @@ public struct RuntimePipelineStatus: Codable, Equatable, Sendable {
 }
 
 public struct RuntimePersistentState: Codable, Equatable, Sendable {
-    public static let currentVersion = 8
+    public static let currentVersion = 9
 
     public let version: Int
     public let tasks: [RuntimeTask]
@@ -484,9 +512,39 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
                (!inbox.isEmpty || !outbox.isEmpty || nextSequence != 1) {
                 throw RuntimeStateError.invalidState
             }
+            let repairedTasks = version < 9 ? tasks.map(Self.repairRecurrence) : tasks
+            let repairedUndo = version < 9
+                ? undoSnapshots.map { $0.map(Self.repairRecurrence) }
+                : undoSnapshots
+            let existingOperations = version >= 7 ? taskOperations : tasks.map {
+                RuntimeTaskOperation(
+                    id: "baseline-\($0.id)",
+                    taskID: $0.id,
+                    occurredAt: $0.updatedAt,
+                    task: $0
+                )
+            }
+            let repairedOperations: [RuntimeTaskOperation]
+            if version < 9 {
+                let lastSequence = existingOperations.map(\.sequence).max() ?? 0
+                let corrections = zip(tasks, repairedTasks).enumerated().compactMap {
+                    offset, pair -> RuntimeTaskOperation? in
+                    guard pair.0 != pair.1 else { return nil }
+                    return RuntimeTaskOperation(
+                        id: "migration-v9-recurrence-\(pair.1.id)",
+                        taskID: pair.1.id,
+                        occurredAt: pair.1.updatedAt,
+                        sequence: lastSequence + offset + 1,
+                        task: pair.1
+                    )
+                }
+                repairedOperations = existingOperations + corrections
+            } else {
+                repairedOperations = existingOperations
+            }
             migrated = RuntimePersistentState(
-                tasks: tasks,
-                undoSnapshots: undoSnapshots,
+                tasks: repairedTasks,
+                undoSnapshots: repairedUndo,
                 inbox: version == 1 ? [] : inbox,
                 outbox: version == 1 ? [] : outbox,
                 nextSequence: version == 1 ? 1 : nextSequence,
@@ -498,14 +556,7 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
                     ? notificationCleanupIDs : [],
                 pendingNotificationResponses: version >= 6
                     ? pendingNotificationResponses : [],
-                taskOperations: version >= 7 ? taskOperations : tasks.map {
-                    RuntimeTaskOperation(
-                        id: "baseline-\($0.id)",
-                        taskID: $0.id,
-                        occurredAt: $0.updatedAt,
-                        task: $0
-                    )
-                }
+                taskOperations: repairedOperations
             )
         } else {
             migrated = self
@@ -553,6 +604,16 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
             throw RuntimeStateError.invalidState
         }
         return migrated
+    }
+
+    private static func repairRecurrence(_ task: RuntimeTask) -> RuntimeTask {
+        guard task.recurrence != nil,
+              !RuntimeRecurrenceEvidence.isExplicit(in: task.rawText) else {
+            return task
+        }
+        var repaired = task
+        repaired.recurrence = nil
+        return repaired
     }
 
     private enum CodingKeys: String, CodingKey {

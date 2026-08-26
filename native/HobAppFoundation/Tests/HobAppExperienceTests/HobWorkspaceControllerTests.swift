@@ -31,10 +31,7 @@ private struct StubInterpreter: RuntimeMessageInterpreting {
 @MainActor
 private final class StubCalendar: RuntimeCalendarScheduling {
     var authorization: RuntimeCalendarAuthorization = .fullAccess
-    var writtenEventIDs: [String] = []
     var removedEventIDs: [String] = []
-    var writeCount = 0
-    var writtenCalendarID: String?
     var busyRequestCount = 0
     var requestedCalendarIDs: Set<String>?
     var requestedBlockAllDayEvents = false
@@ -80,30 +77,6 @@ private final class StubCalendar: RuntimeCalendarScheduling {
             startAt: "2026-06-29T09:00:00-04:00",
             endAt: "2026-06-29T10:00:00-04:00"
         )]
-    }
-
-    func write(
-        _ proposal: RuntimeScheduleProposal,
-        calendarID: String?
-    ) throws -> [String] {
-        writeCount += 1
-        writtenCalendarID = calendarID
-        writtenEventIDs = proposal.blocks.map { "event-\($0.id)" }
-        return writtenEventIDs
-    }
-
-    func createHobCalendar() throws -> RuntimeCalendarDescriptor {
-        let calendar = RuntimeCalendarDescriptor(
-            id: "hob",
-            title: "Hob",
-            sourceTitle: "iCloud",
-            allowsContentModifications: true,
-            isSubscribed: false
-        )
-        if !availableCalendars.contains(calendar) {
-            availableCalendars.append(calendar)
-        }
-        return calendar
     }
 
     func remove(eventIDs: [String]) throws {
@@ -311,13 +284,12 @@ func captureStaysUntimedUntilUserPlansAndAdoptsIt() async throws {
     try await waitUntilIdle(controller)
 
     #expect(controller.adoptedSchedule?.proposal.blocks.count == 2)
-    #expect(controller.adoptedSchedule?.calendarEventIDs == calendar.writtenEventIDs)
+    #expect(controller.adoptedSchedule?.calendarEventIDs == [])
     #expect(controller.adoptedSchedule?.notificationIDs == notifications.scheduledIDs)
     let reopened = try TaskStateStore(directoryURL: directory).load()
     #expect(reopened.adoptedSchedule?.proposal.blocks.count == 2)
     #expect(reopened.adoptedSchedule?.notificationIDs == notifications.scheduledIDs)
 
-    let oldEventIDs = calendar.writtenEventIDs
     let oldNotificationIDs = notifications.scheduledIDs
     let firstBlock = try #require(controller.adoptedSchedule?.proposal.blocks.first)
     let adoptedProposalID = try #require(controller.adoptedSchedule?.proposal.id)
@@ -365,7 +337,7 @@ func captureStaysUntimedUntilUserPlansAndAdoptsIt() async throws {
     try await waitUntilIdle(controller)
     #expect(controller.adoptedSchedule?.proposal.blocks.map(\.task) == ["call Mom"])
     #expect(Set(notifications.cancelledIDs) == Set(oldNotificationIDs))
-    #expect(Set(calendar.removedEventIDs) == Set(oldEventIDs))
+    #expect(calendar.removedEventIDs.isEmpty)
 
     let afterActions = try TaskStateStore(directoryURL: directory).load()
     #expect(afterActions.pendingNotificationResponses.isEmpty)
@@ -575,7 +547,6 @@ func calendarIntegrationDefaultsOffAndSchedulesStayUsable() async throws {
     try await waitUntilIdle(controller)
     controller.adoptProposal()
     try await waitUntilIdle(controller)
-    #expect(calendar.writeCount == 0)
     #expect(controller.adoptedSchedule?.calendarEventIDs == [])
 }
 
@@ -672,11 +643,6 @@ func calendarChoicesControlPlanningAndPersistPerDevice() async throws {
     controller.setUsesAllInputCalendars(false)
     controller.setInputCalendar("family", included: false)
     controller.setBlockAllDayEvents(true)
-    controller.createHobCalendar()
-    try await waitUntilIdle(controller)
-    #expect(controller.outputCalendarID == "hob")
-    controller.setOutputCalendar("personal")
-
     controller.draft = "Finish taxes today"
     controller.submit()
     try await waitUntilIdle(controller)
@@ -684,10 +650,6 @@ func calendarChoicesControlPlanningAndPersistPerDevice() async throws {
     #expect(calendar.requestedCalendarIDs == ["personal"])
     #expect(calendar.requestedBlockAllDayEvents)
     #expect(calendar.excludedProposalID == nil)
-
-    controller.adoptProposal()
-    try await waitUntilIdle(controller)
-    #expect(calendar.writtenCalendarID == "personal")
 
     let restored = HobWorkspaceController(
         store: TaskStateStore(directoryURL: directory),
@@ -702,7 +664,6 @@ func calendarChoicesControlPlanningAndPersistPerDevice() async throws {
     try await Task.sleep(for: .milliseconds(30))
     #expect(restored.calendarIntegrationEnabled)
     #expect(restored.inputCalendarIDs == ["personal"])
-    #expect(restored.outputCalendarID == "personal")
     #expect(restored.blockAllDayEvents)
 }
 

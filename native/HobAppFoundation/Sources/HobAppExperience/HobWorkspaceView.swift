@@ -314,7 +314,7 @@ public struct HobWorkspaceView: View {
 
     @ViewBuilder private var calendarMenuItems: some View {
         Toggle(
-            "Calendar integration",
+            "Calendar availability",
             isOn: Binding(
                 get: { controller.calendarIntegrationEnabled },
                 set: { controller.setCalendarIntegrationEnabled($0) }
@@ -324,9 +324,6 @@ public struct HobWorkspaceView: View {
             switch controller.calendarAuthorization {
             case .fullAccess:
                 Button("Plans around: \(controller.inputCalendarSummary)") {
-                    showsCalendarSettings = true
-                }
-                Button("Adds to: \(controller.outputCalendarSummary)") {
                     showsCalendarSettings = true
                 }
             case .notDetermined:
@@ -707,25 +704,15 @@ public struct HobWorkspaceView: View {
             Button {
                 controller.adoptProposal()
             } label: {
-                Label(
-                    controller.calendarIntegrationEnabled ? "Add to Calendar" : "Use schedule",
-                    systemImage: controller.calendarIntegrationEnabled
-                        ? "calendar.badge.plus" : "checkmark.circle"
-                )
+                Label("Use schedule", systemImage: "checkmark.circle")
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
             .disabled(
                 proposal.blocks.isEmpty
                     || controller.isWorking
-                    || (controller.calendarIntegrationEnabled
-                        && controller.calendarAuthorization != .fullAccess)
             )
-            .accessibilityHint(
-                controller.calendarIntegrationEnabled
-                    ? "Adds every displayed time block to your chosen calendar"
-                    : "Adopts the displayed schedule without changing Calendar"
-            )
+            .accessibilityHint("Adopts the displayed schedule without changing Calendar")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
@@ -786,10 +773,7 @@ public struct HobWorkspaceView: View {
                     }
                 }
                 HStack {
-                    Button(
-                        controller.calendarIntegrationEnabled
-                            ? "Update Calendar" : "Update schedule"
-                    ) {
+                    Button("Update schedule") {
                         controller.adoptProposal()
                     }
                     .buttonStyle(.borderedProminent)
@@ -1072,33 +1056,6 @@ private struct HobCalendarSettingsView: View {
                     Text("Hob uses event times, not titles, while planning.")
                 }
 
-                Section {
-                    Picker(
-                        "Calendar",
-                        selection: Binding<String?>(
-                            get: { controller.outputCalendarID },
-                            set: { controller.setOutputCalendar($0) }
-                        )
-                    ) {
-                        Text("Apple default").tag(Optional<String>.none)
-                        if let selected = controller.outputCalendarID,
-                           !controller.calendars.contains(where: { $0.id == selected }) {
-                            Text("Unavailable calendar").tag(Optional(selected))
-                        }
-                        ForEach(controller.calendars.filter(\.allowsContentModifications)) { calendar in
-                            Text("\(calendar.title) — \(calendar.sourceTitle)")
-                                .tag(Optional(calendar.id))
-                        }
-                    }
-                    Button("Create Hob calendar", systemImage: "calendar.badge.plus") {
-                        controller.createHobCalendar()
-                    }
-                    .disabled(controller.isWorking)
-                } header: {
-                    Text("Adds schedules to")
-                } footer: {
-                    Text("The Hob calendar uses the same account as your Apple default calendar.")
-                }
             }
             .navigationTitle("Calendar")
             .toolbar {

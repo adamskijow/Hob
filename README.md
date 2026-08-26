@@ -31,7 +31,7 @@ edition stays in the repository for migration and regression coverage.
 - Optionally plans around selected Apple calendars, including shared and subscribed calendars.
 - Keeps today current and offers timed morning and evening check-ins.
 - Rolls untimed work forward while leaving missed appointments for rescheduling.
-- Builds a timed proposal only when asked, then adopts it locally or adds it to a chosen calendar.
+- Builds a timed proposal only when asked, then adopts it locally.
 - Sends optional start reminders with Done, Snooze, and Replan actions.
 - Syncs tasks privately between iPhone and Mac through iCloud.
 - Preserves schedules, undo, and recovery state across restarts.

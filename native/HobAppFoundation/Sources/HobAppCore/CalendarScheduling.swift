@@ -13,7 +13,6 @@ public enum RuntimeCalendarError: Error, Equatable, Sendable {
     case unavailable
     case invalidSchedule
     case selectionUnavailable
-    case writeFailed
     case removalFailed
 }
 
@@ -56,12 +55,6 @@ public protocol RuntimeCalendarScheduling: AnyObject {
         excludingProposalID: String?
     ) throws -> [RuntimeBusyInterval]
 
-    func write(
-        _ proposal: RuntimeScheduleProposal,
-        calendarID: String?
-    ) throws -> [String]
-
-    func createHobCalendar() throws -> RuntimeCalendarDescriptor
-
+    /// Removes blocks written by older Hob versions during one-way migration.
     func remove(eventIDs: [String]) throws
 }

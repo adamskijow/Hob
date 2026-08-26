@@ -120,18 +120,18 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
            let dateQuery = try? await recoverRelativeDateQuery(message) {
             return [dateQuery]
         }
-        if (intent == "social" || (intent == "new_task" && changeKind == "other")),
-           (try? await confirmsSocial(message)) == true {
-            let reply = (try? await socialReply(to: message)) ?? "Anytime."
-            return [RuntimeAction(type: "social", reply: reply)]
+        let couldBeNewTask = changeKind == nil || changeKind == "other"
+        var newObligationConfirmed = false
+        if couldBeNewTask && (intent == "new_task" || intent == "social") {
+            newObligationConfirmed = (try? await confirmsNewObligation(
+                message,
+                minimumVotes: intent == "social" ? 4 : 3
+            )) == true
         }
-        if ["new_task", "retrieval"].contains(intent),
-           changeKind == "other",
-           try await confirmsNewObligation(message) {
-            let captures = try await extractNewCaptures(
+        if newObligationConfirmed {
+            if let captures = try? await extractNewCaptures(
                 message: message, now: now, timezone: timezone
-            )
-            if !captures.isEmpty {
+            ), !captures.isEmpty {
                 do {
                     let actions = try await validate(
                         captures.map(Proposal.capture), message: message,
@@ -141,6 +141,22 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                     return actions
                 } catch {}
             }
+            if let recovered = try? await recoverNewCaptureActions(message: message),
+               !recovered.isEmpty {
+                return recovered
+            }
+            return [RuntimeAction(
+                type: "capture", task: String(message.prefix(10_000)), raw: message,
+                priority: "normal", confidence: 1
+            )]
+        }
+        var socialConfirmed = intent == "social"
+        if !socialConfirmed {
+            socialConfirmed = (try? await confirmsSocial(message)) == true
+        }
+        if socialConfirmed {
+            let reply = (try? await socialReply(to: message)) ?? "Anytime."
+            return [RuntimeAction(type: "social", reply: reply)]
         }
         var isRetrieval = false
         if intent == "retrieval", changeKind == "other" {
@@ -1677,7 +1693,8 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         _ value: CaptureArgs,
         message: String
     ) -> RuntimeRecurrenceRule? {
-        guard value.recurrenceFrequency != "none",
+        guard RuntimeRecurrenceEvidence.isExplicit(in: message),
+              value.recurrenceFrequency != "none",
               RuntimeConstraintEvidence.contains(
                 value.recurrenceEvidence, in: message
               ) else { return nil }
@@ -1704,7 +1721,8 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         _ value: RecurrenceConstraintArgs,
         message: String
     ) -> RuntimeRecurrenceRule? {
-        guard value.recurrenceFrequency != "none",
+        guard RuntimeRecurrenceEvidence.isExplicit(in: message),
+              value.recurrenceFrequency != "none",
               RuntimeConstraintEvidence.contains(
                 value.recurrenceEvidence, in: message
               ) else { return nil }
@@ -1752,6 +1770,9 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     private static func refineRecurrence(
         _ message: String
     ) async throws -> RecurrenceConstraintArgs {
+        guard RuntimeRecurrenceEvidence.isExplicit(in: message) else {
+            throw RuntimeInterpretationError.invalidOutput
+        }
         var last: RecurrenceConstraintArgs?
         for _ in 0..<2 {
             guard let value = try? await LanguageModelSession(instructions: """
@@ -1858,6 +1879,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     private static func auditedRecurrenceRule(
         _ message: String
     ) async throws -> RuntimeRecurrenceRule? {
+        guard RuntimeRecurrenceEvidence.isExplicit(in: message) else { return nil }
         let instructions = """
             Decide whether the obligation repeats. A named weekday with “every”
             is weekly. An ordinary date is not recurrence. “Water plants every
@@ -1945,6 +1967,8 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         Task includes anything about saved work, a plan, schedule, calendar,
         completion, a date, or adding or changing an obligation. Choose task only
         when the user's words contain that task or planning meaning.
+        Common standalone acknowledgements and reactions such as “cool”, “got
+        it”, “okay”, and “sounds good” are social, not task labels.
         """
         var modes: [String] = []
         for _ in 0..<5 {
@@ -1982,7 +2006,9 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         Finding words in saved tasks uses search. Copy evidence exactly from the
         user message. For every non-retrieval intent use kind none.
         A short acknowledgement of Hob's preceding turn is social. Do not infer
-        an unstated task from conversational words or pronouns.
+        an unstated task from conversational words or pronouns. In Hob's task
+        entry field, a concise imperative such as “Eat bacon” or a bare task
+        label such as “test” is a new task even without “add” or “remember.”
         """
         var results: [IntentClassificationArgs] = []
         for _ in 0..<3 {
@@ -2028,7 +2054,10 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     }
 
     @available(iOS 26.0, macOS 26.0, *)
-    private static func confirmsNewObligation(_ message: String) async throws -> Bool {
+    private static func confirmsNewObligation(
+        _ message: String,
+        minimumVotes: Int
+    ) async throws -> Bool {
         let instructions = """
         Decide whether the user adds at least one genuinely new obligation.
         A compact conversational continuation may begin with a conjunction and
@@ -2038,7 +2067,12 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         change affects existing work. A report describes what happened.
         Thanks, acknowledgements, reactions, and general conversation are other.
         A new obligation must name the activity or appointment being added; do
-        not invent one from a conversational verb or pronoun.
+        not invent one from a conversational verb or pronoun. Treat a concise
+        imperative with a named object as a new obligation. In Hob's task entry
+        field, an isolated activity or task label is also a new obligation even
+        when the user omits “add,” “remember,” or a date. “Eat bacon” and “test”
+        are new tasks. Common acknowledgements and reactions such as “thanks
+        bro”, “cool”, “got it”, “okay”, and “sounds good” are other.
         """
         var modes: [String] = []
         for _ in 0..<5 {
@@ -2052,7 +2086,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             }
         }
         guard !modes.isEmpty else { return false }
-        return modes.count { $0 == "new_task" } >= 4
+        return modes.count { $0 == "new_task" } >= minimumVotes
     }
 
     @available(iOS 26.0, macOS 26.0, *)

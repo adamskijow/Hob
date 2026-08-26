@@ -34,9 +34,8 @@ optional recurrence. Completing recurring work advances its occurrence in
 place, so undo and iCloud keep one history.
 The scheduler applies working days, hours, transition time, and optional opaque
 busy intervals from selected Apple calendars. Free and cancelled events are
-ignored; all-day blocking is optional. A proposal remains separate from
-adoption. Adoption stays local when Calendar integration is off. When enabled,
-it writes blocks to the chosen writable calendar. Start reminders are separate.
+ignored; all-day blocking is optional. A proposal remains separate from local
+adoption. Calendar events are never added or changed. Start reminders are separate.
 
 Capacity, placement, and what-if analysis reuses the scheduler on a temporary
 task copy. It cannot write task or schedule state.
@@ -50,8 +49,8 @@ after reconnecting. Bad remote data fails closed.
 
 ## Privacy
 
-Prompts and Calendar details remain on the device. EventKit exposes busy time to
-planning and receives only adopted Hob blocks. The active app needs no Hob
+Prompts and Calendar details remain on the device. EventKit exposes only the busy
+times selected for planning. The active app needs no Hob
 server, Telegram bot, or downloaded Ollama model.
 
 ## Legacy edition

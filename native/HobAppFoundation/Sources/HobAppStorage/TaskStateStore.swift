@@ -529,8 +529,7 @@ public actor DurableTaskRuntime {
         calendarEventIDs: [String] = [],
         notificationIDs: [String] = []
     ) throws -> RuntimeAdoptedSchedule {
-        guard state.calendarCleanupEventIDs.isEmpty,
-              state.notificationCleanupIDs.isEmpty else {
+        guard state.notificationCleanupIDs.isEmpty else {
             throw RuntimeScheduleError.calendarCleanupPending
         }
         guard ISO8601DateFormatter().date(from: timestamp) != nil else {
@@ -599,6 +598,37 @@ public actor DurableTaskRuntime {
         )
         try store.save(candidate)
         state = candidate
+    }
+
+    /// Keeps the local adopted schedule while retiring Calendar output from
+    /// older Hob versions. The returned identifiers remain queued until their
+    /// legacy events have been removed successfully.
+    @discardableResult
+    public func detachCalendarEventsFromAdoptedSchedule() throws -> [String] {
+        guard let adopted = state.adoptedSchedule,
+              !adopted.calendarEventIDs.isEmpty else { return [] }
+        let identifiers = adopted.calendarEventIDs
+        let updated = RuntimeAdoptedSchedule(
+            proposal: adopted.proposal,
+            adoptedAt: adopted.adoptedAt,
+            calendarEventIDs: [],
+            notificationIDs: adopted.notificationIDs
+        )
+        let cleanup = Array(Set(
+            state.calendarCleanupEventIDs + identifiers
+        )).sorted()
+        let candidate = combinedState(
+            runtimeState: runtime.persistentState,
+            inbox: state.inbox,
+            outbox: state.outbox,
+            nextSequence: state.nextSequence,
+            latestProposal: state.latestProposal,
+            adoptedSchedule: updated,
+            calendarCleanupEventIDs: cleanup
+        )
+        try store.save(candidate)
+        state = candidate
+        return identifiers
     }
 
     public func cancelAdoptedSchedule() throws {

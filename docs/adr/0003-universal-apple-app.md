@@ -13,13 +13,13 @@ The Apple app does not require Telegram, Ollama, a daemon, or Terminal. Open
 Local is retired from daily use but remains available for migration and history.
 
 Private iCloud key-value storage syncs a bounded, per-device operation journal.
-EventKit supplies opaque busy intervals and receives only user-adopted Hob
-blocks. Model output never writes tasks, Calendar, or sync state directly.
+EventKit supplies opaque busy intervals. Hob never adds or changes Calendar
+events. Model output never writes tasks, Calendar, or sync state directly.
 
 ## Delivery
 
 Vertical slices must finish a customer journey across model, core, storage,
-UI, restart, and tests. The order is planning, Calendar adoption, execution,
+UI, restart, and tests. The order is planning, Calendar availability, execution,
 replanning, sync, migration, then Store release.
 
 The Apple app reaches 1.0 only after iPhone and Mac pass the same acceptance

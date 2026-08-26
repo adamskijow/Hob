@@ -7,7 +7,7 @@ Updated: 2026-08-21. Scope: paired Mac and iPhone. No upload.
 
 - One shared Swift behavior core and workspace
 - Local Apple model, typed tasks, deterministic scheduling, and undo
-- Calendar adoption, reminders, replanning, cancellation, and recovery
+- Calendar availability, reminders, replanning, cancellation, and recovery
 - First-run model check with optional iCloud, Calendar, and reminders
 - Private bounded iCloud task journal
 - Mac menu bar and signed local builds on both devices

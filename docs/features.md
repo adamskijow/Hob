@@ -26,10 +26,9 @@ from:
 - stated dates, fixed times, deadlines, priority, and effort;
 - optional opaque Calendar busy intervals.
 
-The proposal shows scheduled and unscheduled work. Calendar integration defaults
-off. When enabled, its settings choose which calendars protect time and where
-approved blocks are added. Shared and subscribed calendars work through Apple
-Calendar. All-day blocking is optional.
+The proposal shows scheduled and unscheduled work. Calendar availability defaults
+off. When enabled, Hob reads busy times from selected Apple calendars without
+adding or changing events. All-day blocking is optional.
 
 Natural questions such as “Will this week fit?”, “Why is this here?”, and “What
 if this takes two hours?” return a read-only planning check. The answer shows

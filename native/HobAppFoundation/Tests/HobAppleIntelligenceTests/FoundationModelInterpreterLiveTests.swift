@@ -130,6 +130,18 @@ func modelUnderstandsRecurrence() async throws {
     #expect(repeating.count == 1)
     #expect(repeating.first?.recurrence?.frequency == "week")
     #expect(repeating.first?.recurrence?.weekdays == ["mon"])
+
+    for message in ["test", "Eat bacon"] {
+        let oneOff = try await interpreter.interpret(
+            message: message,
+            now: "2026-08-25T08:00:00-04:00",
+            timezone: "America/New_York",
+            tasks: []
+        )
+        #expect(oneOff.count == 1)
+        #expect(oneOff.first?.type == "capture")
+        #expect(oneOff.first?.recurrence == nil)
+    }
 }
 
 @Test

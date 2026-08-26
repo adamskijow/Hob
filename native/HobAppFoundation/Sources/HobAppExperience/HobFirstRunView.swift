@@ -89,7 +89,7 @@ struct HobFirstRunView: View {
             setupRow(
                 title: "Calendar",
                 detail: controller.calendarIntegrationEnabled
-                    ? "Plans around chosen calendars" : "Off by default",
+                    ? "Reads busy time only" : "Off by default",
                 symbol: "calendar"
             ) {
                 Toggle(
