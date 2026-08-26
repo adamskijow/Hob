@@ -172,13 +172,16 @@ private final class StubNotifications: RuntimeNotificationScheduling {
 private final class StubSync: RuntimeTaskSyncing {
     var availability: RuntimeTaskSyncAvailability
     var remoteOperations: [RuntimeTaskOperation]
+    var error: RuntimeTaskSyncError?
 
     init(
         availability: RuntimeTaskSyncAvailability = .unavailable,
-        remoteOperations: [RuntimeTaskOperation] = []
+        remoteOperations: [RuntimeTaskOperation] = [],
+        error: RuntimeTaskSyncError? = nil
     ) {
         self.availability = availability
         self.remoteOperations = remoteOperations
+        self.error = error
     }
 
     func refreshAvailability() async -> RuntimeTaskSyncAvailability {
@@ -188,6 +191,7 @@ private final class StubSync: RuntimeTaskSyncing {
     func exchange(
         localOperations: [RuntimeTaskOperation]
     ) async throws -> [RuntimeTaskOperation] {
+        if let error { throw error }
         let merged = try RuntimeTaskOperationMerge.merge(
             local: localOperations,
             remote: remoteOperations
@@ -470,6 +474,7 @@ func routineSyncIsSilentWhenNothingChanged() async throws {
         syncStore: sync,
         timezone: try #require(TimeZone(identifier: "America/New_York"))
     )
+    try await Task.sleep(for: .milliseconds(30))
     try await waitUntilSettled(controller)
 
     sync.availability = .available
@@ -478,6 +483,37 @@ func routineSyncIsSilentWhenNothingChanged() async throws {
 
     #expect(controller.notice == nil)
     #expect(controller.syncNeedsAttention == false)
+}
+
+@Test @MainActor
+func backgroundSyncFailureStaysOutOfConversationAndClearsAfterRecovery() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("hob-background-sync-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let sync = StubSync(availability: .available, error: .transportFailed)
+    let controller = HobWorkspaceController(
+        store: TaskStateStore(directoryURL: directory),
+        interpreter: StubInterpreter(actions: []),
+        calendarStore: StubCalendar(),
+        notificationStore: StubNotifications(),
+        syncStore: sync,
+        timezone: try #require(TimeZone(identifier: "America/New_York"))
+    )
+    try await Task.sleep(for: .milliseconds(30))
+    try await waitUntilSettled(controller)
+
+    #expect(controller.syncNeedsAttention)
+    #expect(controller.notice == nil)
+
+    controller.syncNow()
+    try await waitUntilIdle(controller)
+    #expect(controller.notice == "iCloud sync needs attention.")
+
+    sync.error = nil
+    controller.syncNow()
+    try await waitUntilIdle(controller)
+    #expect(!controller.syncNeedsAttention)
+    #expect(controller.notice == nil)
 }
 
 @Test @MainActor

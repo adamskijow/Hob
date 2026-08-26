@@ -57,16 +57,52 @@ struct ICloudTaskSyncStoreTests {
         }
     }
 
+    @Test func queuedWriteDoesNotBecomeAFalseTransportFailure() async throws {
+        let cloud = MemoryICloudStore()
+        cloud.synchronizeResult = false
+        let sync = ICloudTaskSyncStore(
+            store: cloud,
+            signedIn: { true },
+            deviceID: UUID().uuidString
+        )
+        _ = await sync.refreshAvailability()
+        let value = operation(id: "one", taskID: "task-one", minute: 1)
+
+        #expect(try await sync.exchange(localOperations: [value]) == [value])
+        #expect(cloud.values.count == 1)
+    }
+
+    @Test func independentlyCreatedRecurrenceRepairsConverge() throws {
+        let first = operation(
+            id: "migration-v9-recurrence-task-one",
+            taskID: "task-one",
+            minute: 1,
+            sequence: 4
+        )
+        let second = operation(
+            id: "migration-v9-recurrence-task-one",
+            taskID: "task-one",
+            minute: 1,
+            sequence: 7
+        )
+
+        #expect(try RuntimeTaskOperationMerge.merge(
+            local: [first], remote: [second]
+        ) == [second])
+    }
+
     private func operation(
         id: String,
         taskID: String,
-        minute: Int
+        minute: Int,
+        sequence: Int = 0
     ) -> RuntimeTaskOperation {
         let timestamp = String(format: "2026-08-19T02:%02d:00Z", minute)
         return RuntimeTaskOperation(
             id: id,
             taskID: taskID,
             occurredAt: timestamp,
+            sequence: sequence,
             task: RuntimeTask(
                 id: taskID,
                 rawText: taskID,
@@ -84,11 +120,12 @@ struct ICloudTaskSyncStoreTests {
 @MainActor
 private final class MemoryICloudStore: ICloudKeyValueStoring {
     var values: [String: Any] = [:]
+    var synchronizeResult = true
     var dictionaryRepresentation: [String: Any] { values }
 
     func set(_ value: Any?, forKey defaultName: String) {
         values[defaultName] = value
     }
 
-    func synchronize() -> Bool { true }
+    func synchronize() -> Bool { synchronizeResult }
 }

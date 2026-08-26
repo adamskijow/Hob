@@ -208,7 +208,7 @@ public final class HobWorkspaceController: ObservableObject {
                 || notificationActionsPending {
                 resumePendingWork()
             } else if syncAvailability == .available {
-                syncNow()
+                syncNow(showResult: false)
             }
         }
     }
@@ -884,6 +884,10 @@ public final class HobWorkspaceController: ObservableObject {
     }
 
     public func syncNow() {
+        syncNow(showResult: true)
+    }
+
+    private func syncNow(showResult: Bool) {
         run {
             self.calendarAuthorization = self.calendarStore.authorization
             self.refreshCalendarChoices()
@@ -897,8 +901,10 @@ public final class HobWorkspaceController: ObservableObject {
             await self.syncTasks()
             await self.refresh()
             if self.syncNeedsAttention {
-                self.notice = "iCloud sync needs attention."
-            } else if self.tasks != tasksBeforeSync {
+                if showResult {
+                    self.notice = "iCloud sync needs attention."
+                }
+            } else if showResult && self.tasks != tasksBeforeSync {
                 self.notice = "Tasks updated from iCloud."
             }
         }
@@ -1552,6 +1558,9 @@ public final class HobWorkspaceController: ObservableObject {
                 }
             }
             syncNeedsAttention = false
+            if notice == "iCloud sync needs attention." {
+                notice = nil
+            }
             await refresh()
         } catch {
             syncNeedsAttention = true

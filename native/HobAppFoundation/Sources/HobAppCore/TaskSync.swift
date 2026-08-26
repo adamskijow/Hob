@@ -114,7 +114,14 @@ public enum RuntimeTaskOperationMerge {
                 throw RuntimeTaskSyncError.invalidRemoteData
             }
             if let existing = byID[operation.id], existing != operation {
-                throw RuntimeTaskSyncError.conflict
+                guard operation.id.hasPrefix("migration-v9-recurrence-"),
+                      existing.taskID == operation.taskID else {
+                    throw RuntimeTaskSyncError.conflict
+                }
+                if order(existing, operation) {
+                    byID[operation.id] = operation
+                }
+                continue
             }
             byID[operation.id] = operation
         }

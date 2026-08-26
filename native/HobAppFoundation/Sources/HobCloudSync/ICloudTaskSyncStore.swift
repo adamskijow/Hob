@@ -80,9 +80,9 @@ public final class ICloudTaskSyncStore: RuntimeTaskSyncing {
             throw RuntimeTaskSyncError.transportFailed
         }
         store.set(payload, forKey: Schema.keyPrefix + deviceID)
-        guard store.synchronize() else {
-            throw RuntimeTaskSyncError.transportFailed
-        }
+        // KVS queues local writes and propagates them asynchronously. A false
+        // synchronize result is not proof that the queued value was rejected.
+        _ = store.synchronize()
         return merged
     }
 
