@@ -117,6 +117,24 @@ func modelKeepsSocialMessagesOutOfPlanning() async throws {
 }
 
 @Test
+func taskLabelsPreserveUserWording() async throws {
+    let interpreter = AppleFoundationInterpreter()
+    guard interpreter.isAvailable else { return }
+
+    let actions = try await interpreter.interpret(
+        message: "Return Amazon shit",
+        now: "2026-08-26T19:00:00-04:00",
+        timezone: "America/New_York",
+        tasks: []
+    )
+
+    #expect(actions == [RuntimeAction(
+        type: "capture", task: "Return Amazon shit",
+        raw: "Return Amazon shit", priority: "normal", confidence: 1
+    )])
+}
+
+@Test
 func modelUnderstandsRecurrence() async throws {
     let interpreter = AppleFoundationInterpreter()
     guard interpreter.isAvailable else { return }
@@ -355,6 +373,14 @@ func reminderRegressionCorpusIsStableAcrossTwoRuns() async throws {
             message: "Buy zero sugar soda", now: now, timezone: zone, tasks: []
         )
         #expect(zeroSugar.first?.type == "capture")
+
+        let amazon = try await interpreter.interpret(
+            message: "Return Amazon shit", now: now, timezone: zone, tasks: []
+        )
+        #expect(amazon == [RuntimeAction(
+            type: "capture", task: "Return Amazon shit",
+            raw: "Return Amazon shit", priority: "normal", confidence: 1
+        )])
 
         let completed = try await interpreter.interpret(
             message: "I did home insurance and hit the grift",

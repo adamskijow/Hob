@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT
 import Foundation
+#if canImport(NaturalLanguage)
+import NaturalLanguage
+#endif
 #if canImport(FoundationModels)
 import FoundationModels
 #endif
@@ -168,13 +171,21 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 ) { return recovery }
                 throw RuntimeInterpretationError.invalidOutput
             }
-            return try validateHolistic(
-                compactAsHolistic(repaired, message: message),
-                message: message,
-                open: open,
-                recentChange: recentChange,
-                focusedIndices: focusedIndices
-            )
+            do {
+                return try validateHolistic(
+                    compactAsHolistic(repaired, message: message),
+                    message: message,
+                    open: open,
+                    recentChange: recentChange,
+                    focusedIndices: focusedIndices
+                )
+            } catch {
+                if let recovery = deterministicGenerationFailureRecovery(
+                    message: message, open: open, recentChange: recentChange,
+                    focusedIndices: focusedIndices
+                ) { return recovery }
+                throw RuntimeInterpretationError.invalidOutput
+            }
         }
     }
 
@@ -500,13 +511,13 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     @available(iOS 26.0, macOS 26.0, *)
     private static var unifiedInstructions: String {
         """
-        Interpret ordinary speech as the smallest complete action list. Activities are captures; constraints stay attached. Split obligations. Edit only identified saved work. Past completion closes work; future intent and progress do not. Zero-work reports acknowledge. Conversation stays social. Fit, why, and what-if are analysis. Copy evidence exactly; invent nothing. Examples: “cake before tomorrow” is capture; “how is tomorrow?” is query; “thanks” is social.
+        Interpret ordinary speech as the smallest complete action list. Activities are captures; constraints stay attached. Split obligations. Edit only identified saved work. Past completion closes work; future intent and progress do not. Zero-work reports acknowledge. Conversation stays social. Fit, why, and what-if are analysis. Copy task labels from the user; preserve slang, spelling, tone, and profanity. Never sanitize a task or replace it with advice. Copy evidence exactly; invent nothing. Examples: “cake before tomorrow” is capture; “Return Amazon stuff” is capture with the same task; “how is tomorrow?” is query; “thanks” is social.
         """
     }
 
     private static var unifiedRepairInstructions: String {
         """
-        Repair the grounded interpretation once. Return the smallest complete action list. Copy evidence exactly and target only numbered tasks. Activities are captures; their constraints stay attached. Never turn future intent into completion, a date into recurrence, conversation into work, or new work into an edit. Invent nothing.
+        Repair the grounded interpretation once. Return the smallest complete action list. Copy task labels from the user without sanitizing slang or profanity. Copy evidence exactly and target only numbered tasks. Activities are captures; their constraints stay attached. Never turn future intent into completion, a date into recurrence, conversation into work, or new work into an edit. Invent nothing.
         """
     }
 
@@ -617,6 +628,27 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             "it", "sounds", "good", "great", "nice", "awesome", "yep", "yeah",
         ])
         return !tokens.isEmpty && tokens.isSubset(of: conversational)
+    }
+
+    private static func messageBeginsWithActionVerb(_ message: String) -> Bool {
+        #if canImport(NaturalLanguage)
+        let prefix = "I will "
+        let probe = prefix + message.lowercased()
+        let messageStart = probe.index(
+            probe.startIndex, offsetBy: prefix.count
+        )
+        guard let first = probe[messageStart...].firstIndex(where: { $0.isLetter }) else {
+            return false
+        }
+        let tagger = NLTagger(tagSchemes: [.lexicalClass])
+        tagger.string = probe
+        tagger.setLanguage(.english, range: probe.startIndex..<probe.endIndex)
+        return tagger.tag(
+            at: first, unit: .word, scheme: .lexicalClass
+        ).0 == .verb
+        #else
+        return false
+        #endif
     }
 
     private static func deterministicGenerationFailureRecovery(
@@ -766,6 +798,14 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         return result
     }
 
+    private static func isValidTargetIndex(_ index: Int, count: Int) -> Bool {
+        index > 0 && index <= count
+    }
+
+    private static func targetIndices(count: Int, limit: Int = .max) -> Range<Int> {
+        1..<(min(count, limit) + 1)
+    }
+
     @available(iOS 26.0, macOS 26.0, *)
     private static func inferredTargetIndex(
         from turn: HolisticTurn,
@@ -792,7 +832,9 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             case .recurrence(let value): candidate = value.targetIndex
             default: candidate = nil
             }
-            if let candidate, (1...open.count).contains(candidate) { return candidate }
+            if let candidate, isValidTargetIndex(candidate, count: open.count) {
+                return candidate
+            }
         }
         return nil
     }
@@ -1077,13 +1119,18 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         } : possibleActions
         var result: [RuntimeAction] = []
         var containsExclusive = false
+        let captureCount = actions.reduce(into: 0) { count, action in
+            if case .capture = action { count += 1 }
+        }
         for action in actions {
             switch action {
             case .capture(let value):
                 guard !isInterrogative(message) else {
                     throw RuntimeInterpretationError.invalidOutput
                 }
-                let task = value.task.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let task = faithfulCaptureLabel(
+                    value.task, message: message, singleCapture: captureCount == 1
+                ) else { throw RuntimeInterpretationError.invalidOutput }
                 guard !task.isEmpty,
                       captureIsNew(task, evidence: message, open: open) else {
                     throw RuntimeInterpretationError.invalidOutput
@@ -1245,7 +1292,8 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             case .analysis(let value):
                 containsExclusive = true
                 guard unifiedEvidenceIsGrounded(value.evidence, in: message),
-                      value.targetIndex == 0 || (1...open.count).contains(value.targetIndex)
+                      value.targetIndex == 0
+                        || isValidTargetIndex(value.targetIndex, count: open.count)
                 else { throw RuntimeInterpretationError.invalidOutput }
                 if value.kind == "what_if" {
                     guard value.targetIndex > 0,
@@ -1266,7 +1314,9 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             case .bulkComplete(let value):
                 guard unifiedEvidenceIsGrounded(value.evidence, in: message),
                       Set(value.excludedTargets).count == value.excludedTargets.count,
-                      value.excludedTargets.allSatisfy({ (1...open.count).contains($0) })
+                      value.excludedTargets.allSatisfy({
+                          isValidTargetIndex($0, count: open.count)
+                      })
                 else { throw RuntimeInterpretationError.invalidOutput }
                 let excluded = Set(value.excludedTargets)
                 result += open.indices.compactMap { index in
@@ -1281,7 +1331,9 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 }
                 var seen = Set<Int>()
                 for destination in value.destinations {
-                    guard (1...open.count).contains(destination.targetIndex),
+                    guard isValidTargetIndex(
+                        destination.targetIndex, count: open.count
+                    ),
                           seen.insert(destination.targetIndex).inserted,
                           let date = try groundedHolisticDate(
                             destination.dateEvidence, message: message
@@ -1313,6 +1365,9 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 if zeroCompletionReportIsSupported(message) {
                     result.append(RuntimeAction(type: "acknowledge"))
                 } else {
+                    guard !messageBeginsWithActionVerb(message) else {
+                        throw RuntimeInterpretationError.invalidOutput
+                    }
                     let reply = value.reply.isEmpty ? "Anytime." : value.reply
                     result.append(RuntimeAction(type: "social", reply: reply))
                 }
@@ -1336,7 +1391,10 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 }
                 let reply = value.reply.split(whereSeparator: { $0.isWhitespace })
                     .joined(separator: " ")
-                guard !reply.isEmpty else { throw RuntimeInterpretationError.invalidOutput }
+                guard !reply.isEmpty,
+                      !messageBeginsWithActionVerb(message) else {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
                 result.append(RuntimeAction(type: "social", reply: String(reply.prefix(120))))
             }
         }
@@ -1354,7 +1412,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         open: [RuntimeTask],
         focused: Set<Int>
     ) throws -> String {
-        guard !open.isEmpty, (1...open.count).contains(value.targetIndex) else {
+        guard isValidTargetIndex(value.targetIndex, count: open.count) else {
             throw RuntimeInterpretationError.invalidOutput
         }
         return try unifiedTarget(value, message: message, open: open, focused: focused)
@@ -1631,7 +1689,8 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             case "analysis":
                 guard unifiedEvidenceIsGrounded(value.evidence, in: message),
                       ["capacity", "explain", "what_if"].contains(value.analysisKind),
-                      value.targetIndex == 0 || (1...open.count).contains(value.targetIndex)
+                      value.targetIndex == 0
+                        || isValidTargetIndex(value.targetIndex, count: open.count)
                 else { throw RuntimeInterpretationError.invalidOutput }
                 if value.analysisKind == "what_if" {
                     guard value.targetIndex > 0,
@@ -1655,7 +1714,9 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             case "bulk_complete":
                 guard unifiedEvidenceIsGrounded(value.evidence, in: message),
                       Set(value.excludedTargets).count == value.excludedTargets.count,
-                      value.excludedTargets.allSatisfy({ (1...open.count).contains($0) })
+                      value.excludedTargets.allSatisfy({
+                          isValidTargetIndex($0, count: open.count)
+                      })
                 else { throw RuntimeInterpretationError.invalidOutput }
                 let excluded = Set(value.excludedTargets)
                 result += open.indices.compactMap { index in
@@ -1670,7 +1731,9 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 }
                 var seen = Set<Int>()
                 for destination in value.destinations {
-                    guard (1...open.count).contains(destination.targetIndex),
+                    guard isValidTargetIndex(
+                        destination.targetIndex, count: open.count
+                    ),
                           seen.insert(destination.targetIndex).inserted else {
                         throw RuntimeInterpretationError.invalidOutput
                     }
@@ -1679,7 +1742,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             case "recurrence":
                 guard unifiedEvidenceIsGrounded(value.evidence, in: message),
                       ["skip", "stop"].contains(value.recurrenceOperation),
-                      (1...open.count).contains(value.targetIndex) else {
+                      isValidTargetIndex(value.targetIndex, count: open.count) else {
                     throw RuntimeInterpretationError.invalidOutput
                 }
                 result.append(RuntimeAction(
@@ -1814,7 +1877,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                   (analysis.budgetMinutes == 0
                     || (5...10_080).contains(analysis.budgetMinutes)),
                   (analysis.targetIndex == 0
-                    || (1...open.count).contains(analysis.targetIndex))
+                    || isValidTargetIndex(analysis.targetIndex, count: open.count))
             else { throw RuntimeInterpretationError.invalidOutput }
             let hypothetical = analysis.hypotheticalDurationMinutes
             if analysis.kind == "what_if" {
@@ -1843,7 +1906,9 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         }).first, try await bulkCompletionAudit(message) {
             guard RuntimeConstraintEvidence.contains(bulk.evidence, in: message),
                   Set(bulk.excludedTargets).count == bulk.excludedTargets.count,
-                  bulk.excludedTargets.allSatisfy({ (1...open.count).contains($0) })
+                  bulk.excludedTargets.allSatisfy({
+                      isValidTargetIndex($0, count: open.count)
+                  })
             else { throw RuntimeInterpretationError.invalidOutput }
             let written = explicitNumbers(in: bulk.evidence)
             let excluded = written.isEmpty ? Set(bulk.excludedTargets) : written
@@ -1858,7 +1923,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         }
         if individualCompletions.count >= 2 {
             let referenced = explicitNumbers(in: message).filter {
-                (1...open.count).contains($0)
+                isValidTargetIndex($0, count: open.count)
             }
             if !referenced.isEmpty {
                 let result = open.indices.compactMap { index in
@@ -1873,7 +1938,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             return nil
         }).first {
             let destinations = bulk.destinations.filter {
-                (1...open.count).contains($0.targetIndex)
+                isValidTargetIndex($0.targetIndex, count: open.count)
             }
             guard RuntimeConstraintEvidence.contains(bulk.evidence, in: message),
                   !destinations.isEmpty
@@ -2211,7 +2276,8 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                     || supports(
                     value, message: message, open: open,
                     focused: focusedIndices
-                )), (1...open.count).contains(target), open[target - 1].isWaiting
+                )), isValidTargetIndex(target, count: open.count),
+                    open[target - 1].isWaiting
                 else { continue }
                 result.append(RuntimeAction(type: "resume", target: String(target)))
             case .keep(let value):
@@ -2219,7 +2285,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
                 result.append(RuntimeAction(type: "keep", target: String(value.targetIndex)))
             case .recurrence(let value):
                 guard RuntimeConstraintEvidence.contains(value.evidence, in: message),
-                      (1...open.count).contains(value.targetIndex),
+                      isValidTargetIndex(value.targetIndex, count: open.count),
                       open[value.targetIndex - 1].recurrence != nil,
                       ["skip", "stop"].contains(value.operation) else { continue }
                 result.append(RuntimeAction(
@@ -2277,7 +2343,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         message: String,
         open: [RuntimeTask]
     ) async throws -> Bool {
-        guard (1...open.count).contains(target) else { return false }
+        guard isValidTargetIndex(target, count: open.count) else { return false }
         for _ in 0..<2 {
             let response = try await LanguageModelSession(instructions: """
             Independently verify one proposed task effect. Reply exactly YES only
@@ -2303,7 +2369,9 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         open: [RuntimeTask],
         focused: Set<Int> = []
     ) -> Bool {
-        guard (1...open.count).contains(value.targetIndex) else { return false }
+        guard isValidTargetIndex(value.targetIndex, count: open.count) else {
+            return false
+        }
         let messageWords = Set(informativeWords(message))
         let groundedMatches = open.indices.filter { index in
             let taskWords = Set(informativeWords(open[index].task))
@@ -2358,7 +2426,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             1: "first", 2: "second", 3: "third", 4: "fourth", 5: "fifth",
             6: "sixth", 7: "seventh", 8: "eighth", 9: "ninth", 10: "tenth",
         ]
-        let explicit = (1...min(open.count, 10)).filter { index in
+        let explicit = targetIndices(count: open.count, limit: 10).filter { index in
             evidenceWords.contains(String(index))
                 || ordinals[index].map(evidenceWords.contains) == true
         }
@@ -2390,7 +2458,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             1: "first", 2: "second", 3: "third", 4: "fourth", 5: "fifth",
             6: "sixth", 7: "seventh", 8: "eighth", 9: "ninth", 10: "tenth",
         ]
-        let matches = (1...min(openCount, 10)).filter { index in
+        let matches = targetIndices(count: openCount, limit: 10).filter { index in
             evidenceWords.contains(String(index))
                 || ordinals[index].map(evidenceWords.contains) == true
         }
@@ -2433,6 +2501,23 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             let existingWords = Set(words(existing.task).filter { $0.count >= 3 })
             return !taskWords.isEmpty && taskWords.isSubset(of: existingWords)
         }
+    }
+
+    private static func faithfulCaptureLabel(
+        _ proposed: String,
+        message: String,
+        singleCapture: Bool
+    ) -> String? {
+        let task = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !task.isEmpty else { return nil }
+        let taskWords = words(task).filter { $0.count >= 3 }
+        let messageWords = Set(words(message).filter { $0.count >= 3 })
+        let groundedCount = taskWords.filter(messageWords.contains).count
+        if !taskWords.isEmpty, groundedCount * 4 >= taskWords.count * 3 {
+            return task
+        }
+        guard singleCapture else { return nil }
+        return deterministicFallbackCaptureLabel(in: message)
     }
 
     private static func explicitNumbers(in text: String) -> Set<Int> {
@@ -3896,7 +3981,7 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     struct CompactAction {
         @Guide(description: "capture, complete, drop, keep, wait, resume, progress, move, revise, note, query, analysis, recurrence, acknowledge, undo, replan, or social")
         var kind: String
-        @Guide(description: "Task label or replacement title")
+        @Guide(description: "Exact task words from the user; keep slang and profanity")
         var task: String?
         @Guide(description: "1-based saved task number")
         var targetIndex: Int?
