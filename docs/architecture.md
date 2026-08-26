@@ -19,13 +19,14 @@ native/HobMacApp/         Mac shell and menu bar
 
 ## Interpretation
 
-Foundation Models converts free text into typed actions. The runtime validates
-operation, target, date intent, clock time, bounds, duplicates, and destructive
-scope before changing state. Invalid output changes nothing.
+Foundation Models reads each complete message once and returns a compact typed
+action list. One targeted repair is allowed. The runtime grounds targets,
+dates, clocks, recurrence, bounds, duplicates, and destructive scope before
+changing state. Invalid output changes nothing.
 
-Meaning stays in the model. Phrase lists and keyword routers cannot choose an
-action. Deterministic code validates typed output, resolves dates, and grounds
-closed values such as weekdays against model-cited evidence.
+The model owns open-ended meaning. Deterministic code resolves stated
+constraints and recovers only narrow, unambiguous cases when generation fails.
+It never invents a task, date, time, or completion.
 
 ## Scheduling
 

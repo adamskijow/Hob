@@ -75,8 +75,111 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     }
 
     #if canImport(FoundationModels)
+    private actor CompactGenerationGate {
+        private var lastFinished: ContinuousClock.Instant?
+
+        func begin() async {
+            guard let lastFinished else { return }
+            let elapsed = lastFinished.duration(to: .now)
+            let cooldown = Duration.milliseconds(500)
+            if elapsed < cooldown {
+                try? await Task.sleep(for: cooldown - elapsed)
+            }
+        }
+
+        func finish() { lastFinished = .now }
+    }
+
+    private static let compactGenerationGate = CompactGenerationGate()
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func generateCompact(
+        prompt: String,
+        instructions: String
+    ) async throws -> CompactTurn {
+        await compactGenerationGate.begin()
+        do {
+            let result = try await LanguageModelSession(
+                instructions: instructions
+            ).respond(to: prompt, generating: CompactTurn.self).content
+            await compactGenerationGate.finish()
+            return result
+        } catch {
+            await compactGenerationGate.finish()
+            throw error
+        }
+    }
+
     @available(iOS 26.0, macOS 26.0, *)
     private static func callTools(
+        message: String,
+        now: String,
+        timezone: String,
+        open: [RuntimeTask],
+        recentChange: Bool,
+        context: RuntimeConversationContext
+    ) async throws -> [RuntimeAction] {
+        let focusedIndices = Set(context.focusedTaskIDs.compactMap { id in
+            open.firstIndex(where: { $0.id == id }).map { $0 + 1 }
+        })
+        let prompt = unifiedPrompt(
+            message: message,
+            now: now,
+            timezone: timezone,
+            open: open,
+            recentChange: recentChange,
+            context: context
+        )
+        let first: CompactTurn
+        do {
+            first = try await generateCompact(
+                prompt: prompt, instructions: unifiedInstructions
+            )
+        } catch {
+            if let recovery = deterministicGenerationFailureRecovery(
+                message: message, open: open, recentChange: recentChange,
+                focusedIndices: focusedIndices
+            ) { return recovery }
+            throw RuntimeInterpretationError.invalidOutput
+        }
+        do {
+            return try validateHolistic(
+                compactAsHolistic(first, message: message),
+                message: message,
+                open: open,
+                recentChange: recentChange,
+                focusedIndices: focusedIndices
+            )
+        } catch {
+            let repaired: CompactTurn
+            do {
+                repaired = try await generateCompact(
+                    prompt: "Repair only the grounded parse. Problem: "
+                        + holisticRepairHint(
+                            compactAsHolistic(first, message: message), open: open
+                        )
+                        + "\n" + prompt,
+                    instructions: unifiedRepairInstructions
+                )
+            } catch {
+                if let recovery = deterministicGenerationFailureRecovery(
+                    message: message, open: open, recentChange: recentChange,
+                    focusedIndices: focusedIndices
+                ) { return recovery }
+                throw RuntimeInterpretationError.invalidOutput
+            }
+            return try validateHolistic(
+                compactAsHolistic(repaired, message: message),
+                message: message,
+                open: open,
+                recentChange: recentChange,
+                focusedIndices: focusedIndices
+            )
+        }
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func legacyCallTools(
         message: String,
         now: String,
         timezone: String,
@@ -395,6 +498,1254 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
     }
 
     @available(iOS 26.0, macOS 26.0, *)
+    private static var unifiedInstructions: String {
+        """
+        Interpret ordinary speech as the smallest complete action list. Activities are captures; constraints stay attached. Split obligations. Edit only identified saved work. Past completion closes work; future intent and progress do not. Zero-work reports acknowledge. Conversation stays social. Fit, why, and what-if are analysis. Copy evidence exactly; invent nothing. Examples: “cake before tomorrow” is capture; “how is tomorrow?” is query; “thanks” is social.
+        """
+    }
+
+    private static var unifiedRepairInstructions: String {
+        """
+        Repair the grounded interpretation once. Return the smallest complete action list. Copy evidence exactly and target only numbered tasks. Activities are captures; their constraints stay attached. Never turn future intent into completion, a date into recurrence, conversation into work, or new work into an edit. Invent nothing.
+        """
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func holisticRepairHint(
+        _ turn: HolisticTurn,
+        open: [RuntimeTask]
+    ) -> String {
+        if turn.actions.contains(where: { action in
+            if case .complete = action { return true }
+            return false
+        }), !completionEvidenceIsSupported(
+            turn.actions.compactMap { action -> String? in
+                if case .complete(let value) = action { return value.evidence }
+                return nil
+            }.joined(separator: " ")
+        ) {
+            return "Complete is unsupported: the user did not report past completion. Interpret the actual request; questions stay read-only and conversational messages are social."
+        }
+        if open.isEmpty, turn.actions.contains(where: { action in
+            switch action {
+            case .complete, .drop, .keep, .wait, .resume, .progress,
+                 .move, .revise, .note, .bulkComplete, .bulkMove, .recurrence:
+                return true
+            default:
+                return false
+            }
+        }) {
+            return "There are no open tasks, so an existing-task effect is impossible. A named activity to do is capture."
+        }
+        return "The first output was not grounded in the message or numbered tasks. Correct only that error."
+    }
+
+    private static func completionEvidenceIsSupported(_ message: String) -> Bool {
+        let tokens = Set(words(message))
+        if !tokens.isDisjoint(with: [
+            "done", "did", "finished", "completed", "handled", "accomplished",
+        ]) { return true }
+        let lower = message.lowercased()
+        return lower.contains("took care of") || lower.contains("got done")
+    }
+
+    private static func isInterrogative(_ message: String) -> Bool {
+        let clean = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        if clean.hasSuffix("?") { return true }
+        guard let first = words(clean).first else { return false }
+        return [
+            "what", "whats", "when", "where", "why", "who", "how",
+            "will", "would", "could", "can", "should", "is", "are", "do", "does",
+        ].contains(first)
+    }
+
+    private static func isWhatIfQuestion(_ message: String) -> Bool {
+        let tokens = words(message)
+        return tokens.count >= 2 && tokens[0] == "what" && tokens[1] == "if"
+    }
+
+    private static func capacityEvidenceIsSupported(_ message: String) -> Bool {
+        let tokens = Set(words(message))
+        return !tokens.isDisjoint(with: [
+            "fit", "fits", "capacity", "overloaded", "overload", "realistic",
+        ])
+    }
+
+    private static func waitingEvidenceIsSupported(_ message: String) -> Bool {
+        let tokens = Set(words(message))
+        return !tokens.isDisjoint(with: [
+            "wait", "waiting", "blocked", "blocker", "pending",
+        ])
+    }
+
+    private static func zeroCompletionReportIsSupported(_ message: String) -> Bool {
+        let ordered = words(message)
+        let tokens = Set(ordered)
+        if ordered.count == 1,
+           ["nothing", "none", "nada", "zero"].contains(ordered[0]) {
+            return true
+        }
+        let completion = !tokens.isDisjoint(with: [
+            "done", "did", "finish", "finished", "complete", "completed",
+            "accomplished", "achieved",
+        ]) || message.lowercased().contains("got done")
+        if completion,
+           !tokens.isDisjoint(with: ["nothing", "none", "nada", "zero"]) {
+            return true
+        }
+        let lower = message.lowercased()
+        if completion && (lower.contains("jack shit") || lower.contains("didn't do anything")
+            || lower.contains("did not do anything")) {
+            return true
+        }
+        return lower.contains("today was a wash") || lower.contains("day was a wash")
+    }
+
+    private static func taskQueryEvidenceIsSupported(_ message: String) -> Bool {
+        let tokens = Set(words(message))
+        return !tokens.isDisjoint(with: [
+            "task", "tasks", "list", "schedule", "plan", "today", "tomorrow",
+            "week", "overdue", "waiting", "blocked", "done", "finish", "finished",
+        ])
+    }
+
+    private static func clearConversationEvidence(_ message: String) -> Bool {
+        let tokens = Set(words(message))
+        guard tokens.count <= 4 else { return false }
+        let conversational = Set([
+            "thanks", "thank", "bro", "bud", "cool", "okay", "ok", "got",
+            "it", "sounds", "good", "great", "nice", "awesome", "yep", "yeah",
+        ])
+        return !tokens.isEmpty && tokens.isSubset(of: conversational)
+    }
+
+    private static func deterministicGenerationFailureRecovery(
+        message: String,
+        open: [RuntimeTask],
+        recentChange: Bool,
+        focusedIndices: Set<Int> = []
+    ) -> [RuntimeAction]? {
+        if zeroCompletionReportIsSupported(message) {
+            return [RuntimeAction(type: "acknowledge")]
+        }
+        if clearConversationEvidence(message) {
+            return [RuntimeAction(type: "social", reply: "Anytime.")]
+        }
+        if recentChange, words(message) == ["undo"] {
+            return [RuntimeAction(type: "undo")]
+        }
+        let supplied = Set(words(message))
+        if focusedIndices.count == 1,
+           !supplied.isDisjoint(with: ["that", "it"]),
+           let time = deterministicSingleClock(in: message),
+           let target = focusedIndices.first {
+            return [RuntimeAction(
+                type: "reschedule", target: String(target), time: time
+            )]
+        }
+        if focusedIndices.count == 1,
+           !supplied.isDisjoint(with: ["stay", "stays", "keep", "keeping"]),
+           let target = focusedIndices.first {
+            return [RuntimeAction(type: "keep", target: String(target))]
+        }
+        if isInterrogative(message), let date = deterministicDateIntent(in: message) {
+            return [RuntimeAction(type: "query", when: date, queryKind: "date")]
+        }
+        if isInterrogative(message), capacityEvidenceIsSupported(message) {
+            return [RuntimeAction(
+                type: "analysis", analysisKind: "capacity", horizonDays: 7
+            )]
+        }
+        if open.isEmpty, !isInterrogative(message),
+           let task = deterministicFallbackCaptureLabel(in: message) {
+            let recurrence = holisticRecurrence(evidence: message, message: message)
+            let date = deterministicDateIntent(in: message)
+            let hasDeadline = message.range(
+                of: #"\b(?:by|before|due)\b"#,
+                options: [.regularExpression, .caseInsensitive]
+            ) != nil
+            return [RuntimeAction(
+                type: "capture", task: task, raw: message,
+                when: hasDeadline ? nil : (date ?? recurrenceInitialDate(recurrence)),
+                deadline: hasDeadline ? date : nil,
+                time: deterministicSingleClock(in: message),
+                durationMinutes: deterministicDurationMinutes(in: message),
+                priority: deterministicPriority(in: message) ?? "normal",
+                recurrence: recurrence, confidence: 1
+            )]
+        }
+        return nil
+    }
+
+    private static func deterministicFallbackCaptureLabel(in message: String) -> String? {
+        var label = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let removals = [
+            #"^(?:today|tomorrow)\s*,?\s*"#,
+            #"^(?:please\s+)?(?:set\s+(?:a\s+)?reminder\s+to|remind\s+me\s+to)\s+"#,
+            #"^(?:i\s+)?(?:gotta|got\s+to|have\s+to|need\s+to|want\s+to)\s+"#,
+        ]
+        for pattern in removals {
+            label = label.replacingOccurrences(
+                of: pattern, with: "",
+                options: [.regularExpression, .caseInsensitive]
+            )
+        }
+        label = label.replacingOccurrences(
+            of: #"\s+(?:by|before|due\s+by|today|tomorrow|every\s+\w+|at\s+\d{1,2}(?::?\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)\b.*$"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty, label.count <= 200,
+              label.contains(where: \.isLetter) else { return nil }
+        return label
+    }
+
+    private static func mentionedOpenTaskIndices(
+        in message: String,
+        open: [RuntimeTask]
+    ) -> [Int] {
+        let ignored = Set([
+            "the", "and", "for", "with", "from", "that", "this", "need",
+            "needs", "did", "done", "finish", "finished", "complete", "completed",
+            "make", "made", "have", "has", "had", "get", "got",
+        ])
+        let supplied = Set(words(message)).subtracting(ignored)
+        return open.enumerated().compactMap { index, task in
+            let identifying = Set(words(task.task).filter { word in
+                word.count >= 3 && !ignored.contains(word)
+            })
+            guard !identifying.isEmpty else { return nil }
+            let overlap = identifying.intersection(supplied).count
+            let required = identifying.count == 1 ? 1 : 2
+            return overlap >= required ? index + 1 : nil
+        }
+    }
+
+    private static func deterministicDurationMinutes(in message: String) -> Int? {
+        let tokens = words(message)
+        let names = [
+            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+            "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+        ]
+        for index in tokens.indices where index + 1 < tokens.count {
+            guard let amount = Int(tokens[index]) ?? names[tokens[index]] else { continue }
+            let unit = tokens[index + 1]
+            if unit == "hour" || unit == "hours" { return amount * 60 }
+            if ["minute", "minutes", "min", "mins"].contains(unit) { return amount }
+        }
+        return nil
+    }
+
+    private static func deterministicPriority(in message: String) -> String? {
+        let tokens = Set(words(message))
+        if !tokens.isDisjoint(with: ["urgent", "critical", "important", "high"]) {
+            return "high"
+        }
+        if !tokens.isDisjoint(with: ["low", "whenever", "optional"]) { return "low" }
+        if tokens.contains("normal") { return "normal" }
+        return nil
+    }
+
+    private static func deterministicClearFields(in message: String) -> [String] {
+        let lower = message.lowercased()
+        guard lower.contains("clear") || lower.contains("remove")
+                || lower.contains("no longer") || lower.contains("unset")
+                || lower.contains("no ") else { return [] }
+        let tokens = Set(words(lower))
+        var result: [String] = []
+        if !tokens.isDisjoint(with: ["date", "day"]) { result.append("date") }
+        if !tokens.isDisjoint(with: ["time", "clock"]) { result.append("time") }
+        if tokens.contains("deadline") || tokens.contains("due") {
+            result.append("deadline")
+        }
+        if !tokens.isDisjoint(with: ["duration", "estimate", "minutes", "hours"]) {
+            result.append("duration")
+        }
+        if tokens.contains("priority") { result.append("priority") }
+        if !tokens.isDisjoint(with: ["note", "notes"]) { result.append("note") }
+        return result
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func inferredTargetIndex(
+        from turn: HolisticTurn,
+        message: String,
+        open: [RuntimeTask]
+    ) -> Int? {
+        let messageWords = Set(words(message).filter { $0.count >= 3 })
+        if let match = open.enumerated().max(by: { left, right in
+            Set(words(left.element.task)).intersection(messageWords).count
+                < Set(words(right.element.task)).intersection(messageWords).count
+        }), !Set(words(match.element.task)).intersection(messageWords).isEmpty {
+            return match.offset + 1
+        }
+        for action in turn.actions {
+            let candidate: Int?
+            switch action {
+            case .complete(let value), .drop(let value), .keep(let value),
+                 .wait(let value), .resume(let value):
+                candidate = value.targetIndex
+            case .analysis(let value): candidate = value.targetIndex
+            case .move(let value): candidate = value.targetIndex
+            case .revise(let value): candidate = value.targetIndex
+            case .progress(let value), .note(let value): candidate = value.targetIndex
+            case .recurrence(let value): candidate = value.targetIndex
+            default: candidate = nil
+            }
+            if let candidate, (1...open.count).contains(candidate) { return candidate }
+        }
+        return nil
+    }
+
+    private static func unifiedPrompt(
+        message: String,
+        now: String,
+        timezone: String,
+        open: [RuntimeTask],
+        recentChange: Bool,
+        context: RuntimeConversationContext
+    ) -> String {
+        let listed = open.enumerated().map { index, task in
+            let details = [
+                task.dueDate.map { "date=\($0)" },
+                task.dueTime.map { "time=\($0)" },
+                task.deadlineDate.map { "deadline=\($0)" },
+                task.durationMinutes.map { "duration=\($0)m" },
+                task.priority.map { "priority=\($0)" },
+                task.isWaiting ? "waiting" : nil,
+            ].compactMap { $0 }.joined(separator: ", ")
+            return "\(index + 1). \(task.task)\(details.isEmpty ? "" : " [\(details)]")"
+        }.joined(separator: "\n")
+        let focused = context.focusedTaskIDs.compactMap { id in
+            open.firstIndex(where: { $0.id == id }).map { String($0 + 1) }
+        }.joined(separator: ", ")
+        return """
+        Now: \(now), \(timezone). Undo: \(recentChange).
+        Tasks:
+        \(listed.isEmpty ? "(none)" : listed)
+        Focus: \(focused.isEmpty ? "none" : focused). Earlier: \(context.unresolvedMessage ?? "none").
+
+        User message:
+        \(message)
+        """
+    }
+
+    private static func unifiedDate(
+        _ value: DateConstraintArgs,
+        message: String
+    ) throws -> RuntimeDateIntent? {
+        if value.dateKind == "none" { return nil }
+        let evidence = normalizedGeneratedEvidence(value.dateEvidence)
+        guard RuntimeConstraintEvidence.contains(evidence, in: message)
+        else { return nil }
+        return try dateIntent(
+            kind: value.dateKind,
+            weekday: value.dateWeekday,
+            which: value.dateWhich,
+            n: value.dateN,
+            unit: value.dateUnit,
+            part: value.datePart,
+            anchor: value.dateAnchor,
+            year: value.dateYear,
+            month: value.dateMonth,
+            day: value.dateDay,
+            evidence: evidence
+        )
+    }
+
+    private static func normalizedGeneratedEvidence(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\\\'", with: "'")
+            .replacingOccurrences(of: "\\\\\"", with: "\"")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func unifiedEvidenceIsGrounded(
+        _ evidence: String,
+        in message: String
+    ) -> Bool {
+        RuntimeConstraintEvidence.contains(
+            normalizedGeneratedEvidence(evidence), in: message
+        )
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func validateHolistic(
+        _ turn: HolisticTurn,
+        message: String,
+        open: [RuntimeTask],
+        recentChange: Bool,
+        focusedIndices: Set<Int>
+    ) throws -> [RuntimeAction] {
+        guard !turn.actions.isEmpty, turn.actions.count <= 16 else {
+            throw RuntimeInterpretationError.invalidOutput
+        }
+        if turn.actions.count == 1,
+           let continuation = conversationalContinuationCapture(message: message) {
+            return [continuation]
+        }
+        if let coordinated = deterministicCoordinatedCaptures(message: message) {
+            return coordinated
+        }
+        if isInterrogative(message), capacityEvidenceIsSupported(message) {
+            return [RuntimeAction(
+                type: "analysis", analysisKind: "capacity", horizonDays: 7
+            )]
+        }
+        if isWhatIfQuestion(message),
+           let duration = deterministicDurationMinutes(in: message),
+           let target = inferredTargetIndex(from: turn, message: message, open: open) {
+            return [RuntimeAction(
+                type: "analysis", target: String(target),
+                analysisKind: "what_if", horizonDays: 7,
+                hypotheticalDurationMinutes: duration
+            )]
+        }
+        if clearConversationEvidence(message)
+            || (isInterrogative(message) && !taskQueryEvidenceIsSupported(message)) {
+            return [RuntimeAction(type: "social", reply: "Anytime.")]
+        }
+        if zeroCompletionReportIsSupported(message) {
+            return [RuntimeAction(type: "acknowledge")]
+        }
+        if open.isEmpty, !isInterrogative(message),
+           deterministicDateIntent(in: message) != nil,
+           turn.actions.contains(where: { action in
+               switch action {
+               case .capture(let value): return !value.task.isEmpty
+               case .query(let value): return value.term != "none" && !value.term.isEmpty
+               case .note(let value): return !value.note.isEmpty
+               default: return false
+               }
+           }), let recovery = deterministicGenerationFailureRecovery(
+               message: message, open: open, recentChange: recentChange
+           ) {
+            return recovery
+        }
+        let leadingWords = words(message)
+        if leadingWords.first == "note",
+           let target = inferredTargetIndex(from: turn, message: message, open: open) {
+            let note = message.replacingOccurrences(
+                of: #"^\s*note\s+(?:that\s+)?"#,
+                with: "",
+                options: [.regularExpression, .caseInsensitive]
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !note.isEmpty else { throw RuntimeInterpretationError.invalidOutput }
+            return [RuntimeAction(type: "note", target: String(target), note: note)]
+        }
+        if !isInterrogative(message), waitingEvidenceIsSupported(message),
+           let target = inferredTargetIndex(from: turn, message: message, open: open) {
+            return [RuntimeAction(type: "wait", target: String(target))]
+        }
+        let messageWords = Set(leadingWords)
+        if completionEvidenceIsSupported(message) {
+            let targets = mentionedOpenTaskIndices(in: message, open: open)
+            if targets.count > 1 {
+                return targets.map {
+                    RuntimeAction(type: "complete", target: String($0))
+                }
+            }
+        }
+        if focusedIndices.count == 1,
+           !messageWords.isDisjoint(with: ["stay", "stays", "keep", "keeping"]),
+           let target = focusedIndices.first {
+            return [RuntimeAction(type: "keep", target: String(target))]
+        }
+        if !isInterrogative(message),
+           let date = deterministicDateIntent(in: message) {
+            let mentioned = mentionedOpenTaskIndices(in: message, open: open)
+            let target = mentioned.count == 1
+                ? mentioned.first
+                : inferredTargetIndex(from: turn, message: message, open: open)
+            if let target {
+                return [RuntimeAction(
+                    type: "reschedule", target: String(target), when: date,
+                    time: deterministicSingleClock(in: message)
+                )]
+            }
+        }
+        if !isInterrogative(message),
+           (!messageWords.isDisjoint(with: ["replied", "cleared", "unblocked", "resume"])
+                || message.lowercased().contains("back on deck")),
+           let target = inferredTargetIndex(from: turn, message: message, open: open),
+           open[target - 1].isWaiting {
+            return [RuntimeAction(type: "resume", target: String(target))]
+        }
+        if focusedIndices.count == 1,
+           !messageWords.isDisjoint(with: ["that", "it"]),
+           let time = deterministicSingleClock(in: message),
+           let target = focusedIndices.first {
+            return [RuntimeAction(
+                type: "reschedule", target: String(target), time: time
+            )]
+        }
+        if !isInterrogative(message),
+           let target = inferredTargetIndex(from: turn, message: message, open: open) {
+            let priority = deterministicPriority(in: message)
+            let duration = deterministicDurationMinutes(in: message)
+            if priority != nil || duration != nil {
+                return [RuntimeAction(
+                    type: "revise", target: String(target),
+                    durationMinutes: duration, priority: priority
+                )]
+            }
+        }
+        if isInterrogative(message) {
+            let queryWords = Set(words(message))
+            if !queryWords.isDisjoint(with: [
+                "did", "done", "finish", "finished", "completed",
+            ]) {
+                return [RuntimeAction(
+                    type: "query", queryKind: "done",
+                    queryPeriod: queryWords.contains("week") ? "week" : "today"
+                )]
+            }
+            if !queryWords.isDisjoint(with: ["waiting", "blocked"]) {
+                return [RuntimeAction(type: "query", queryKind: "waiting")]
+            }
+        }
+        if isInterrogative(message),
+           let date = deterministicDateIntent(in: message),
+           !capacityEvidenceIsSupported(message) {
+            return [RuntimeAction(type: "query", when: date, queryKind: "date")]
+        }
+        if let capture = turn.actions.compactMap({ action -> HolisticCapture? in
+            if case .capture(let value) = action { return value }
+            return nil
+        }).first,
+           turn.actions.allSatisfy({ action in
+               switch action {
+               case .capture: return true
+               case .complete: return !completionEvidenceIsSupported(message)
+               default: return false
+               }
+           }),
+           let labels = structurallySeparateCoordinatedLabels(in: message),
+           let clocks = coordinatedClockTexts(in: message) {
+            let recurrence = holisticRecurrence(
+                evidence: capture.recurrenceEvidence, message: message
+            ) ?? holisticRecurrence(evidence: message, message: message)
+            let when = try groundedHolisticDate(
+                capture.dateEvidence, message: message
+            ) ?? recurrenceInitialDate(recurrence)
+            let deadline = try groundedHolisticDate(
+                capture.deadlineEvidence, message: message
+            )
+            let actions = [labels.0, labels.1].enumerated().map { index, label in
+                RuntimeAction(
+                    type: "capture", task: label.task, raw: message,
+                    when: when, deadline: deadline,
+                    time: RuntimeGeneratedClock.normalizeEvidence(
+                        clocks[index],
+                        interpretation: explicitMeridiem(in: clocks[index])
+                            ?? capture.clockInterpretation,
+                        in: message
+                    ),
+                    priority: "normal", recurrence: recurrence, confidence: 1
+                )
+            }
+            guard actions.allSatisfy({ $0.time != nil }) else {
+                throw RuntimeInterpretationError.invalidOutput
+            }
+            return actions
+        }
+
+        let hasCapture = turn.actions.contains { action in
+            if case .capture = action { return true }
+            return false
+        }
+        let possibleActions = turn.actions.filter { action in
+            if hasCapture {
+                switch action {
+                case .social, .acknowledge: return false
+                default: break
+                }
+            }
+            if case .complete = action {
+                return completionEvidenceIsSupported(message)
+            }
+            return true
+        }
+        let actions = open.isEmpty && hasCapture ? possibleActions.filter { action in
+            switch action {
+            case .complete, .drop, .keep, .wait, .resume, .progress,
+                 .move, .revise, .note, .bulkComplete, .bulkMove, .recurrence:
+                return false
+            default:
+                return true
+            }
+        } : possibleActions
+        var result: [RuntimeAction] = []
+        var containsExclusive = false
+        for action in actions {
+            switch action {
+            case .capture(let value):
+                guard !isInterrogative(message) else {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
+                let task = value.task.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !task.isEmpty,
+                      captureIsNew(task, evidence: message, open: open) else {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
+                let recurrence = holisticRecurrence(
+                    evidence: value.recurrenceEvidence, message: message
+                ) ?? holisticRecurrence(evidence: message, message: message)
+                let duration = (5...480).contains(value.durationMinutes)
+                    && RuntimeConstraintEvidence.isSupportedDuration(
+                        value.durationEvidence, in: message
+                    ) ? value.durationMinutes : nil
+                let priority = ["high", "normal", "low"].contains(value.priority)
+                    && unifiedEvidenceIsGrounded(value.priorityEvidence, in: message)
+                    ? value.priority : "normal"
+                let fallbackDate = deterministicDateIntent(in: message)
+                let deadlineLanguage = message.range(
+                    of: #"\b(?:by|before|due)\b"#,
+                    options: [.regularExpression, .caseInsensitive]
+                ) != nil
+                result.append(RuntimeAction(
+                    type: "capture", task: task, raw: message,
+                    when: try groundedHolisticDate(value.dateEvidence, message: message)
+                        ?? (deadlineLanguage ? nil : fallbackDate)
+                        ?? recurrenceInitialDate(recurrence),
+                    deadline: deadlineLanguage ? (try groundedHolisticDate(
+                        value.deadlineEvidence, message: message
+                    ) ?? fallbackDate) : nil,
+                    time: groundedHolisticTime(
+                        value.clockText,
+                        interpretation: value.clockInterpretation,
+                        message: message
+                    ) ?? deterministicSingleClock(in: message),
+                    durationMinutes: duration, priority: priority,
+                    recurrence: recurrence, confidence: 1
+                ))
+            case .complete(let value):
+                result.append(RuntimeAction(type: "complete", target: try holisticTarget(
+                    value, message: message, open: open, focused: focusedIndices
+                )))
+            case .drop(let value):
+                result.append(RuntimeAction(type: "drop", target: try holisticTarget(
+                    value, message: message, open: open, focused: focusedIndices
+                )))
+            case .keep(let value):
+                result.append(RuntimeAction(type: "keep", target: try holisticTarget(
+                    value, message: message, open: open, focused: focusedIndices
+                )))
+            case .wait(let value):
+                guard waitingEvidenceIsSupported(message) else {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
+                result.append(RuntimeAction(type: "wait", target: try holisticTarget(
+                    value, message: message, open: open, focused: focusedIndices
+                )))
+            case .resume(let value):
+                result.append(RuntimeAction(type: "resume", target: try holisticTarget(
+                    value, message: message, open: open, focused: focusedIndices
+                )))
+            case .progress(let value), .note(let value):
+                let target = try holisticTarget(
+                    TargetArgs(targetIndex: value.targetIndex, evidence: value.evidence),
+                    message: message, open: open, focused: focusedIndices
+                )
+                guard unifiedEvidenceIsGrounded(value.note, in: message) else {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
+                result.append(RuntimeAction(type: "note", target: target, note: value.note))
+            case .move(let value):
+                let target = try holisticTarget(
+                    TargetArgs(targetIndex: value.targetIndex, evidence: value.evidence),
+                    message: message, open: open, focused: focusedIndices
+                )
+                let date = try groundedHolisticDate(value.dateEvidence, message: message)
+                let time = groundedHolisticTime(
+                    value.clockText,
+                    interpretation: value.clockInterpretation,
+                    message: message
+                )
+                guard date != nil || time != nil else {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
+                result.append(RuntimeAction(
+                    type: "reschedule", target: target, when: date, time: time
+                ))
+            case .revise(let value):
+                let target = try holisticTarget(
+                    TargetArgs(targetIndex: value.targetIndex, evidence: value.evidence),
+                    message: message, open: open, focused: focusedIndices
+                )
+                let title = unifiedEvidenceIsGrounded(value.taskEvidence, in: message)
+                    ? value.task.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+                let duration = (5...480).contains(value.durationMinutes)
+                    && RuntimeConstraintEvidence.isSupportedDuration(
+                        value.durationEvidence, in: message
+                    ) ? value.durationMinutes : nil
+                let priority = unifiedEvidenceIsGrounded(
+                    value.priorityEvidence, in: message
+                ) && ["high", "normal", "low"].contains(value.priority)
+                    ? value.priority : nil
+                let clear = Array(Set(value.clearFields).intersection([
+                    "date", "time", "deadline", "duration", "priority", "note",
+                ])).sorted()
+                let date = try groundedHolisticDate(value.dateEvidence, message: message)
+                let deadline = try groundedHolisticDate(
+                    value.deadlineEvidence, message: message
+                )
+                let time = groundedHolisticTime(
+                    value.clockText,
+                    interpretation: value.clockInterpretation,
+                    message: message
+                )
+                guard !title.isEmpty || duration != nil || priority != nil || !clear.isEmpty
+                        || date != nil || deadline != nil || time != nil else {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
+                result.append(RuntimeAction(
+                    type: "revise", task: title.isEmpty ? nil : title,
+                    target: target, when: date, deadline: deadline, time: time,
+                    durationMinutes: duration, priority: priority,
+                    clearFields: clear.isEmpty ? nil : clear
+                ))
+            case .query(let value):
+                containsExclusive = true
+                guard unifiedEvidenceIsGrounded(value.evidence, in: message) else {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
+                if !taskQueryEvidenceIsSupported(message) {
+                    result.append(RuntimeAction(
+                        type: "social", reply: "I can help with your plan."
+                    ))
+                    break
+                }
+                let date = try groundedHolisticDate(
+                    value.dateEvidence, message: message
+                ) ?? deterministicDateIntent(in: message)
+                let term = value.term == "none" ? "" : value.term
+                guard value.kind != "date" || date != nil,
+                      value.kind != "search" || !term.isEmpty else {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
+                if capacityEvidenceIsSupported(message) {
+                    result.append(RuntimeAction(
+                        type: "analysis", analysisKind: "capacity", horizonDays: 7
+                    ))
+                    break
+                }
+                let derivedKind: String
+                let queryWords = Set(words(message))
+                if !queryWords.isDisjoint(with: ["done", "finish", "finished", "completed"]) {
+                    derivedKind = "done"
+                } else if !queryWords.isDisjoint(with: ["waiting", "blocked"]) {
+                    derivedKind = "waiting"
+                } else { derivedKind = value.kind }
+                result.append(RuntimeAction(
+                    type: "query", when: date, queryKind: derivedKind,
+                    queryTerm: term.isEmpty ? nil : term,
+                    queryPeriod: value.period
+                ))
+            case .analysis(let value):
+                containsExclusive = true
+                guard unifiedEvidenceIsGrounded(value.evidence, in: message),
+                      value.targetIndex == 0 || (1...open.count).contains(value.targetIndex)
+                else { throw RuntimeInterpretationError.invalidOutput }
+                if value.kind == "what_if" {
+                    guard value.targetIndex > 0,
+                          RuntimeConstraintEvidence.isSupportedDuration(
+                            value.durationEvidence, in: message
+                          ) else { throw RuntimeInterpretationError.invalidOutput }
+                }
+                result.append(RuntimeAction(
+                    type: "analysis",
+                    target: value.targetIndex > 0 ? String(value.targetIndex) : nil,
+                    analysisKind: value.kind,
+                    horizonDays: (1...31).contains(value.horizonDays)
+                        ? value.horizonDays : 7,
+                    budgetMinutes: value.budgetMinutes > 0 ? value.budgetMinutes : nil,
+                    hypotheticalDurationMinutes: value.hypotheticalDurationMinutes > 0
+                        ? value.hypotheticalDurationMinutes : nil
+                ))
+            case .bulkComplete(let value):
+                guard unifiedEvidenceIsGrounded(value.evidence, in: message),
+                      Set(value.excludedTargets).count == value.excludedTargets.count,
+                      value.excludedTargets.allSatisfy({ (1...open.count).contains($0) })
+                else { throw RuntimeInterpretationError.invalidOutput }
+                let excluded = Set(value.excludedTargets)
+                result += open.indices.compactMap { index in
+                    excluded.contains(index + 1) ? nil
+                        : RuntimeAction(type: "complete", target: String(index + 1))
+                }
+                if result.isEmpty { result = [RuntimeAction(type: "acknowledge")] }
+            case .bulkMove(let value):
+                guard unifiedEvidenceIsGrounded(value.evidence, in: message),
+                      !value.destinations.isEmpty else {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
+                var seen = Set<Int>()
+                for destination in value.destinations {
+                    guard (1...open.count).contains(destination.targetIndex),
+                          seen.insert(destination.targetIndex).inserted,
+                          let date = try groundedHolisticDate(
+                            destination.dateEvidence, message: message
+                          ) else { throw RuntimeInterpretationError.invalidOutput }
+                    result.append(RuntimeAction(
+                        type: "reschedule", target: String(destination.targetIndex),
+                        when: date,
+                        time: groundedHolisticTime(
+                            destination.clockText,
+                            interpretation: destination.clockInterpretation,
+                            message: message
+                        )
+                    ))
+                }
+            case .recurrence(let value):
+                let target = try holisticTarget(
+                    TargetArgs(targetIndex: value.targetIndex, evidence: value.evidence),
+                    message: message, open: open, focused: focusedIndices
+                )
+                result.append(RuntimeAction(
+                    type: "recurrence", target: target,
+                    recurrenceOperation: value.operation
+                ))
+            case .acknowledge(let value):
+                containsExclusive = true
+                guard unifiedEvidenceIsGrounded(value.evidence, in: message) else {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
+                if zeroCompletionReportIsSupported(message) {
+                    result.append(RuntimeAction(type: "acknowledge"))
+                } else {
+                    let reply = value.reply.isEmpty ? "Anytime." : value.reply
+                    result.append(RuntimeAction(type: "social", reply: reply))
+                }
+            case .undo(let value):
+                containsExclusive = true
+                guard recentChange,
+                      unifiedEvidenceIsGrounded(value.evidence, in: message) else {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
+                result.append(RuntimeAction(type: "undo"))
+            case .replan(let value):
+                containsExclusive = true
+                guard unifiedEvidenceIsGrounded(value.evidence, in: message) else {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
+                result.append(RuntimeAction(type: "replan"))
+            case .social(let value):
+                containsExclusive = true
+                guard unifiedEvidenceIsGrounded(value.evidence, in: message) else {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
+                let reply = value.reply.split(whereSeparator: { $0.isWhitespace })
+                    .joined(separator: " ")
+                guard !reply.isEmpty else { throw RuntimeInterpretationError.invalidOutput }
+                result.append(RuntimeAction(type: "social", reply: String(reply.prefix(120))))
+            }
+        }
+        guard !result.isEmpty, result.count <= 16,
+              !(containsExclusive && actions.count > 1),
+              RuntimeGeneratedActions.areDistinct(result) else {
+            throw RuntimeInterpretationError.invalidOutput
+        }
+        return result
+    }
+
+    private static func holisticTarget(
+        _ value: TargetArgs,
+        message: String,
+        open: [RuntimeTask],
+        focused: Set<Int>
+    ) throws -> String {
+        guard !open.isEmpty, (1...open.count).contains(value.targetIndex) else {
+            throw RuntimeInterpretationError.invalidOutput
+        }
+        return try unifiedTarget(value, message: message, open: open, focused: focused)
+    }
+
+    private static func groundedHolisticDate(
+        _ evidence: String,
+        message: String
+    ) throws -> RuntimeDateIntent? {
+        let clean = normalizedGeneratedEvidence(evidence)
+        guard clean.lowercased() != "none", !clean.isEmpty else { return nil }
+        guard unifiedEvidenceIsGrounded(clean, in: message) else { return nil }
+        return deterministicDateIntent(in: clean)
+    }
+
+    private static func groundedHolisticTime(
+        _ evidence: String,
+        interpretation: String,
+        message: String
+    ) -> String? {
+        let clean = normalizedGeneratedEvidence(evidence)
+        guard clean.lowercased() != "none" else { return nil }
+        return RuntimeGeneratedClock.normalizeEvidence(
+            clean,
+            interpretation: explicitMeridiem(in: clean) ?? interpretation,
+            in: message
+        )
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func validateUnified(
+        _ turn: UnifiedTurn,
+        message: String,
+        open: [RuntimeTask],
+        recentChange: Bool,
+        focusedIndices: Set<Int>
+    ) throws -> [RuntimeAction] {
+        guard !turn.actions.isEmpty, turn.actions.count <= 16 else {
+            throw RuntimeInterpretationError.invalidOutput
+        }
+        if turn.actions.count == 1,
+           let value = turn.actions.first,
+           value.kind == "capture",
+           let labels = structurallySeparateCoordinatedLabels(in: message),
+           let clocks = coordinatedClockTexts(in: message) {
+            let recurrence = recurrenceRule(value.recurrence, message: message)
+            let sharedWhen = try unifiedDate(value.date, message: message)
+                ?? recurrenceInitialDate(recurrence)
+            let deadline = try unifiedDate(value.deadline, message: message)
+            let captures = [labels.0, labels.1].enumerated().map { index, label in
+                RuntimeAction(
+                    type: "capture",
+                    task: label.task,
+                    raw: message,
+                    when: sharedWhen,
+                    deadline: deadline,
+                    time: recoveredTime(
+                        task: label.task,
+                        evidence: label.evidence,
+                        text: clocks[index],
+                        interpretation: value.clockInterpretation,
+                        originalMessage: message
+                    ),
+                    priority: "normal",
+                    recurrence: recurrence,
+                    confidence: 1
+                )
+            }
+            guard captures.allSatisfy({ $0.time != nil }) else {
+                throw RuntimeInterpretationError.invalidOutput
+            }
+            return captures
+        }
+        if turn.actions.count == 1,
+           let continuation = conversationalContinuationCapture(
+                message: message
+           ) {
+            return [continuation]
+        }
+        let exclusiveKinds = Set([
+            "social", "acknowledge", "query", "analysis", "undo", "replan",
+        ])
+        if turn.actions.count > 1,
+           turn.actions.contains(where: { exclusiveKinds.contains($0.kind) }) {
+            throw RuntimeInterpretationError.invalidOutput
+        }
+        var result: [RuntimeAction] = []
+        for value in turn.actions {
+            switch value.kind {
+            case "capture":
+                guard unifiedEvidenceIsGrounded(value.evidence, in: message)
+                else { throw RuntimeInterpretationError.invalidOutput }
+                let task = value.task.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !task.isEmpty, task.utf8.count <= 10_000,
+                      captureIsNew(task, evidence: value.evidence, open: open)
+                else { throw RuntimeInterpretationError.invalidOutput }
+                let duration = (5...480).contains(value.durationMinutes)
+                    && RuntimeConstraintEvidence.isSupportedDuration(
+                        value.durationEvidence, in: message
+                    ) ? value.durationMinutes : nil
+                let time = recoveredTime(
+                    task: task,
+                    evidence: value.evidence,
+                    text: value.clockText,
+                    interpretation: value.clockInterpretation,
+                    originalMessage: message
+                ) ?? deterministicSingleClock(in: message)
+                if value.clockText.lowercased() != "none" && time == nil {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
+                let recurrence = recurrenceRule(value.recurrence, message: message)
+                if value.recurrence.recurrenceFrequency != "none" && recurrence == nil {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
+                let statedDate = try unifiedDate(value.date, message: message)
+                let statedDeadline = try unifiedDate(value.deadline, message: message)
+                let fallbackDate = deterministicDateIntent(in: message)
+                let deadlineLanguage = message.range(
+                    of: #"\b(?:by|before|due)\b"#,
+                    options: [.regularExpression, .caseInsensitive]
+                ) != nil
+                result.append(RuntimeAction(
+                    type: "capture",
+                    task: task,
+                    raw: message,
+                    when: statedDate
+                        ?? (deadlineLanguage ? nil : fallbackDate)
+                        ?? recurrenceInitialDate(recurrence),
+                    deadline: statedDeadline
+                        ?? (deadlineLanguage ? fallbackDate : nil),
+                    time: time,
+                    durationMinutes: duration,
+                    priority: ["high", "normal", "low"].contains(value.priority)
+                            && unifiedEvidenceIsGrounded(
+                                value.priorityEvidence, in: message
+                            ) ? value.priority : "normal",
+                    recurrence: recurrence,
+                    confidence: 1
+                ))
+            case "complete":
+                result.append(RuntimeAction(
+                    type: "complete",
+                    target: try unifiedTarget(
+                        value.target,
+                        message: message, open: open, focused: focusedIndices
+                    )
+                ))
+            case "drop":
+                result.append(RuntimeAction(
+                    type: "drop",
+                    target: try unifiedTarget(
+                        value.target,
+                        message: message, open: open, focused: focusedIndices
+                    )
+                ))
+            case "keep":
+                result.append(RuntimeAction(
+                    type: "keep",
+                    target: try unifiedTarget(
+                        value.target,
+                        message: message, open: open, focused: focusedIndices
+                    )
+                ))
+            case "wait":
+                result.append(RuntimeAction(
+                    type: "wait",
+                    target: try unifiedTarget(
+                        value.target,
+                        message: message, open: open, focused: focusedIndices
+                    )
+                ))
+            case "resume":
+                result.append(RuntimeAction(
+                    type: "resume",
+                    target: try unifiedTarget(
+                        value.target,
+                        message: message, open: open, focused: focusedIndices
+                    )
+                ))
+            case "progress":
+                let target = try unifiedTarget(
+                    value.target,
+                    message: message, open: open, focused: focusedIndices
+                )
+                guard unifiedEvidenceIsGrounded(value.note, in: message)
+                else { throw RuntimeInterpretationError.invalidOutput }
+                result.append(RuntimeAction(type: "note", target: target, note: value.note))
+            case "move":
+                let target = try unifiedTarget(
+                    value.target,
+                    message: message, open: open, focused: focusedIndices
+                )
+                let when = try unifiedDate(value.date, message: message)
+                let time = recoveredTime(
+                    task: open[Int(target)! - 1].task,
+                    evidence: value.target.evidence,
+                    text: value.clockText,
+                    interpretation: value.clockInterpretation,
+                    originalMessage: message
+                )
+                guard when != nil || time != nil else {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
+                result.append(RuntimeAction(
+                    type: "reschedule", target: target, when: when, time: time
+                ))
+            case "revise":
+                let target = try unifiedTarget(
+                    value.target,
+                    message: message, open: open, focused: focusedIndices
+                )
+                let title = unifiedEvidenceIsGrounded(
+                    value.evidence, in: message
+                ) ? value.task.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+                let duration = (5...480).contains(value.durationMinutes)
+                    && RuntimeConstraintEvidence.isSupportedDuration(
+                        value.durationEvidence, in: message
+                    ) ? value.durationMinutes : nil
+                let priority = unifiedEvidenceIsGrounded(
+                    value.priorityEvidence, in: message
+                ) && ["high", "normal", "low"].contains(value.priority)
+                    ? value.priority : nil
+                let time = recoveredTime(
+                    task: open[Int(target)! - 1].task,
+                    evidence: value.target.evidence,
+                    text: value.clockText,
+                    interpretation: value.clockInterpretation,
+                    originalMessage: message
+                )
+                let allowedClear = Set(["date", "time", "deadline", "duration", "priority", "note"])
+                let clear = Array(Set(value.clearFields).intersection(allowedClear)).sorted()
+                let date = try unifiedDate(value.date, message: message)
+                let deadline = try unifiedDate(value.deadline, message: message)
+                guard !title.isEmpty || date != nil || deadline != nil || time != nil
+                        || duration != nil || priority != nil || !clear.isEmpty else {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
+                result.append(RuntimeAction(
+                    type: "revise",
+                    task: title.isEmpty ? nil : title,
+                    target: target,
+                    when: date,
+                    deadline: deadline,
+                    time: time,
+                    durationMinutes: duration,
+                    priority: priority,
+                    clearFields: clear.isEmpty ? nil : clear
+                ))
+            case "note":
+                let target = try unifiedTarget(
+                    value.target,
+                    message: message, open: open, focused: focusedIndices
+                )
+                guard unifiedEvidenceIsGrounded(value.note, in: message)
+                else { throw RuntimeInterpretationError.invalidOutput }
+                result.append(RuntimeAction(type: "note", target: target, note: value.note))
+            case "query":
+                guard unifiedEvidenceIsGrounded(value.evidence, in: message),
+                      ["today", "date", "all", "overdue", "week", "search", "done", "waiting"].contains(value.queryKind)
+                else { throw RuntimeInterpretationError.invalidOutput }
+                let term = value.queryTerm.trimmingCharacters(in: .whitespacesAndNewlines)
+                let date = try unifiedDate(value.date, message: message)
+                    ?? deterministicDateIntent(in: message)
+                guard value.queryKind != "date" || date != nil,
+                      value.queryKind != "search" || !term.isEmpty else {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
+                result.append(RuntimeAction(
+                    type: "query", when: date, queryKind: value.queryKind,
+                    queryTerm: term.isEmpty ? nil : term,
+                    queryPeriod: ["today", "week", "all"].contains(value.queryPeriod)
+                        ? value.queryPeriod : nil
+                ))
+            case "analysis":
+                guard unifiedEvidenceIsGrounded(value.evidence, in: message),
+                      ["capacity", "explain", "what_if"].contains(value.analysisKind),
+                      value.targetIndex == 0 || (1...open.count).contains(value.targetIndex)
+                else { throw RuntimeInterpretationError.invalidOutput }
+                if value.analysisKind == "what_if" {
+                    guard value.targetIndex > 0,
+                          (5...480).contains(value.hypotheticalDurationMinutes),
+                          RuntimeConstraintEvidence.isSupportedDuration(
+                            value.durationEvidence, in: message
+                          ) else { throw RuntimeInterpretationError.invalidOutput }
+                }
+                result.append(RuntimeAction(
+                    type: "analysis",
+                    target: value.targetIndex > 0 ? String(value.targetIndex) : nil,
+                    analysisKind: value.analysisKind,
+                    horizonDays: (1...31).contains(value.horizonDays)
+                        ? value.horizonDays : 7,
+                    budgetMinutes: (5...10_080).contains(value.budgetMinutes)
+                        ? value.budgetMinutes : nil,
+                    hypotheticalDurationMinutes: (5...480).contains(
+                        value.hypotheticalDurationMinutes
+                    ) ? value.hypotheticalDurationMinutes : nil
+                ))
+            case "bulk_complete":
+                guard unifiedEvidenceIsGrounded(value.evidence, in: message),
+                      Set(value.excludedTargets).count == value.excludedTargets.count,
+                      value.excludedTargets.allSatisfy({ (1...open.count).contains($0) })
+                else { throw RuntimeInterpretationError.invalidOutput }
+                let excluded = Set(value.excludedTargets)
+                result += open.indices.compactMap { index in
+                    excluded.contains(index + 1) ? nil
+                        : RuntimeAction(type: "complete", target: String(index + 1))
+                }
+                if result.isEmpty { result = [RuntimeAction(type: "acknowledge")] }
+            case "bulk_move":
+                guard unifiedEvidenceIsGrounded(value.evidence, in: message),
+                      !value.destinations.isEmpty else {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
+                var seen = Set<Int>()
+                for destination in value.destinations {
+                    guard (1...open.count).contains(destination.targetIndex),
+                          seen.insert(destination.targetIndex).inserted else {
+                        throw RuntimeInterpretationError.invalidOutput
+                    }
+                    result.append(try moveAction(destination, message: message))
+                }
+            case "recurrence":
+                guard unifiedEvidenceIsGrounded(value.evidence, in: message),
+                      ["skip", "stop"].contains(value.recurrenceOperation),
+                      (1...open.count).contains(value.targetIndex) else {
+                    throw RuntimeInterpretationError.invalidOutput
+                }
+                result.append(RuntimeAction(
+                    type: "recurrence", target: String(value.targetIndex),
+                    recurrenceOperation: value.recurrenceOperation
+                ))
+            case "acknowledge":
+                guard unifiedEvidenceIsGrounded(value.evidence, in: message)
+                else { throw RuntimeInterpretationError.invalidOutput }
+                if value.responseKind == "conversation" {
+                    let reply = value.reply == "none" || value.reply.isEmpty
+                        ? "Anytime." : value.reply
+                    result.append(RuntimeAction(type: "social", reply: reply))
+                } else {
+                    result.append(RuntimeAction(type: "acknowledge"))
+                }
+            case "undo":
+                guard recentChange,
+                      unifiedEvidenceIsGrounded(value.evidence, in: message)
+                else { throw RuntimeInterpretationError.invalidOutput }
+                result.append(RuntimeAction(type: "undo"))
+            case "replan":
+                guard unifiedEvidenceIsGrounded(value.evidence, in: message)
+                else { throw RuntimeInterpretationError.invalidOutput }
+                result.append(RuntimeAction(type: "replan"))
+            case "social":
+                guard unifiedEvidenceIsGrounded(value.evidence, in: message)
+                else { throw RuntimeInterpretationError.invalidOutput }
+                let reply = value.reply.split(whereSeparator: { $0.isWhitespace })
+                    .joined(separator: " ")
+                guard !reply.isEmpty else { throw RuntimeInterpretationError.invalidOutput }
+                result.append(RuntimeAction(
+                    type: "social", reply: String(reply.prefix(120))
+                ))
+            default:
+                throw RuntimeInterpretationError.invalidOutput
+            }
+        }
+        result.sort { lhs, rhs in
+            guard lhs.type == "capture", rhs.type == "capture",
+                  let left = lhs.task, let right = rhs.task else { return false }
+            return taskPosition(left, in: message) < taskPosition(right, in: message)
+        }
+        guard !result.isEmpty, result.count <= 16,
+              RuntimeGeneratedActions.areDistinct(result) else {
+            throw RuntimeInterpretationError.invalidOutput
+        }
+        return result
+    }
+
+    private static func unifiedTarget(
+        _ value: TargetArgs,
+        message: String,
+        open: [RuntimeTask],
+        focused: Set<Int>
+    ) throws -> String {
+        let grounded = TargetArgs(
+            targetIndex: value.targetIndex,
+            evidence: normalizedGeneratedEvidence(value.evidence)
+        )
+        guard let target = resolvedTarget(
+            grounded, message: message, open: open, focused: focused
+        ) else { throw RuntimeInterpretationError.invalidOutput }
+        return String(target)
+    }
+
     private static func validate(
         _ rawProposals: [Proposal],
         message: String,
@@ -1456,6 +2807,35 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         )
     }
 
+    private static func deterministicCoordinatedCaptures(
+        message: String
+    ) -> [RuntimeAction]? {
+        guard let labels = structurallySeparateCoordinatedLabels(in: message),
+              let clocks = coordinatedClockTexts(in: message) else { return nil }
+        let recurrence = holisticRecurrence(evidence: message, message: message)
+        let date = deterministicDateIntent(in: message)
+            ?? recurrenceInitialDate(recurrence)
+        let hasDeadline = message.range(
+            of: #"\b(?:by|before|due)\b"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
+        let actions = [labels.0.task, labels.1.task].enumerated().map { index, task in
+            RuntimeAction(
+                type: "capture", task: task, raw: message,
+                when: hasDeadline ? nil : date,
+                deadline: hasDeadline ? date : nil,
+                time: RuntimeGeneratedClock.normalizeEvidence(
+                    clocks[index],
+                    interpretation: explicitMeridiem(in: clocks[index])
+                        ?? inferredMeridiem(for: clocks[index]),
+                    in: message
+                ),
+                priority: "normal", recurrence: recurrence, confidence: 1
+            )
+        }
+        return actions.allSatisfy { $0.time != nil } ? actions : nil
+    }
+
     @available(iOS 26.0, macOS 26.0, *)
     private static func capture(
         _ item: CaptureDecompositionItem,
@@ -1511,6 +2891,187 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
             in: text,
             range: NSRange(location: 0, length: (text as NSString).length)
         )
+    }
+
+    private static func coordinatedClockTexts(in text: String) -> [String]? {
+        let pattern = #"\b(?:\d{1,2}:\d{2}|\d{3,4}|\d{1,2}\s*(?:a\.?m\.?|p\.?m\.?))\b"#
+        guard let regex = try? NSRegularExpression(
+            pattern: pattern, options: [.caseInsensitive]
+        ) else { return nil }
+        let source = text as NSString
+        let values = regex.matches(
+            in: text,
+            range: NSRange(location: 0, length: source.length)
+        ).map { source.substring(with: $0.range) }
+        return values.count == 2 ? values : nil
+    }
+
+    private static func conversationalContinuationCapture(
+        message: String
+    ) -> RuntimeAction? {
+        let lowered = message.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard lowered.hasPrefix("and "),
+              !words(message).contains(where: { ["it", "that", "this"].contains($0) }),
+              let clock = singleClockText(in: message)
+        else { return nil }
+        guard let clockRange = message.range(
+            of: clock, options: [.caseInsensitive, .diacriticInsensitive]
+        ) else { return nil }
+        let label = String(message[..<clockRange.lowerBound]).replacingOccurrences(
+            of: #"^\s*and\s+"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        ).replacingOccurrences(
+            of: #"\s+(?:at|around|about|by)\s*$"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty else { return nil }
+        let interpretation = explicitMeridiem(in: clock)
+            ?? inferredMeridiem(for: clock)
+        guard let time = recoveredTime(
+            task: label,
+            evidence: message,
+            text: clock,
+            interpretation: interpretation,
+            originalMessage: message
+        ) else { return nil }
+        return RuntimeAction(
+            type: "capture", task: label, raw: message,
+            time: time, priority: "normal", confidence: 1
+        )
+    }
+
+    private static func singleClockText(in text: String) -> String? {
+        let pattern = #"\b(?:\d{1,2}:\d{2}|\d{3,4}|\d{1,2}\s*(?:a\.?m\.?|p\.?m\.?))\b"#
+        guard let regex = try? NSRegularExpression(
+            pattern: pattern, options: [.caseInsensitive]
+        ) else { return nil }
+        let source = text as NSString
+        let matches = regex.matches(
+            in: text, range: NSRange(location: 0, length: source.length)
+        )
+        guard matches.count == 1, let match = matches.first else { return nil }
+        return source.substring(with: match.range)
+    }
+
+    private static func inferredMeridiem(for clock: String) -> String {
+        let digits = clock.filter(\.isNumber)
+        let hour: Int
+        if clock.contains(":"), let first = clock.split(separator: ":").first {
+            hour = Int(first) ?? 0
+        } else if digits.count >= 3 {
+            hour = Int(digits.dropLast(2)) ?? 0
+        } else {
+            hour = Int(digits) ?? 0
+        }
+        return (1...6).contains(hour) || hour == 12 ? "pm" : "am"
+    }
+
+    private static func deterministicSingleClock(in message: String) -> String? {
+        guard let clock = singleClockText(in: message) else { return nil }
+        return RuntimeGeneratedClock.normalizeEvidence(
+            clock,
+            interpretation: explicitMeridiem(in: clock)
+                ?? inferredMeridiem(for: clock),
+            in: message
+        )
+    }
+
+    private static func deterministicDateIntent(
+        in message: String
+    ) -> RuntimeDateIntent? {
+        let tokens = words(message)
+        let tokenSet = Set(tokens)
+        if tokenSet.contains("tomorrow") { return RuntimeDateIntent(kind: "tomorrow") }
+        if tokenSet.contains("today") { return RuntimeDateIntent(kind: "today") }
+
+        let weekdays: [(String, Set<String>)] = [
+            ("mon", ["mon", "monday"]), ("tue", ["tue", "tuesday"]),
+            ("wed", ["wed", "wednesday"]), ("thu", ["thu", "thursday"]),
+            ("fri", ["fri", "friday"]), ("sat", ["sat", "saturday"]),
+            ("sun", ["sun", "sunday"]),
+        ]
+        if let day = weekdays.first(where: { !$0.1.isDisjoint(with: tokenSet) })?.0 {
+            return RuntimeDateIntent(
+                kind: "weekday",
+                which: tokenSet.contains("next") ? "next" : "this",
+                day: day
+            )
+        }
+
+        let numberWords = [
+            "one": 1, "two": 2, "couple": 2, "three": 3, "four": 4,
+            "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+            "ten": 10,
+        ]
+        if let index = tokens.firstIndex(of: "in"), index + 2 < tokens.count {
+            let amount = Int(tokens[index + 1]) ?? numberWords[tokens[index + 1]]
+            let unitToken = tokens[index + 2]
+            let unit = [
+                "day": "day", "days": "day", "week": "week", "weeks": "week",
+                "month": "month", "months": "month", "year": "year", "years": "year",
+            ][unitToken]
+            if let amount, amount > 0, let unit {
+                return RuntimeDateIntent(kind: "offset", n: amount, unit: unit)
+            }
+        }
+        if tokens.count >= 2 {
+            let amount = Int(tokens[0]) ?? numberWords[tokens[0]]
+            let unit = [
+                "day": "day", "days": "day", "week": "week", "weeks": "week",
+                "month": "month", "months": "month", "year": "year", "years": "year",
+            ][tokens[1]]
+            if let amount, amount > 0, let unit {
+                return RuntimeDateIntent(kind: "offset", n: amount, unit: unit)
+            }
+        }
+        if tokenSet.contains("couple"),
+           !tokenSet.isDisjoint(with: ["day", "days"]) {
+            return RuntimeDateIntent(kind: "offset", n: 2, unit: "day")
+        }
+        return nil
+    }
+
+    private static func holisticRecurrence(
+        evidence: String,
+        message: String
+    ) -> RuntimeRecurrenceRule? {
+        let clean = normalizedGeneratedEvidence(evidence)
+        guard clean.lowercased() != "none",
+              unifiedEvidenceIsGrounded(clean, in: message),
+              RuntimeRecurrenceEvidence.isExplicit(in: clean) else { return nil }
+        let tokens = words(clean)
+        let tokenSet = Set(tokens)
+        let weekdays = groundedRecurrenceWeekdays([], evidence: clean)
+        let numberWords = [
+            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+            "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+        ]
+        var interval = 1
+        if let every = tokens.firstIndex(of: "every"), every + 1 < tokens.count {
+            interval = Int(tokens[every + 1]) ?? numberWords[tokens[every + 1]] ?? 1
+        }
+        let frequency: String
+        if !weekdays.isEmpty { frequency = "week" }
+        else if !tokenSet.isDisjoint(with: ["daily", "day", "days"]) { frequency = "day" }
+        else if !tokenSet.isDisjoint(with: ["weekly", "week", "weeks"]) { frequency = "week" }
+        else if !tokenSet.isDisjoint(with: ["monthly", "month", "months"]) { frequency = "month" }
+        else if !tokenSet.isDisjoint(with: ["yearly", "annual", "year", "years"]) { frequency = "year" }
+        else { return nil }
+        var count: Int?
+        if let after = tokens.firstIndex(of: "after"), after + 1 < tokens.count {
+            count = Int(tokens[after + 1]) ?? numberWords[tokens[after + 1]]
+        }
+        let rule = RuntimeRecurrenceRule(
+            frequency: frequency, interval: max(1, interval),
+            weekdays: weekdays,
+            anchor: tokenSet.contains("finish") || tokenSet.contains("completion")
+                ? "completion" : "fixed",
+            count: count
+        )
+        return rule.isValid ? rule : nil
     }
 
     private static func coordinatedCapturesNeedReview(
@@ -2329,6 +3890,339 @@ public struct AppleFoundationInterpreter: RuntimeMessageInterpreting {
         case bulkComplete(BulkCompleteArgs), bulkMove(BulkMoveArgs)
         case recurrence(RecurrenceArgs), analysis(AnalysisArgs)
 
+    }
+
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct CompactAction {
+        @Guide(description: "capture, complete, drop, keep, wait, resume, progress, move, revise, note, query, analysis, recurrence, acknowledge, undo, replan, or social")
+        var kind: String
+        @Guide(description: "Task label or replacement title")
+        var task: String?
+        @Guide(description: "1-based saved task number")
+        var targetIndex: Int?
+        @Guide(description: "Note, search term, or brief reply")
+        var detail: String?
+        @Guide(description: "Query, analysis, or recurrence subtype")
+        var subtype: String?
+    }
+
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct CompactTurn {
+        var actions: [CompactAction]
+    }
+
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    enum HolisticAction {
+        case capture(HolisticCapture)
+        case complete(TargetArgs)
+        case drop(TargetArgs)
+        case keep(TargetArgs)
+        case wait(TargetArgs)
+        case resume(TargetArgs)
+        case progress(HolisticNote)
+        case move(HolisticMove)
+        case revise(HolisticRevision)
+        case note(HolisticNote)
+        case query(HolisticQuery)
+        case analysis(HolisticAnalysis)
+        case bulkComplete(HolisticBulkComplete)
+        case bulkMove(HolisticBulkMove)
+        case recurrence(HolisticRecurrence)
+        case acknowledge(HolisticResponse)
+        case undo(EvidenceArgs)
+        case replan(EvidenceArgs)
+        case social(HolisticResponse)
+    }
+
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct HolisticTurn {
+        @Guide(description: "Complete ordered actions", .maximumCount(16))
+        var actions: [HolisticAction]
+    }
+
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct HolisticCapture {
+        @Guide(description: "Short task label without constraints") var task: String
+        @Guide(description: "Exact words naming this task") var evidence: String
+        @Guide(description: "Exact occurrence-date words, or none") var dateEvidence: String
+        @Guide(description: "Exact deadline words, or none") var deadlineEvidence: String
+        @Guide(description: "Exact clock words, or none") var clockText: String
+        @Guide(.anyOf(["none", "am", "pm"])) var clockInterpretation: String
+        @Guide(description: "Effort minutes, or 0") var durationMinutes: Int
+        @Guide(description: "Exact effort words, or none") var durationEvidence: String
+        @Guide(.anyOf(["none", "high", "normal", "low"])) var priority: String
+        @Guide(description: "Exact priority words, or none") var priorityEvidence: String
+        @Guide(description: "Exact repeating words, or none") var recurrenceEvidence: String
+    }
+
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct HolisticMove {
+        @Guide(description: "1-based open task number") var targetIndex: Int
+        @Guide(description: "Exact targeting words") var evidence: String
+        @Guide(description: "Exact new-date words, or none") var dateEvidence: String
+        @Guide(description: "Exact new clock words, or none") var clockText: String
+        @Guide(.anyOf(["none", "am", "pm"])) var clockInterpretation: String
+    }
+
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct HolisticRevision {
+        @Guide(description: "1-based open task number") var targetIndex: Int
+        @Guide(description: "Exact targeting words") var evidence: String
+        @Guide(description: "Replacement title, or none") var task: String
+        @Guide(description: "Exact replacement-title words, or none") var taskEvidence: String
+        @Guide(description: "Exact date words, or none") var dateEvidence: String
+        @Guide(description: "Exact deadline words, or none") var deadlineEvidence: String
+        @Guide(description: "Exact clock words, or none") var clockText: String
+        @Guide(.anyOf(["none", "am", "pm"])) var clockInterpretation: String
+        @Guide(description: "Effort minutes, or 0") var durationMinutes: Int
+        @Guide(description: "Exact effort words, or none") var durationEvidence: String
+        @Guide(.anyOf(["none", "high", "normal", "low"])) var priority: String
+        @Guide(description: "Exact priority words, or none") var priorityEvidence: String
+        @Guide(description: "Fields to clear") var clearFields: [String]
+    }
+
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct HolisticNote {
+        @Guide(description: "1-based open task number") var targetIndex: Int
+        @Guide(description: "Exact targeting words") var evidence: String
+        @Guide(description: "Exact note or progress words") var note: String
+    }
+
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct HolisticQuery {
+        @Guide(.anyOf(["today", "date", "all", "overdue", "week", "search", "done", "waiting"])) var kind: String
+        @Guide(description: "Exact question words") var evidence: String
+        @Guide(description: "Exact requested-date words, or none") var dateEvidence: String
+        @Guide(description: "Search words, or none") var term: String
+        @Guide(.anyOf(["today", "week", "all"])) var period: String
+    }
+
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct HolisticAnalysis {
+        @Guide(.anyOf(["capacity", "explain", "what_if"])) var kind: String
+        @Guide(description: "1-based task number, or 0") var targetIndex: Int
+        @Guide(description: "Exact question words") var evidence: String
+        @Guide(description: "Horizon days, normally 7") var horizonDays: Int
+        @Guide(description: "Available minutes, or 0") var budgetMinutes: Int
+        @Guide(description: "Temporary task minutes, or 0") var hypotheticalDurationMinutes: Int
+        @Guide(description: "Exact temporary-duration words, or none") var durationEvidence: String
+    }
+
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct HolisticBulkComplete {
+        @Guide(description: "Exact all/everything report") var evidence: String
+        @Guide(description: "Task numbers explicitly left unfinished") var excludedTargets: [Int]
+    }
+
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct HolisticDestination {
+        @Guide(description: "1-based open task number") var targetIndex: Int
+        @Guide(description: "Exact new-date words") var dateEvidence: String
+        @Guide(description: "Exact clock words, or none") var clockText: String
+        @Guide(.anyOf(["none", "am", "pm"])) var clockInterpretation: String
+    }
+
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct HolisticBulkMove {
+        @Guide(description: "Exact bulk-move words") var evidence: String
+        @Guide(description: "One destination per affected task") var destinations: [HolisticDestination]
+    }
+
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct HolisticRecurrence {
+        @Guide(description: "1-based recurring task number") var targetIndex: Int
+        @Guide(description: "Exact targeting words") var evidence: String
+        @Guide(.anyOf(["skip", "stop"])) var operation: String
+    }
+
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct HolisticResponse {
+        @Guide(description: "Exact user words") var evidence: String
+        @Guide(description: "Brief natural reply") var reply: String
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func compactAsHolistic(
+        _ turn: CompactTurn,
+        message: String
+    ) -> HolisticTurn {
+        HolisticTurn(actions: turn.actions.compactMap { value in
+            if [
+                "complete", "drop", "keep", "wait", "resume", "progress",
+                "move", "revise", "note", "recurrence",
+            ].contains(value.kind),
+               (value.targetIndex ?? 0) == 0,
+               !completionEvidenceIsSupported(message),
+               let task = value.task, !task.isEmpty,
+               task.lowercased() != "social" {
+                let clock = singleClockText(in: message)
+                return .capture(HolisticCapture(
+                    task: task, evidence: message,
+                    dateEvidence: message,
+                    deadlineEvidence: message,
+                    clockText: clock ?? "none",
+                    clockInterpretation: clock.map { inferredMeridiem(for: $0) } ?? "none",
+                    durationMinutes: 0, durationEvidence: "none",
+                    priority: "none", priorityEvidence: "none",
+                    recurrenceEvidence: message
+                ))
+            }
+            if (value.targetIndex ?? 0) == 0,
+               value.task == nil,
+               ["complete", "drop", "keep", "wait", "resume", "progress", "move", "revise", "note"].contains(value.kind),
+               let reply = value.detail, !reply.isEmpty {
+                return .social(HolisticResponse(
+                    evidence: message, reply: reply
+                ))
+            }
+            let target = TargetArgs(
+                targetIndex: value.targetIndex ?? 0, evidence: message
+            )
+            switch value.kind {
+            case "capture":
+                let clock = singleClockText(in: message)
+                let duration = deterministicDurationMinutes(in: message) ?? 0
+                let priority = deterministicPriority(in: message) ?? "none"
+                return .capture(HolisticCapture(
+                    task: value.task ?? "", evidence: message,
+                    dateEvidence: message, deadlineEvidence: message,
+                    clockText: clock ?? "none",
+                    clockInterpretation: clock.map { inferredMeridiem(for: $0) } ?? "none",
+                    durationMinutes: duration,
+                    durationEvidence: duration > 0 ? message : "none",
+                    priority: priority,
+                    priorityEvidence: priority == "none" ? "none" : message,
+                    recurrenceEvidence: message
+                ))
+            case "complete": return .complete(target)
+            case "drop": return .drop(target)
+            case "keep": return .keep(target)
+            case "wait": return .wait(target)
+            case "resume": return .resume(target)
+            case "progress", "note":
+                if (value.targetIndex ?? 0) == 0,
+                   value.task?.lowercased() == "social" {
+                    return .social(HolisticResponse(
+                        evidence: message,
+                        reply: value.detail ?? "Anytime."
+                    ))
+                }
+                let note = HolisticNote(
+                    targetIndex: value.targetIndex ?? 0,
+                    evidence: message, note: value.detail ?? ""
+                )
+                return value.kind == "progress" ? .progress(note) : .note(note)
+            case "move":
+                return .move(HolisticMove(
+                    targetIndex: value.targetIndex ?? 0,
+                    evidence: message,
+                    dateEvidence: message,
+                    clockText: singleClockText(in: message) ?? "none",
+                    clockInterpretation: singleClockText(in: message).map {
+                        inferredMeridiem(for: $0)
+                    } ?? "none"
+                ))
+            case "revise":
+                let duration = deterministicDurationMinutes(in: message) ?? 0
+                let priority = deterministicPriority(in: message) ?? "none"
+                return .revise(HolisticRevision(
+                    targetIndex: value.targetIndex ?? 0,
+                    evidence: message, task: value.task ?? "none",
+                    taskEvidence: value.task == nil ? "none" : message,
+                    dateEvidence: message, deadlineEvidence: message,
+                    clockText: singleClockText(in: message) ?? "none",
+                    clockInterpretation: singleClockText(in: message).map {
+                        inferredMeridiem(for: $0)
+                    } ?? "none",
+                    durationMinutes: duration,
+                    durationEvidence: duration > 0 ? message : "none",
+                    priority: priority,
+                    priorityEvidence: priority == "none" ? "none" : message,
+                    clearFields: deterministicClearFields(in: message)
+                ))
+            case "query":
+                return .query(HolisticQuery(
+                    kind: value.subtype ?? "all", evidence: message,
+                    dateEvidence: message,
+                    term: value.detail ?? "none",
+                    period: value.subtype == "week" ? "week" : "all"
+                ))
+            case "analysis":
+                let duration = deterministicDurationMinutes(in: message) ?? 0
+                return .analysis(HolisticAnalysis(
+                    kind: value.subtype ?? "capacity",
+                    targetIndex: value.targetIndex ?? 0,
+                    evidence: message, horizonDays: 7, budgetMinutes: 0,
+                    hypotheticalDurationMinutes: duration,
+                    durationEvidence: duration > 0 ? message : "none"
+                ))
+            case "recurrence":
+                return .recurrence(HolisticRecurrence(
+                    targetIndex: value.targetIndex ?? 0,
+                    evidence: message,
+                    operation: value.subtype ?? "stop"
+                ))
+            case "acknowledge":
+                return .acknowledge(HolisticResponse(
+                    evidence: message, reply: value.detail ?? "Okay."
+                ))
+            case "undo": return .undo(EvidenceArgs(evidence: message))
+            case "replan": return .replan(EvidenceArgs(evidence: message))
+            case "social":
+                return .social(HolisticResponse(
+                    evidence: message, reply: value.detail ?? "Anytime."
+                ))
+            default: return nil
+            }
+        })
+    }
+
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct UnifiedAction {
+        @Guide(.anyOf([
+            "capture", "complete", "drop", "keep", "wait", "resume",
+            "progress", "move", "revise", "note", "query", "analysis",
+            "bulk_complete", "bulk_move", "recurrence", "acknowledge",
+            "undo", "replan", "social",
+        ])) var kind: String
+        @Guide(description: "Exact user words supporting the whole action") var evidence: String
+        @Guide(description: "New or replacement task label, or none") var task: String
+        @Guide(description: "1-based affected open task number, or 0") var targetIndex: Int
+        var date: DateConstraintArgs
+        var deadline: DateConstraintArgs
+        @Guide(description: "Exact clock text, or none") var clockText: String
+        @Guide(.anyOf(["none", "am", "pm"])) var clockInterpretation: String
+        @Guide(description: "Estimated minutes, or 0") var durationMinutes: Int
+        @Guide(description: "Exact effort words, or none") var durationEvidence: String
+        @Guide(.anyOf(["none", "high", "normal", "low"])) var priority: String
+        @Guide(description: "Exact priority words, or none") var priorityEvidence: String
+        var recurrence: RecurrenceConstraintArgs
+        @Guide(description: "Note or progress detail copied from the user, or none") var note: String
+        @Guide(description: "Removed fields: date, time, deadline, duration, priority, or note") var clearFields: [String]
+        @Guide(.anyOf(["none", "today", "date", "all", "overdue", "week", "search", "done", "waiting"])) var queryKind: String
+        @Guide(description: "Task search words, or none") var queryTerm: String
+        @Guide(.anyOf(["today", "week", "all"])) var queryPeriod: String
+        @Guide(.anyOf(["none", "capacity", "explain", "what_if"])) var analysisKind: String
+        @Guide(description: "Planning horizon days, normally 7") var horizonDays: Int
+        @Guide(description: "Available minutes, or 0") var budgetMinutes: Int
+        @Guide(description: "Temporary task minutes, or 0") var hypotheticalDurationMinutes: Int
+        @Guide(description: "Task numbers excluded from a bulk completion") var excludedTargets: [Int]
+        @Guide(description: "One dated destination per task in a bulk move") var destinations: [MoveDestination]
+        @Guide(.anyOf(["none", "skip", "stop"])) var recurrenceOperation: String
+        @Guide(.anyOf(["none", "zero_report", "conversation"])) var responseKind: String
+        @Guide(description: "Brief social reply, or none") var reply: String
+
+        var target: TargetArgs {
+            TargetArgs(targetIndex: targetIndex, evidence: evidence)
+        }
+    }
+
+    @available(iOS 26.0, macOS 26.0, *) @Generable
+    struct UnifiedTurn {
+        @Guide(
+            description: "The complete ordered action list for this message",
+            .maximumCount(16)
+        ) var actions: [UnifiedAction]
     }
 
     @available(iOS 26.0, macOS 26.0, *) @Generable

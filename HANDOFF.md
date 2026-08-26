@@ -12,11 +12,11 @@ Nothing has been uploaded to TestFlight or either App Store.
 ## Exact state
 
 - Branch: `main`
-- Current increment base commit: `68f22cb`
+- Current increment base commit: `4dd5b6e`
 - Native app version: `0.1` build `1`
 - Latest public tag: `v0.9.13`, for the legacy Open Local edition
-- Tests: 484 Python and 93 native
-- CI: recheck after this increment
+- Tests: 484 Python, 94 native deterministic, and 10 live model checks
+- CI: local equivalent green; hosted run pending push
 - iPhone: signed current calendar build installed; relaunch was blocked by the lock screen
 - Mac: signed current calendar build installed at `/Applications/Hob.app`
 - Legacy `com.local.hob` and `com.local.hob.menu` login agents: disabled and retired
@@ -64,6 +64,10 @@ Retired launch-agent files are under
 - Added stale-task decisions after seven days on deck.
 - Made repeated reminder snoozes grow through four intervals and then become
   indefinite.
+- Replaced the intent cascade with one compact whole-message Foundation Models
+  response, grounded validation, and one repair pass.
+- Added a doubled live regression corpus from production failures, retired
+  Ollama evals, TOPv2, and SMCalFlow-shaped reminder language.
 
 ## Next verification
 

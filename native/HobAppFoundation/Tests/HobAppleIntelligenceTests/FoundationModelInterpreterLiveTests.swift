@@ -272,4 +272,123 @@ func modelUnderstandsRecoveredParityFeatures() async throws {
     #expect(followUp.first?.time == "16:00")
 }
 
+@Test
+func reminderRegressionCorpusIsStableAcrossTwoRuns() async throws {
+    let interpreter = AppleFoundationInterpreter()
+    guard interpreter.isAvailable else { return }
+    let now = "2026-08-25T08:00:00-04:00"
+    let zone = "America/New_York"
+    let insurance = RuntimeTask(
+        id: "a1", rawText: "home insurance", task: "home insurance",
+        dueDate: nil, dueTime: nil, status: "open",
+        createdAt: now, updatedAt: now
+    )
+    let gym = RuntimeTask(
+        id: "a2", rawText: "hit the grift", task: "hit the grift",
+        dueDate: nil, dueTime: nil, status: "open",
+        createdAt: now, updatedAt: now
+    )
+    let haircut = RuntimeTask(
+        id: "a3", rawText: "do haircut for Willow", task: "do haircut for Willow",
+        dueDate: nil, dueTime: nil, status: "open",
+        createdAt: now, updatedAt: now
+    )
+    let report = RuntimeTask(
+        id: "a4", rawText: "finish report", task: "finish report",
+        dueDate: nil, dueTime: nil, durationMinutes: 30,
+        priority: "normal", status: "open",
+        createdAt: now, updatedAt: now
+    )
+
+    // Sources: production failures from Hob's Telegram/Ollama history, the old
+    // interpreter evals, and reminder/calendar utterances shaped like TOPv2 and
+    // SMCalFlow examples. Every case is repeated to expose model variance.
+    for _ in 0..<2 {
+        let cake = try await interpreter.interpret(
+            message: "I gotta eat that cake before it goes bad tomorrow",
+            now: now, timezone: zone, tasks: []
+        )
+        #expect(cake.count == 1)
+        #expect(cake.first?.type == "capture")
+        #expect(cake.first?.deadline == RuntimeDateIntent(kind: "tomorrow"))
+        #expect(cake.first?.recurrence == nil)
+
+        let grift = try await interpreter.interpret(
+            message: "Tomorrow I got to hit the grift",
+            now: now, timezone: zone, tasks: []
+        )
+        #expect(grift.first?.type == "capture")
+        #expect(grift.first?.when == RuntimeDateIntent(kind: "tomorrow"))
+
+        let reminder = try await interpreter.interpret(
+            message: "Set a reminder to call Mom tomorrow at 4pm",
+            now: now, timezone: zone, tasks: []
+        )
+        #expect(reminder.first?.type == "capture")
+        #expect(reminder.first?.when == RuntimeDateIntent(kind: "tomorrow"))
+        #expect(reminder.first?.time == "16:00")
+
+        let recurring = try await interpreter.interpret(
+            message: "Take out the trash every Monday",
+            now: now, timezone: zone, tasks: []
+        )
+        #expect(recurring.first?.type == "capture")
+        #expect(recurring.first?.recurrence?.frequency == "week")
+        #expect(recurring.first?.recurrence?.weekdays == ["mon"])
+
+        let query = try await interpreter.interpret(
+            message: "What's my schedule tomorrow?",
+            now: now, timezone: zone, tasks: []
+        )
+        #expect(query.first?.type == "query")
+        #expect(query.first?.queryKind == "date")
+
+        for zero in ["nada", "Bro jack shit got done today"] {
+            let actions = try await interpreter.interpret(
+                message: zero, now: now, timezone: zone,
+                tasks: [insurance, gym]
+            )
+            #expect(actions == [RuntimeAction(type: "acknowledge")])
+        }
+
+        let zeroSugar = try await interpreter.interpret(
+            message: "Buy zero sugar soda", now: now, timezone: zone, tasks: []
+        )
+        #expect(zeroSugar.first?.type == "capture")
+
+        let completed = try await interpreter.interpret(
+            message: "I did home insurance and hit the grift",
+            now: now, timezone: zone, tasks: [insurance, gym]
+        )
+        #expect(completed.count == 2)
+        #expect(Set(completed.map(\.type)) == Set(["complete"]))
+        #expect(Set(completed.compactMap(\.target)) == Set(["1", "2"]))
+
+        let kept = try await interpreter.interpret(
+            message: "It needs to stay on", now: now, timezone: zone,
+            tasks: [report],
+            context: RuntimeConversationContext(focusedTaskIDs: [report.id])
+        )
+        #expect(kept == [RuntimeAction(type: "keep", target: "1")])
+
+        let moved = try await interpreter.interpret(
+            message: "Haircut got scheduled for next Friday",
+            now: now, timezone: zone, tasks: [haircut]
+        )
+        #expect(moved.first?.type == "reschedule")
+        #expect(moved.first?.when == RuntimeDateIntent(
+            kind: "weekday", which: "next", day: "fri"
+        ))
+
+        let revised = try await interpreter.interpret(
+            message: "Make the report high priority and 90 minutes",
+            now: now, timezone: zone, tasks: [report]
+        )
+        #expect(revised == [RuntimeAction(
+            type: "revise", target: "1", durationMinutes: 90,
+            priority: "high"
+        )])
+    }
+}
+
 }
