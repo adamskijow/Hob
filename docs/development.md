@@ -1,16 +1,19 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Development
 
-The host currently selects Command Line Tools. Prefix native commands with the
-full Xcode developer directory.
+Use Xcode's developer directory for native commands.
 
 ```sh
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --package-path native/HobAppFoundation
-uv sync --locked
-uv run pytest
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --package-path native/HobAppFoundation --skip FoundationModelInterpreterLiveTests
 ```
 
-Build iPhone:
+Run live Foundation Models regressions on a supported Mac:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --package-path native/HobAppFoundation --filter FoundationModelInterpreterLiveTests
+```
+
+Build the iPhone app for Simulator:
 
 ```sh
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
@@ -20,7 +23,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
   CODE_SIGNING_ALLOWED=NO build
 ```
 
-Build Mac:
+Build the Mac app:
 
 ```sh
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
@@ -28,13 +31,9 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
   -scheme Hob CODE_SIGNING_ALLOWED=NO build
 ```
 
-For a language bug, reproduce it against Foundation Models, inspect typed
-output, trace it through storage and scheduling, then add an end-to-end
-regression. Never repair free text with a phrase list.
+CI also runs the retained Open Local regression suite. For those tests, run
+`uv sync --locked` followed by `uv run pytest`.
 
-Signed installs use local development identities and profiles. Do not commit
-profile names, UUIDs, device identifiers, or signing material. Do not upload a
-build without explicit approval.
-
-CI builds the shared package, both Apple shells, EventKit bridge, retired menu
-bar package, and Python suite on macOS and Ubuntu.
+Signed device builds use local profiles. Do not commit credentials, device
+identifiers, profile names, or signing material. Do not upload a build without
+explicit approval.
