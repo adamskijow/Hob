@@ -64,12 +64,12 @@ let package = Package(
         ),
         .testTarget(
             name: "HobAppCoreTests",
-            dependencies: ["HobAppCore", "HobAppStorage", "HobCloudSync"]
+            dependencies: ["HobAppCore", "HobAppStorage", "HobCloudSync", "HobNotifications"]
         ),
         .testTarget(
             name: "HobAppExperienceTests",
             dependencies: [
-                "HobAppCore", "HobAppStorage", "HobAppExperience",
+                "HobAppCore", "HobAppStorage", "HobAppExperience", "HobAppleIntelligence",
             ]
         ),
         .testTarget(

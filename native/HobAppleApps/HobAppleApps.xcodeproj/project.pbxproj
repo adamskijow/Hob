@@ -7,16 +7,60 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		2F6270C1B0335619AFDC6127 /* AuditLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 810208C681D4ABEDE023BFE0 /* AuditLifecycleTests.swift */; };
+		414A1E38035B992AB8D0FD5E /* HobAppExperience in Frameworks */ = {isa = PBXBuildFile; productRef = 23AA57F1605B8C7249DD864A /* HobAppExperience */; };
+		52F9071710DF1D749EB9B788 /* InteractionUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6AE4B5D99B0B5D2DC6B2C62 /* InteractionUITests.swift */; };
+		6427026185EA6CF9715F3E4B /* HobUITestWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79044C165790EC31CEAE3E9D /* HobUITestWorkspace.swift */; };
+		6B30279880638915DC51BCAF /* InteractionInventoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE08DE4A0A1983D870221EBE /* InteractionInventoryTests.swift */; };
+		702206B8EB11ADB5140FA735 /* InteractionChallengeCases.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D3631A6719E8063D6932355 /* InteractionChallengeCases.swift */; };
+		7222EC020631B33CC17B94E8 /* HobWorkspaceControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9103D1AE4F9D20076AC80F4B /* HobWorkspaceControllerTests.swift */; };
+		7285C0BA8FB3C9E0C34B413A /* InteractionMatrixCases.swift in Sources */ = {isa = PBXBuildFile; fileRef = 185CE3488D6C882695141B8D /* InteractionMatrixCases.swift */; };
+		7B6DA3309CCDF3A049C59E97 /* MessageBenchmarkCases.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71C2B002036626204B3458F5 /* MessageBenchmarkCases.swift */; };
 		7F01CD42625895582606AF8E /* HobAppExperience in Frameworks */ = {isa = PBXBuildFile; productRef = 29DC69B634BCFC2FEC558464 /* HobAppExperience */; };
+		95341D1218EBB733B97F27C4 /* ReminderListTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88AF603E17CB90E8A60746CF /* ReminderListTests.swift */; };
+		9C3E2750DF7E0F1E3A683979 /* InteractionJourneyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77D01D18B03D3CB2096FD172 /* InteractionJourneyTests.swift */; };
+		C6E9109077250B14DB78BCE4 /* InteractionFaultTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A555A924D24EA4CCA799468 /* InteractionFaultTests.swift */; };
 		CA14298821862DF50ECE4A11 /* HobPhoneApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A4677A7ED8BB0BD0F0D5EAB /* HobPhoneApp.swift */; };
+		E7E63118B284B9A7D60B7C81 /* MessageBenchmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C61A3E09901E6D26C0A70839 /* MessageBenchmarkTests.swift */; };
 		ECFA9970838099CE66A0605F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 19FB1E383205C6351F0E7A3A /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		7551DA5055518699A9F0EBD8 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 30F38D583F1A317EF3B53EF5 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = ED7859FEE268C9BC46A3CA9D;
+			remoteInfo = HobiOS;
+		};
+		EBAE5CA41B8D460B7F0885BD /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 30F38D583F1A317EF3B53EF5 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = ED7859FEE268C9BC46A3CA9D;
+			remoteInfo = HobiOS;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		0A4677A7ED8BB0BD0F0D5EAB /* HobPhoneApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HobPhoneApp.swift; sourceTree = "<group>"; };
+		0A555A924D24EA4CCA799468 /* InteractionFaultTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractionFaultTests.swift; sourceTree = "<group>"; };
+		185CE3488D6C882695141B8D /* InteractionMatrixCases.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractionMatrixCases.swift; sourceTree = "<group>"; };
 		19FB1E383205C6351F0E7A3A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		6D3631A6719E8063D6932355 /* InteractionChallengeCases.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractionChallengeCases.swift; sourceTree = "<group>"; };
+		71C2B002036626204B3458F5 /* MessageBenchmarkCases.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBenchmarkCases.swift; sourceTree = "<group>"; };
+		77D01D18B03D3CB2096FD172 /* InteractionJourneyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractionJourneyTests.swift; sourceTree = "<group>"; };
+		79044C165790EC31CEAE3E9D /* HobUITestWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HobUITestWorkspace.swift; sourceTree = "<group>"; };
+		7D792665846F998566D65A8D /* HobiOSUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = HobiOSUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		810208C681D4ABEDE023BFE0 /* AuditLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuditLifecycleTests.swift; sourceTree = "<group>"; };
+		88AF603E17CB90E8A60746CF /* ReminderListTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReminderListTests.swift; sourceTree = "<group>"; };
 		8E4842C9A62E41146D06AA2B /* HobAppFoundation */ = {isa = PBXFileReference; lastKnownFileType = folder; name = HobAppFoundation; path = ../HobAppFoundation; sourceTree = SOURCE_ROOT; };
+		9103D1AE4F9D20076AC80F4B /* HobWorkspaceControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HobWorkspaceControllerTests.swift; sourceTree = "<group>"; };
+		9368DBE8616A79CF8736BBF6 /* HobiOSMessageTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = HobiOSMessageTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BA4B211894558044AD8412A4 /* HobiOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = HobiOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C61A3E09901E6D26C0A70839 /* MessageBenchmarkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBenchmarkTests.swift; sourceTree = "<group>"; };
+		E6AE4B5D99B0B5D2DC6B2C62 /* InteractionUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractionUITests.swift; sourceTree = "<group>"; };
+		FE08DE4A0A1983D870221EBE /* InteractionInventoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractionInventoryTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -28,6 +72,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E216AC34206605F92DBEBFAF /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				414A1E38035B992AB8D0FD5E /* HobAppExperience in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -35,16 +87,28 @@
 			isa = PBXGroup;
 			children = (
 				BA4B211894558044AD8412A4 /* HobiOS.app */,
+				9368DBE8616A79CF8736BBF6 /* HobiOSMessageTests.xctest */,
+				7D792665846F998566D65A8D /* HobiOSUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		46807B28D64CD789E2258236 /* UITests */ = {
+			isa = PBXGroup;
+			children = (
+				E6AE4B5D99B0B5D2DC6B2C62 /* InteractionUITests.swift */,
+			);
+			path = UITests;
 			sourceTree = "<group>";
 		};
 		46B0F4C04C5220177165A747 = {
 			isa = PBXGroup;
 			children = (
 				19FB1E383205C6351F0E7A3A /* Assets.xcassets */,
+				EFBEF6ACBEAA89B11E8C800B /* HobAppExperienceTests */,
 				C273059233B236B5C83930A2 /* Packages */,
 				93D9A24205CA19E7758A0779 /* Sources */,
+				46807B28D64CD789E2258236 /* UITests */,
 				410AC54DE84E581C2F6E8BA1 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -53,6 +117,7 @@
 			isa = PBXGroup;
 			children = (
 				0A4677A7ED8BB0BD0F0D5EAB /* HobPhoneApp.swift */,
+				79044C165790EC31CEAE3E9D /* HobUITestWorkspace.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -65,9 +130,65 @@
 			name = Packages;
 			sourceTree = "<group>";
 		};
+		EFBEF6ACBEAA89B11E8C800B /* HobAppExperienceTests */ = {
+			isa = PBXGroup;
+			children = (
+				810208C681D4ABEDE023BFE0 /* AuditLifecycleTests.swift */,
+				9103D1AE4F9D20076AC80F4B /* HobWorkspaceControllerTests.swift */,
+				6D3631A6719E8063D6932355 /* InteractionChallengeCases.swift */,
+				0A555A924D24EA4CCA799468 /* InteractionFaultTests.swift */,
+				FE08DE4A0A1983D870221EBE /* InteractionInventoryTests.swift */,
+				77D01D18B03D3CB2096FD172 /* InteractionJourneyTests.swift */,
+				185CE3488D6C882695141B8D /* InteractionMatrixCases.swift */,
+				71C2B002036626204B3458F5 /* MessageBenchmarkCases.swift */,
+				C61A3E09901E6D26C0A70839 /* MessageBenchmarkTests.swift */,
+				88AF603E17CB90E8A60746CF /* ReminderListTests.swift */,
+			);
+			name = HobAppExperienceTests;
+			path = ../HobAppFoundation/Tests/HobAppExperienceTests;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		2F203C8386F8B553F2A59D85 /* HobiOSUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6D9D6F813CA8A86E2F4CC7E0 /* Build configuration list for PBXNativeTarget "HobiOSUITests" */;
+			buildPhases = (
+				1C78088681F94DAF0394B0C9 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				73C8AC338D4FDE35F6287C01 /* PBXTargetDependency */,
+			);
+			name = HobiOSUITests;
+			packageProductDependencies = (
+			);
+			productName = HobiOSUITests;
+			productReference = 7D792665846F998566D65A8D /* HobiOSUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		909530DACF81BFE64D9F83EC /* HobiOSMessageTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1371BBF366125F4D0B721040 /* Build configuration list for PBXNativeTarget "HobiOSMessageTests" */;
+			buildPhases = (
+				6C3C05137D976FBC8A472FA6 /* Sources */,
+				E216AC34206605F92DBEBFAF /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				73991734D4B74848C917C3F6 /* PBXTargetDependency */,
+			);
+			name = HobiOSMessageTests;
+			packageProductDependencies = (
+				23AA57F1605B8C7249DD864A /* HobAppExperience */,
+			);
+			productName = HobiOSMessageTests;
+			productReference = 9368DBE8616A79CF8736BBF6 /* HobiOSMessageTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		ED7859FEE268C9BC46A3CA9D /* HobiOS */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 18E4241A18C440CD2AB924CD /* Build configuration list for PBXNativeTarget "HobiOS" */;
@@ -97,6 +218,9 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					2F203C8386F8B553F2A59D85 = {
+						TestTargetID = ED7859FEE268C9BC46A3CA9D;
+					};
 					ED7859FEE268C9BC46A3CA9D = {
 						DevelopmentTeam = JSW8SD9LSC;
 					};
@@ -120,6 +244,8 @@
 			projectRoot = "";
 			targets = (
 				ED7859FEE268C9BC46A3CA9D /* HobiOS */,
+				909530DACF81BFE64D9F83EC /* HobiOSMessageTests */,
+				2F203C8386F8B553F2A59D85 /* HobiOSUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -136,17 +262,74 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		1C78088681F94DAF0394B0C9 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				52F9071710DF1D749EB9B788 /* InteractionUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6C3C05137D976FBC8A472FA6 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2F6270C1B0335619AFDC6127 /* AuditLifecycleTests.swift in Sources */,
+				7222EC020631B33CC17B94E8 /* HobWorkspaceControllerTests.swift in Sources */,
+				702206B8EB11ADB5140FA735 /* InteractionChallengeCases.swift in Sources */,
+				C6E9109077250B14DB78BCE4 /* InteractionFaultTests.swift in Sources */,
+				6B30279880638915DC51BCAF /* InteractionInventoryTests.swift in Sources */,
+				9C3E2750DF7E0F1E3A683979 /* InteractionJourneyTests.swift in Sources */,
+				7285C0BA8FB3C9E0C34B413A /* InteractionMatrixCases.swift in Sources */,
+				7B6DA3309CCDF3A049C59E97 /* MessageBenchmarkCases.swift in Sources */,
+				E7E63118B284B9A7D60B7C81 /* MessageBenchmarkTests.swift in Sources */,
+				95341D1218EBB733B97F27C4 /* ReminderListTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		96F943BC6F6EAFDDB1C9A42D /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				CA14298821862DF50ECE4A11 /* HobPhoneApp.swift in Sources */,
+				6427026185EA6CF9715F3E4B /* HobUITestWorkspace.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		73991734D4B74848C917C3F6 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = ED7859FEE268C9BC46A3CA9D /* HobiOS */;
+			targetProxy = 7551DA5055518699A9F0EBD8 /* PBXContainerItemProxy */;
+		};
+		73C8AC338D4FDE35F6287C01 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = ED7859FEE268C9BC46A3CA9D /* HobiOS */;
+			targetProxy = EBAE5CA41B8D460B7F0885BD /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		03CB39F7A242178087CA8CCD /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.josephadamski.hob.message-tests";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Hob.app/Hob";
+			};
+			name = Release;
+		};
 		120BB048BDC10411AE803628 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -209,7 +392,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Hob.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = JSW8SD9LSC;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
@@ -217,9 +400,10 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1;
+				MARKETING_VERSION = 0.10.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.josephadamski.hob;
 				PRODUCT_NAME = Hob;
+				PROVISIONING_PROFILE_SPECIFIER = "$(HOB_APP_PROFILE)";
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 1;
@@ -289,13 +473,49 @@
 			};
 			name = Debug;
 		};
+		A4A43D43D9410D7F083827DB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.josephadamski.HobiOSUITests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = HobiOS;
+			};
+			name = Release;
+		};
+		B0E221C3B6E6EC422516BE3E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.josephadamski.hob.message-tests";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Hob.app/Hob";
+			};
+			name = Debug;
+		};
 		C4331B106D9CB2E9C196A6B3 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Hob.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = JSW8SD9LSC;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
@@ -303,23 +523,60 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1;
+				MARKETING_VERSION = 0.10.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.josephadamski.hob;
 				PRODUCT_NAME = Hob;
+				PROVISIONING_PROFILE_SPECIFIER = "$(HOB_APP_PROFILE)";
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
+		CAAA579EC579A30D044BF12E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.josephadamski.HobiOSUITests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = HobiOS;
+			};
+			name = Debug;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		1371BBF366125F4D0B721040 /* Build configuration list for PBXNativeTarget "HobiOSMessageTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B0E221C3B6E6EC422516BE3E /* Debug */,
+				03CB39F7A242178087CA8CCD /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		18E4241A18C440CD2AB924CD /* Build configuration list for PBXNativeTarget "HobiOS" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				C4331B106D9CB2E9C196A6B3 /* Debug */,
 				1A45C826EDC9A195A54EEC4F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		6D9D6F813CA8A86E2F4CC7E0 /* Build configuration list for PBXNativeTarget "HobiOSUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CAAA579EC579A30D044BF12E /* Debug */,
+				A4A43D43D9410D7F083827DB /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
@@ -343,6 +600,10 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		23AA57F1605B8C7249DD864A /* HobAppExperience */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = HobAppExperience;
+		};
 		29DC69B634BCFC2FEC558464 /* HobAppExperience */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = HobAppExperience;

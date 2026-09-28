@@ -39,9 +39,13 @@ jobs:
         if: runner.os == 'macOS'
         run: scripts/build_calendar_bridge.sh
 
-      - name: Build and test App Store foundation
+      - name: Test native state and message boundaries (no live model)
         if: runner.os == 'macOS'
-        run: swift test --package-path native/HobAppFoundation
+        run: swift test --package-path native/HobAppFoundation --skip 'FoundationModelInterpreterLiveTests|MessageBenchmarkTests'
+
+      - name: Check native Swift formatting
+        if: runner.os == 'macOS'
+        run: xcrun swift-format lint --strict --recursive native/HobAppFoundation/Sources
 
       - name: Build and test Open Local menu bar
         if: runner.os == 'macOS'

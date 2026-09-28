@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 import Foundation
-import Testing
 import HobAppCore
 import HobAppStorage
+import Testing
+
 @testable import HobAppExperience
 
 private struct StubInterpreter: RuntimeMessageInterpreting {
@@ -28,8 +29,36 @@ private struct StubInterpreter: RuntimeMessageInterpreting {
     }
 }
 
+private struct StaleReplyInterpreter: RuntimeMessageInterpreting {
+    let expectedTaskID: String
+
+    func interpret(
+        message: String,
+        now: String,
+        timezone: String,
+        tasks: [RuntimeTask]
+    ) async throws -> [RuntimeAction] {
+        [RuntimeAction(type: "capture", task: message, raw: message)]
+    }
+
+    func interpret(
+        message: String,
+        now: String,
+        timezone: String,
+        tasks: [RuntimeTask],
+        context: RuntimeConversationContext
+    ) async throws -> [RuntimeAction] {
+        guard context.focusedTaskIDs == [expectedTaskID],
+            let target = tasks.firstIndex(where: { $0.id == expectedTaskID })
+        else {
+            return [RuntimeAction(type: "capture", task: message, raw: message)]
+        }
+        return [RuntimeAction(type: "keep", target: String(target + 1))]
+    }
+}
+
 @MainActor
-private final class StubCalendar: RuntimeCalendarScheduling {
+final class StubCalendar: RuntimeCalendarScheduling {
     var authorization: RuntimeCalendarAuthorization = .fullAccess
     var removedEventIDs: [String] = []
     var busyRequestCount = 0
@@ -73,10 +102,12 @@ private final class StubCalendar: RuntimeCalendarScheduling {
         requestedCalendarIDs = calendarIDs
         requestedBlockAllDayEvents = blockAllDayEvents
         self.excludedProposalID = excludingProposalID
-        return [RuntimeBusyInterval(
-            startAt: "2026-06-29T09:00:00-04:00",
-            endAt: "2026-06-29T10:00:00-04:00"
-        )]
+        return [
+            RuntimeBusyInterval(
+                startAt: "2026-06-29T09:00:00-04:00",
+                endAt: "2026-06-29T10:00:00-04:00"
+            )
+        ]
     }
 
     func remove(eventIDs: [String]) throws {
@@ -85,20 +116,28 @@ private final class StubCalendar: RuntimeCalendarScheduling {
 }
 
 @MainActor
-private final class StubNotifications: RuntimeNotificationScheduling {
+final class StubNotifications: RuntimeNotificationScheduling {
+    var taskReminders: [RuntimeTaskReminder] = []
+    func replaceTaskReminders(_ reminders: [RuntimeTaskReminder], now: Date) async throws {
+        taskReminders = reminders
+    }
     var authorization: RuntimeNotificationAuthorization = .authorized
     var scheduledIDs: [String] = []
     var cancelledIDs: [String] = []
     var snoozed: [(RuntimeNotificationResponse, Int)] = []
+    var snoozeError: RuntimeNotificationError?
     var morningDigests: [RuntimeMorningDigest] = []
     var morningTime: String?
     var morningCancellations = 0
     var eveningRecaps: [RuntimeMorningDigest] = []
     var eveningTime: String?
     var eveningCancellations = 0
-    private var handler: (@MainActor @Sendable (
-        RuntimeNotificationResponse
-    ) async -> Void)?
+    private var handler:
+        (
+            @MainActor @Sendable (
+                RuntimeNotificationResponse
+            ) async -> Void
+        )?
 
     func refreshAuthorization() async -> RuntimeNotificationAuthorization {
         authorization
@@ -121,6 +160,7 @@ private final class StubNotifications: RuntimeNotificationScheduling {
         minutes: Int
     ) async throws {
         snoozed.append((response, minutes))
+        if let snoozeError { throw snoozeError }
     }
 
     func replaceMorningDigests(
@@ -156,9 +196,10 @@ private final class StubNotifications: RuntimeNotificationScheduling {
     }
 
     func setActionHandler(
-        _ handler: @escaping @MainActor @Sendable (
-            RuntimeNotificationResponse
-        ) async -> Void
+        _ handler:
+            @escaping @MainActor @Sendable (
+                RuntimeNotificationResponse
+            ) async -> Void
     ) {
         self.handler = handler
     }
@@ -169,7 +210,7 @@ private final class StubNotifications: RuntimeNotificationScheduling {
 }
 
 @MainActor
-private final class StubSync: RuntimeTaskSyncing {
+final class StubSync: RuntimeTaskSyncing {
     var availability: RuntimeTaskSyncAvailability
     var remoteOperations: [RuntimeTaskOperation]
     var error: RuntimeTaskSyncError?
@@ -203,21 +244,24 @@ private final class StubSync: RuntimeTaskSyncing {
 
 @Test
 func setupReviewCanAlwaysCloseWithoutWeakeningFirstRun() {
-    #expect(HobFirstRunView.canFinish(
-        reviewingExistingSetup: true,
-        modelReadiness: .unavailable,
-        isWorking: true
-    ))
-    #expect(!HobFirstRunView.canFinish(
-        reviewingExistingSetup: false,
-        modelReadiness: .unavailable,
-        isWorking: false
-    ))
-    #expect(HobFirstRunView.canFinish(
-        reviewingExistingSetup: false,
-        modelReadiness: .available,
-        isWorking: false
-    ))
+    #expect(
+        HobFirstRunView.canFinish(
+            reviewingExistingSetup: true,
+            modelReadiness: .unavailable,
+            isWorking: true
+        ))
+    #expect(
+        !HobFirstRunView.canFinish(
+            reviewingExistingSetup: false,
+            modelReadiness: .unavailable,
+            isWorking: false
+        ))
+    #expect(
+        HobFirstRunView.canFinish(
+            reviewingExistingSetup: false,
+            modelReadiness: .available,
+            isWorking: false
+        ))
 }
 
 @Test @MainActor
@@ -225,14 +269,16 @@ func captureStaysUntimedUntilUserPlansAndAdoptsIt() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("hob-workspace-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: directory) }
-    let now = try #require(ISO8601DateFormatter().date(
-        from: "2026-06-29T08:00:00-04:00"
-    ))
+    let now = try #require(
+        ISO8601DateFormatter().date(
+            from: "2026-06-29T08:00:00-04:00"
+        ))
     let calendar = StubCalendar()
     let notifications = StubNotifications()
-    let defaults = try #require(UserDefaults(
-        suiteName: "hob-workspace-tests-\(UUID().uuidString)"
-    ))
+    let defaults = try #require(
+        UserDefaults(
+            suiteName: "hob-workspace-tests-\(UUID().uuidString)"
+        ))
     defaults.set(true, forKey: "hob.calendar.integration.enabled")
     let controller = HobWorkspaceController(
         store: TaskStateStore(directoryURL: directory),
@@ -271,6 +317,12 @@ func captureStaysUntimedUntilUserPlansAndAdoptsIt() async throws {
     #expect(controller.proposal?.blocks.isEmpty == true)
     #expect(controller.hasUnplannedOnDeckTasks)
     #expect(controller.notice == "Added 2 tasks.")
+    #expect(controller.conversationMessages.map(\.author) == [.user, .hob])
+    #expect(
+        controller.conversationMessages.map(\.text) == [
+            "Finish taxes by Friday, high priority, about 90 minutes. Call Mom tomorrow for 15 minutes.",
+            "Added 2 tasks.",
+        ])
     #expect(controller.adoptedSchedule == nil)
     #expect(controller.morningDigest?.items.map(\.task) == ["finish taxes"])
     #expect(notifications.morningTime == "07:00")
@@ -297,43 +349,47 @@ func captureStaysUntimedUntilUserPlansAndAdoptsIt() async throws {
     let oldNotificationIDs = notifications.scheduledIDs
     let firstBlock = try #require(controller.adoptedSchedule?.proposal.blocks.first)
     let adoptedProposalID = try #require(controller.adoptedSchedule?.proposal.id)
-    await notifications.send(notificationResponse(
-        id: "replan-action",
-        action: .replan,
-        block: firstBlock,
-        proposalID: adoptedProposalID,
-        notificationID: try #require(notifications.scheduledIDs.first)
-    ))
+    await notifications.send(
+        notificationResponse(
+            id: "replan-action",
+            action: .replan,
+            block: firstBlock,
+            proposalID: adoptedProposalID,
+            notificationID: try #require(notifications.scheduledIDs.first)
+        ))
     try await waitUntilSettled(controller)
     #expect(controller.draft == "I need to replan finish taxes because ")
     #expect(controller.tasks.first?.status == "open")
 
-    await notifications.send(notificationResponse(
-        id: "snooze-action",
-        action: .snooze,
-        block: firstBlock,
-        proposalID: adoptedProposalID,
-        notificationID: try #require(notifications.scheduledIDs.first)
-    ))
+    await notifications.send(
+        notificationResponse(
+            id: "snooze-action",
+            action: .snooze,
+            block: firstBlock,
+            proposalID: adoptedProposalID,
+            notificationID: try #require(notifications.scheduledIDs.first)
+        ))
     try await waitUntilSettled(controller)
     #expect(notifications.snoozed.count == 1)
     #expect(notifications.snoozed.first?.1 == 15)
     #expect(controller.tasks.first?.status == "open")
 
-    await notifications.send(notificationResponse(
-        id: "done-action",
-        action: .done,
-        block: firstBlock,
-        proposalID: adoptedProposalID,
-        notificationID: try #require(notifications.scheduledIDs.first)
-    ))
+    await notifications.send(
+        notificationResponse(
+            id: "done-action",
+            action: .done,
+            block: firstBlock,
+            proposalID: adoptedProposalID,
+            notificationID: try #require(notifications.scheduledIDs.first)
+        ))
     try await waitUntilSettled(controller)
     #expect(controller.tasks.first?.status == "done")
     #expect(controller.adoptedSchedule?.proposal.blocks.count == 2)
     #expect(controller.proposal?.blocks.map(\.task) == ["call Mom"])
-    #expect(controller.scheduleDiff?.changes.contains {
-        $0.task == "finish taxes" && $0.kind == .removed
-    } == true)
+    #expect(
+        controller.scheduleDiff?.changes.contains {
+            $0.task == "finish taxes" && $0.kind == .removed
+        } == true)
     #expect(notifications.cancelledIDs.isEmpty)
     #expect(calendar.removedEventIDs.isEmpty)
 
@@ -353,12 +409,14 @@ func todayTaskCanBeMarkedDoneAndUndone() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("hob-today-done-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: directory) }
-    let now = try #require(ISO8601DateFormatter().date(
-        from: "2026-06-29T08:00:00-04:00"
-    ))
-    let defaults = try #require(UserDefaults(
-        suiteName: "hob-today-done-tests-\(UUID().uuidString)"
-    ))
+    let now = try #require(
+        ISO8601DateFormatter().date(
+            from: "2026-06-29T08:00:00-04:00"
+        ))
+    let defaults = try #require(
+        UserDefaults(
+            suiteName: "hob-today-done-tests-\(UUID().uuidString)"
+        ))
     let notifications = StubNotifications()
     let controller = HobWorkspaceController(
         store: TaskStateStore(directoryURL: directory),
@@ -369,7 +427,7 @@ func todayTaskCanBeMarkedDoneAndUndone() async throws {
                 raw: "Get Willow haircut today",
                 when: RuntimeDateIntent(kind: "today"),
                 durationMinutes: 30
-            ),
+            )
         ]),
         calendarStore: StubCalendar(),
         notificationStore: notifications,
@@ -411,13 +469,109 @@ func todayTaskCanBeMarkedDoneAndUndone() async throws {
 }
 
 @Test @MainActor
+func conversationalCompletionImmediatelyRemovesTaskFromLivingSchedule() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("hob-conversation-done-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let now = try #require(
+        ISO8601DateFormatter().date(
+            from: "2026-09-03T07:00:00-04:00"
+        ))
+    let store = TaskStateStore(directoryURL: directory)
+    try store.save(
+        RuntimePersistentState(
+            tasks: [
+                RuntimeTask(
+                    id: "climbing", rawText: "Climbing tonight",
+                    task: "Climbing tonight", dueDate: "2026-09-03",
+                    dueTime: nil, status: "open",
+                    createdAt: "2026-09-03T06:55:00-04:00",
+                    updatedAt: "2026-09-03T06:55:00-04:00"
+                )
+            ],
+            undoSnapshots: []
+        ))
+    let controller = HobWorkspaceController(
+        store: store,
+        interpreter: StubInterpreter(actions: [
+            RuntimeAction(type: "complete", target: "1")
+        ]),
+        calendarStore: StubCalendar(),
+        notificationStore: StubNotifications(),
+        syncStore: StubSync(),
+        timezone: try #require(TimeZone(identifier: "America/New_York")),
+        now: { now }
+    )
+    for _ in 0..<200 {
+        if controller.morningDigest?.items.map(\.task) == ["Climbing tonight"] {
+            break
+        }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(controller.morningDigest?.items.map(\.task) == ["Climbing tonight"])
+
+    controller.draft = "Climbing tonight is done"
+    controller.submit()
+    try await waitUntilIdle(controller)
+
+    #expect(controller.tasks.first?.status == "done")
+    #expect(controller.morningDigest?.items.isEmpty == true)
+    #expect(controller.conversationMessages.last?.author == .hob)
+    #expect(try store.load().tasks.first?.status == "done")
+}
+
+@Test @MainActor
+func staleDigestReplyKeepsReferencedTaskInsteadOfCapturingReply() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("hob-stale-reply-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let now = try #require(
+        ISO8601DateFormatter().date(
+            from: "2026-09-07T07:00:00-04:00"
+        ))
+    let task = RuntimeTask(
+        id: "apple-galeat", rawText: "Plan to make an apple galeat",
+        task: "Plan to make an apple galeat", dueDate: nil, dueTime: nil,
+        status: "open", createdAt: "2026-08-30T07:00:00-04:00",
+        updatedAt: "2026-08-30T07:00:00-04:00"
+    )
+    let store = TaskStateStore(directoryURL: directory)
+    try store.save(RuntimePersistentState(tasks: [task], undoSnapshots: []))
+    let controller = HobWorkspaceController(
+        store: store,
+        interpreter: StaleReplyInterpreter(expectedTaskID: task.id),
+        calendarStore: StubCalendar(),
+        notificationStore: StubNotifications(),
+        syncStore: StubSync(),
+        timezone: try #require(TimeZone(identifier: "America/New_York")),
+        now: { now }
+    )
+    for _ in 0..<200 {
+        if controller.morningDigest?.items.first?.isStale == true { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+
+    controller.draft = "It stays"
+    controller.submit()
+    try await waitUntilIdle(controller)
+
+    #expect(controller.tasks.count == 1)
+    #expect(controller.tasks.first?.task == "Plan to make an apple galeat")
+    #expect(controller.tasks.first?.status == "open")
+    #expect(controller.morningDigest?.items.first?.isStale == false)
+    #expect(controller.conversationMessages.last?.text == "Keeping it on deck.")
+    #expect(try store.load().tasks.count == 1)
+}
+
+@Test @MainActor
 func manualSyncPullsRemoteTasksAndBuildsAProposal() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("hob-sync-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: directory) }
-    let now = try #require(ISO8601DateFormatter().date(
-        from: "2026-06-29T08:00:00-04:00"
-    ))
+    let now = try #require(
+        ISO8601DateFormatter().date(
+            from: "2026-06-29T08:00:00-04:00"
+        ))
     let timestamp = "2026-06-29T07:00:00-04:00"
     let task = RuntimeTask(
         id: "task-remote",
@@ -431,12 +585,14 @@ func manualSyncPullsRemoteTasksAndBuildsAProposal() async throws {
         createdAt: timestamp,
         updatedAt: timestamp
     )
-    let sync = StubSync(remoteOperations: [RuntimeTaskOperation(
-        id: "remote-capture:task-remote",
-        taskID: task.id,
-        occurredAt: timestamp,
-        task: task
-    )])
+    let sync = StubSync(remoteOperations: [
+        RuntimeTaskOperation(
+            id: "remote-capture:task-remote",
+            taskID: task.id,
+            occurredAt: timestamp,
+            task: task
+        )
+    ])
     let controller = HobWorkspaceController(
         store: TaskStateStore(directoryURL: directory),
         interpreter: StubInterpreter(actions: []),
@@ -457,7 +613,8 @@ func manualSyncPullsRemoteTasksAndBuildsAProposal() async throws {
     #expect(controller.proposal?.blocks.isEmpty == true)
     #expect(controller.hasUnplannedOnDeckTasks)
     #expect(controller.syncNeedsAttention == false)
-    #expect(controller.notice == "Tasks updated from iCloud.")
+    #expect(controller.notice == nil)
+    #expect(controller.syncAttentionMessage == nil)
 }
 
 @Test @MainActor
@@ -499,25 +656,28 @@ func backgroundSyncFailureStaysOutOfConversationAndClearsAfterRecovery() async t
         syncStore: sync,
         timezone: try #require(TimeZone(identifier: "America/New_York"))
     )
-    try await Task.sleep(for: .milliseconds(30))
-    try await waitUntilSettled(controller)
+    for _ in 0..<200 where !controller.syncNeedsAttention {
+        try await Task.sleep(for: .milliseconds(10))
+    }
 
     #expect(controller.syncNeedsAttention)
     #expect(controller.notice == nil)
 
     controller.syncNow()
     try await waitUntilIdle(controller)
-    #expect(controller.notice == "iCloud sync needs attention.")
+    #expect(controller.notice == nil)
+    #expect(controller.syncAttentionMessage == "Task history is too large to sync.")
 
     sync.error = nil
     controller.syncNow()
     try await waitUntilIdle(controller)
     #expect(!controller.syncNeedsAttention)
+    #expect(controller.syncAttentionMessage == nil)
     #expect(controller.notice == nil)
 }
 
 @Test @MainActor
-func failedInterpretationKeepsDraftForRetry() async throws {
+func failedInterpretationKeepsSubmittedTextInConversation() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("hob-draft-retry-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -539,8 +699,15 @@ func failedInterpretationKeepsDraftForRetry() async throws {
     controller.submit()
     try await waitUntilIdle(controller)
 
-    #expect(controller.draft == message)
+    #expect(controller.draft.isEmpty)
     #expect(controller.errorMessage == "I could not safely interpret that message. Nothing changed.")
+    #expect(controller.conversationMessages.map(\.author) == [.user, .hob])
+    #expect(
+        controller.conversationMessages.map(\.text) == [
+            message,
+            "I could not safely interpret that message. Nothing changed.",
+        ])
+    #expect(controller.conversationMessages.last?.isError == true)
 }
 
 @Test @MainActor
@@ -548,9 +715,10 @@ func calendarIntegrationDefaultsOffAndSchedulesStayUsable() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("hob-calendar-off-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: directory) }
-    let now = try #require(ISO8601DateFormatter().date(
-        from: "2026-06-29T08:00:00-04:00"
-    ))
+    let now = try #require(
+        ISO8601DateFormatter().date(
+            from: "2026-06-29T08:00:00-04:00"
+        ))
     let calendar = StubCalendar()
     let controller = HobWorkspaceController(
         store: TaskStateStore(directoryURL: directory),
@@ -561,14 +729,15 @@ func calendarIntegrationDefaultsOffAndSchedulesStayUsable() async throws {
                 raw: "Finish taxes today",
                 when: RuntimeDateIntent(kind: "today"),
                 durationMinutes: 30
-            ),
+            )
         ]),
         calendarStore: calendar,
         notificationStore: StubNotifications(),
         syncStore: StubSync(),
-        defaults: try #require(UserDefaults(
-            suiteName: "hob-calendar-off-tests-\(UUID().uuidString)"
-        )),
+        defaults: try #require(
+            UserDefaults(
+                suiteName: "hob-calendar-off-tests-\(UUID().uuidString)"
+            )),
         timezone: try #require(TimeZone(identifier: "America/New_York")),
         now: { now }
     )
@@ -617,22 +786,39 @@ func dailyCheckInsAreIndependentAndSupportEveryHour() async throws {
     #expect(controller.morningDigestTime == "00:00")
     #expect(defaults.string(forKey: "hob.morning.digest.time") == "00:00")
 
-    #expect(!controller.eveningRecapEnabled)
+    #expect(controller.eveningRecapEnabled)
     #expect(controller.eveningRecapTime == "20:00")
     controller.setEveningRecapTime("23:00")
-    controller.setEveningRecapEnabled(true)
-    try await Task.sleep(for: .milliseconds(50))
+    for _ in 0..<500 {
+        if notifications.eveningTime == "23:00", notifications.eveningRecaps.count == 7 { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
 
     #expect(controller.eveningRecapEnabled)
     #expect(controller.eveningRecapTime == "23:00")
     #expect(notifications.eveningTime == "23:00")
     #expect(notifications.eveningRecaps.count == 7)
-    #expect(defaults.bool(forKey: "hob.evening.recap.enabled"))
+    #expect(defaults.object(forKey: "hob.evening.recap.enabled") == nil)
     #expect(defaults.string(forKey: "hob.evening.recap.time") == "23:00")
 
     controller.setEveningRecapEnabled(false)
-    try await Task.sleep(for: .milliseconds(50))
+    for _ in 0..<500 {
+        if notifications.eveningRecaps.isEmpty { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
     #expect(notifications.eveningRecaps.isEmpty)
+    #expect(defaults.object(forKey: "hob.evening.recap.enabled") as? Bool == false)
+
+    let restored = HobWorkspaceController(
+        store: TaskStateStore(directoryURL: directory.appendingPathComponent("restored")),
+        interpreter: StubInterpreter(actions: []),
+        calendarStore: StubCalendar(),
+        notificationStore: StubNotifications(),
+        syncStore: StubSync(),
+        defaults: defaults,
+        timezone: try #require(TimeZone(identifier: "America/New_York"))
+    )
+    #expect(!restored.eveningRecapEnabled)
 }
 
 @Test @MainActor
@@ -640,12 +826,14 @@ func calendarChoicesControlPlanningAndPersistPerDevice() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("hob-calendar-choices-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: directory) }
-    let defaults = try #require(UserDefaults(
-        suiteName: "hob-calendar-choices-tests-\(UUID().uuidString)"
-    ))
-    let now = try #require(ISO8601DateFormatter().date(
-        from: "2026-06-29T08:00:00-04:00"
-    ))
+    let defaults = try #require(
+        UserDefaults(
+            suiteName: "hob-calendar-choices-tests-\(UUID().uuidString)"
+        ))
+    let now = try #require(
+        ISO8601DateFormatter().date(
+            from: "2026-06-29T08:00:00-04:00"
+        ))
     let calendar = StubCalendar()
     let controller = HobWorkspaceController(
         store: TaskStateStore(directoryURL: directory),
@@ -656,7 +844,7 @@ func calendarChoicesControlPlanningAndPersistPerDevice() async throws {
                 raw: "Finish taxes today",
                 when: RuntimeDateIntent(kind: "today"),
                 durationMinutes: 30
-            ),
+            )
         ]),
         calendarStore: calendar,
         notificationStore: StubNotifications(),
@@ -717,20 +905,24 @@ func socialReplyStaysInConversationWithoutPlanningOrTaskChanges() async throws {
     )
     try store.save(RuntimePersistentState(tasks: [task], undoSnapshots: []))
     let before = try store.load()
-    let now = try #require(ISO8601DateFormatter().date(
-        from: "2026-08-25T09:00:00-04:00"
-    ))
+    let now = try #require(
+        ISO8601DateFormatter().date(
+            from: "2026-08-25T09:00:00-04:00"
+        ))
     let controller = HobWorkspaceController(
         store: store,
-        interpreter: StubInterpreter(actions: [RuntimeAction(
-            type: "social", reply: "Anytime, bro."
-        )]),
+        interpreter: StubInterpreter(actions: [
+            RuntimeAction(
+                type: "social", reply: "Anytime, bro."
+            )
+        ]),
         calendarStore: StubCalendar(),
         notificationStore: StubNotifications(),
         syncStore: StubSync(),
-        defaults: try #require(UserDefaults(
-            suiteName: "hob-social-tests-\(UUID().uuidString)"
-        )),
+        defaults: try #require(
+            UserDefaults(
+                suiteName: "hob-social-tests-\(UUID().uuidString)"
+            )),
         timezone: try #require(TimeZone(identifier: "America/New_York")),
         now: { now }
     )
@@ -742,6 +934,12 @@ func socialReplyStaysInConversationWithoutPlanningOrTaskChanges() async throws {
 
     #expect(controller.draft.isEmpty)
     #expect(controller.notice == "Anytime, bro.")
+    #expect(controller.conversationMessages.map(\.author) == [.user, .hob])
+    #expect(
+        controller.conversationMessages.map(\.text) == [
+            "thanks bro",
+            "Anytime, bro.",
+        ])
     #expect(controller.planningAnalysis == nil)
     #expect(controller.tasks == [task])
     let after = try store.load()
@@ -764,20 +962,24 @@ func planningQuestionShowsReadOnlyAnswerWithoutWritingState() async throws {
     )
     try store.save(RuntimePersistentState(tasks: [task], undoSnapshots: []))
     let before = try store.load()
-    let now = try #require(ISO8601DateFormatter().date(
-        from: "2026-08-25T09:00:00-04:00"
-    ))
+    let now = try #require(
+        ISO8601DateFormatter().date(
+            from: "2026-08-25T09:00:00-04:00"
+        ))
     let controller = HobWorkspaceController(
         store: store,
-        interpreter: StubInterpreter(actions: [RuntimeAction(
-            type: "analysis", analysisKind: "capacity", horizonDays: 7
-        )]),
+        interpreter: StubInterpreter(actions: [
+            RuntimeAction(
+                type: "analysis", analysisKind: "capacity", horizonDays: 7
+            )
+        ]),
         calendarStore: StubCalendar(),
         notificationStore: StubNotifications(),
         syncStore: StubSync(),
-        defaults: try #require(UserDefaults(
-            suiteName: "hob-analysis-tests-\(UUID().uuidString)"
-        )),
+        defaults: try #require(
+            UserDefaults(
+                suiteName: "hob-analysis-tests-\(UUID().uuidString)"
+            )),
         timezone: try #require(TimeZone(identifier: "America/New_York")),
         now: { now }
     )
@@ -799,23 +1001,27 @@ func farFutureDateRequiresShortConfirmationBeforeWriting() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("hob-far-date-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: directory) }
-    let now = try #require(ISO8601DateFormatter().date(
-        from: "2026-08-25T09:00:00-04:00"
-    ))
+    let now = try #require(
+        ISO8601DateFormatter().date(
+            from: "2026-08-25T09:00:00-04:00"
+        ))
     let controller = HobWorkspaceController(
         store: TaskStateStore(directoryURL: directory),
-        interpreter: StubInterpreter(actions: [RuntimeAction(
-            type: "capture",
-            task: "buy bananas",
-            raw: "buy bananas in 10 years",
-            when: RuntimeDateIntent(kind: "offset", n: 10, unit: "year")
-        )]),
+        interpreter: StubInterpreter(actions: [
+            RuntimeAction(
+                type: "capture",
+                task: "buy bananas",
+                raw: "buy bananas in 10 years",
+                when: RuntimeDateIntent(kind: "offset", n: 10, unit: "year")
+            )
+        ]),
         calendarStore: StubCalendar(),
         notificationStore: StubNotifications(),
         syncStore: StubSync(),
-        defaults: try #require(UserDefaults(
-            suiteName: "hob-far-date-tests-\(UUID().uuidString)"
-        )),
+        defaults: try #require(
+            UserDefaults(
+                suiteName: "hob-far-date-tests-\(UUID().uuidString)"
+            )),
         timezone: try #require(TimeZone(identifier: "America/New_York")),
         now: { now }
     )
@@ -826,7 +1032,7 @@ func farFutureDateRequiresShortConfirmationBeforeWriting() async throws {
     try await waitUntilIdle(controller)
 
     #expect(controller.tasks.isEmpty)
-    #expect(controller.draft == "buy bananas in 10 years")
+    #expect(controller.draft.isEmpty)
     #expect(controller.longRangeConfirmation == "Are you sure it’s 10 years away?")
 
     controller.confirmLongRangeSubmission()

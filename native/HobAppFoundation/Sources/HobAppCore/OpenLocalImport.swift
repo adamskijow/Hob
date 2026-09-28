@@ -1,6 +1,6 @@
+import CoreFoundation
 // SPDX-License-Identifier: MIT
 import Foundation
-import CoreFoundation
 
 public struct OpenLocalImportResult: Equatable, Sendable {
     public let tasks: [RuntimeTask]
@@ -61,10 +61,11 @@ public enum OpenLocalExportImporter {
             throw OpenLocalImportError.unsupportedVersion
         }
         guard let items = root["items"] as? [[String: Any]],
-              root["action_log"] is [Any],
-              root["digests"] is [Any],
-              root["meta"] is [String: Any],
-              items.count <= 10_000 else {
+            root["action_log"] is [Any],
+            root["digests"] is [Any],
+            root["meta"] is [String: Any],
+            items.count <= 10_000
+        else {
             throw OpenLocalImportError.invalidExport
         }
 
@@ -72,15 +73,16 @@ public enum OpenLocalExportImporter {
         var preserved = 0
         let tasks = try items.map { item -> RuntimeTask in
             guard let id = text(item, "id", maximum: 128),
-                  identifiers.insert(id).inserted,
-                  let raw = text(item, "raw_text", maximum: 20_000),
-                  let task = text(item, "task", maximum: 10_000),
-                  let status = text(item, "status", maximum: 16),
-                  ["open", "done", "dropped"].contains(status),
-                  let created = text(item, "created_at", maximum: 64),
-                  let updated = text(item, "updated_at", maximum: 64),
-                  ISO8601DateFormatter().date(from: created) != nil,
-                  ISO8601DateFormatter().date(from: updated) != nil else {
+                identifiers.insert(id).inserted,
+                let raw = text(item, "raw_text", maximum: 20_000),
+                let task = text(item, "task", maximum: 10_000),
+                let status = text(item, "status", maximum: 16),
+                ["open", "done", "dropped"].contains(status),
+                let created = text(item, "created_at", maximum: 64),
+                let updated = text(item, "updated_at", maximum: 64),
+                ISO8601DateFormatter().date(from: created) != nil,
+                ISO8601DateFormatter().date(from: updated) != nil
+            else {
                 throw OpenLocalImportError.invalidExport
             }
             let archived: String
@@ -90,7 +92,8 @@ public enum OpenLocalExportImporter {
                     options: [.sortedKeys]
                 )
                 guard archivedData.count <= 20_000,
-                      let value = String(data: archivedData, encoding: .utf8) else {
+                    let value = String(data: archivedData, encoding: .utf8)
+                else {
                     throw OpenLocalImportError.tooLarge
                 }
                 archived = value
@@ -136,9 +139,10 @@ public enum OpenLocalExportImporter {
         maximum: Int
     ) -> String? {
         guard let value = object[key] as? String,
-              value == value.trimmingCharacters(in: .whitespacesAndNewlines),
-              !value.isEmpty,
-              value.utf8.count <= maximum else { return nil }
+            value == value.trimmingCharacters(in: .whitespacesAndNewlines),
+            !value.isEmpty,
+            value.utf8.count <= maximum
+        else { return nil }
         return value
     }
 
@@ -156,7 +160,8 @@ public enum OpenLocalExportImporter {
 
     private static func integer(_ value: Any?) -> Int? {
         guard let number = value as? NSNumber,
-              CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+            CFGetTypeID(number) != CFBooleanGetTypeID()
+        else { return nil }
         let integer = number.intValue
         return number.doubleValue == Double(integer) ? integer : nil
     }

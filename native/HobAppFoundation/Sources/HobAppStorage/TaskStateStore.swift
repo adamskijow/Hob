@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 import Foundation
+
 #if canImport(HobAppCore)
-import HobAppCore
+    import HobAppCore
 #endif
 
 public enum TaskStateStoreError: Error, Equatable, Sendable {
@@ -121,7 +122,8 @@ public struct TaskStateStore: Sendable {
                 backupAvailable: false
             )
         } catch TaskStateStoreError.invalidData,
-                TaskStateStoreError.tooLarge {
+            TaskStateStoreError.tooLarge
+        {
             let backupAvailable = validBackupExists()
             return TaskStorageInspection(
                 condition: backupAvailable ? .recoveryAvailable : .unavailable,
@@ -319,9 +321,11 @@ public actor DurableTaskRuntime {
             }
             switch existing.status {
             case .completed:
-                guard let outbound = state.outbox.first(where: {
-                    $0.requestID == request.requestID
-                }) else {
+                guard
+                    let outbound = state.outbox.first(where: {
+                        $0.requestID == request.requestID
+                    })
+                else {
                     throw RuntimePipelineError.missingOutboundRecord
                 }
                 return response(for: outbound)
@@ -340,13 +344,14 @@ public actor DurableTaskRuntime {
         }
         let sequence = state.nextSequence
         var inbox = state.inbox
-        inbox.append(RuntimeInboundRecord(
-            sequence: sequence,
-            request: request,
-            receivedAt: request.now,
-            status: .pending,
-            updatedAt: request.now
-        ))
+        inbox.append(
+            RuntimeInboundRecord(
+                sequence: sequence,
+                request: request,
+                receivedAt: request.now,
+                status: .pending,
+                updatedAt: request.now
+            ))
         let unvalidatedReceipt = combinedState(
             runtimeState: runtime.persistentState,
             inbox: inbox,
@@ -378,19 +383,22 @@ public actor DurableTaskRuntime {
 
     public func pendingDeliveries(limit: Int = 100) -> [RuntimeOutboundRecord] {
         guard limit > 0 else { return [] }
-        return Array(state.outbox
-            .filter { $0.status == .pending }
-            .sorted { $0.sequence < $1.sequence }
-            .prefix(min(limit, 100)))
+        return Array(
+            state.outbox
+                .filter { $0.status == .pending }
+                .sorted { $0.sequence < $1.sequence }
+                .prefix(min(limit, 100)))
     }
 
     public func markDelivered(dedupeKey: String, at timestamp: String) throws {
         guard ISO8601DateFormatter().date(from: timestamp) != nil else {
             throw RuntimePipelineError.invalidEnvelope
         }
-        guard let index = state.outbox.firstIndex(where: {
-            $0.dedupeKey == dedupeKey
-        }) else {
+        guard
+            let index = state.outbox.firstIndex(where: {
+                $0.dedupeKey == dedupeKey
+            })
+        else {
             throw RuntimePipelineError.missingOutboundRecord
         }
         let current = state.outbox[index]
@@ -417,9 +425,11 @@ public actor DurableTaskRuntime {
         guard validFailureCode(code) else {
             throw RuntimePipelineError.invalidEnvelope
         }
-        guard let index = state.outbox.firstIndex(where: {
-            $0.dedupeKey == dedupeKey
-        }) else {
+        guard
+            let index = state.outbox.firstIndex(where: {
+                $0.dedupeKey == dedupeKey
+            })
+        else {
             throw RuntimePipelineError.missingOutboundRecord
         }
         let current = state.outbox[index]
@@ -447,12 +457,15 @@ public actor DurableTaskRuntime {
         at timestamp: String
     ) throws {
         guard validFailureCode(code),
-              ISO8601DateFormatter().date(from: timestamp) != nil else {
+            ISO8601DateFormatter().date(from: timestamp) != nil
+        else {
             throw RuntimePipelineError.invalidEnvelope
         }
-        guard let index = state.inbox.firstIndex(where: {
-            $0.request.requestID == requestID && $0.status == .pending
-        }) else {
+        guard
+            let index = state.inbox.firstIndex(where: {
+                $0.request.requestID == requestID && $0.status == .pending
+            })
+        else {
             throw RuntimePipelineError.missingPendingRecord
         }
         let current = state.inbox[index]
@@ -541,9 +554,10 @@ public actor DurableTaskRuntime {
         guard proposal.id == proposalID else {
             throw RuntimeScheduleError.proposalMismatch
         }
-        let currentVersions = Dictionary(uniqueKeysWithValues: runtime.tasks
-            .filter { $0.status == "open" }
-            .map { ($0.id, $0.updatedAt) })
+        let currentVersions = Dictionary(
+            uniqueKeysWithValues: runtime.tasks
+                .filter { $0.status == "open" && proposal.taskVersions[$0.id] != nil }
+                .map { ($0.id, $0.revision) })
         guard currentVersions == proposal.taskVersions else {
             throw RuntimeScheduleError.staleProposal
         }
@@ -553,9 +567,11 @@ public actor DurableTaskRuntime {
             calendarEventIDs: calendarEventIDs,
             notificationIDs: notificationIDs
         )
-        let calendarCleanup = state.calendarCleanupEventIDs
+        let calendarCleanup =
+            state.calendarCleanupEventIDs
             + (state.adoptedSchedule?.calendarEventIDs ?? [])
-        let notificationCleanup = state.notificationCleanupIDs
+        let notificationCleanup =
+            state.notificationCleanupIDs
             + (state.adoptedSchedule?.notificationIDs ?? [])
         let candidate = combinedState(
             runtimeState: runtime.persistentState,
@@ -577,10 +593,10 @@ public actor DurableTaskRuntime {
         notificationIDs: [String]
     ) throws {
         guard let adopted = state.adoptedSchedule,
-              adopted.proposal.id == proposalID,
-              adopted.notificationIDs.isEmpty,
-              notificationIDs.count <= adopted.proposal.blocks.count,
-              Set(notificationIDs).count == notificationIDs.count
+            adopted.proposal.id == proposalID,
+            adopted.notificationIDs.isEmpty,
+            notificationIDs.count <= adopted.proposal.blocks.count,
+            Set(notificationIDs).count == notificationIDs.count
         else { throw RuntimeScheduleError.invalidRequest }
         let updated = RuntimeAdoptedSchedule(
             proposal: adopted.proposal,
@@ -606,7 +622,8 @@ public actor DurableTaskRuntime {
     @discardableResult
     public func detachCalendarEventsFromAdoptedSchedule() throws -> [String] {
         guard let adopted = state.adoptedSchedule,
-              !adopted.calendarEventIDs.isEmpty else { return [] }
+            !adopted.calendarEventIDs.isEmpty
+        else { return [] }
         let identifiers = adopted.calendarEventIDs
         let updated = RuntimeAdoptedSchedule(
             proposal: adopted.proposal,
@@ -614,9 +631,11 @@ public actor DurableTaskRuntime {
             calendarEventIDs: [],
             notificationIDs: adopted.notificationIDs
         )
-        let cleanup = Array(Set(
-            state.calendarCleanupEventIDs + identifiers
-        )).sorted()
+        let cleanup = Array(
+            Set(
+                state.calendarCleanupEventIDs + identifiers
+            )
+        ).sorted()
         let candidate = combinedState(
             runtimeState: runtime.persistentState,
             inbox: state.inbox,
@@ -647,7 +666,8 @@ public actor DurableTaskRuntime {
 
     public func discardScheduleProposal(proposalID: String) throws {
         guard let proposal = state.latestProposal,
-              proposal.id == proposalID else {
+            proposal.id == proposalID
+        else {
             throw RuntimeScheduleError.proposalMismatch
         }
         let candidate = combinedState(
@@ -664,7 +684,7 @@ public actor DurableTaskRuntime {
 
     public func acknowledgeCalendarCleanup(eventIDs: [String]) throws {
         guard !eventIDs.isEmpty,
-              Set(eventIDs).isSubset(of: Set(state.calendarCleanupEventIDs))
+            Set(eventIDs).isSubset(of: Set(state.calendarCleanupEventIDs))
         else { throw RuntimeScheduleError.invalidRequest }
         let acknowledged = Set(eventIDs)
         let remaining = state.calendarCleanupEventIDs.filter {
@@ -685,7 +705,7 @@ public actor DurableTaskRuntime {
 
     public func acknowledgeNotificationCleanup(notificationIDs: [String]) throws {
         guard !notificationIDs.isEmpty,
-              Set(notificationIDs).isSubset(of: Set(state.notificationCleanupIDs))
+            Set(notificationIDs).isSubset(of: Set(state.notificationCleanupIDs))
         else { throw RuntimeScheduleError.invalidRequest }
         let acknowledged = Set(notificationIDs)
         let remaining = state.notificationCleanupIDs.filter {
@@ -734,9 +754,11 @@ public actor DurableTaskRuntime {
     }
 
     public func acknowledgeNotificationResponse(responseID: String) throws {
-        guard state.pendingNotificationResponses.contains(where: {
-            $0.id == responseID
-        }) else { return }
+        guard
+            state.pendingNotificationResponses.contains(where: {
+                $0.id == responseID
+            })
+        else { return }
         let candidate = combinedState(
             runtimeState: runtime.persistentState,
             inbox: state.inbox,
@@ -759,10 +781,11 @@ public actor DurableTaskRuntime {
     public func mergeTaskOperations(
         _ remote: [RuntimeTaskOperation]
     ) throws -> Bool {
-        let merged = try RuntimeTaskOperationMerge.merge(
-            local: state.taskOperations,
-            remote: remote
-        )
+        let merged = try RuntimeTaskOperationMerge.compacted(
+            RuntimeTaskOperationMerge.merge(
+                local: state.taskOperations,
+                remote: remote
+            ))
         guard merged.count <= 50_000 else {
             throw RuntimePipelineError.queueFull
         }
@@ -798,9 +821,11 @@ public actor DurableTaskRuntime {
     }
 
     private func completePending(requestID: String) throws -> RuntimeTurnResponse {
-        guard let inboundIndex = state.inbox.firstIndex(where: {
-            $0.request.requestID == requestID && $0.status == .pending
-        }) else {
+        guard
+            let inboundIndex = state.inbox.firstIndex(where: {
+                $0.request.requestID == requestID && $0.status == .pending
+            })
+        else {
             throw RuntimePipelineError.missingPendingRecord
         }
         let inbound = state.inbox[inboundIndex]
@@ -822,25 +847,27 @@ public actor DurableTaskRuntime {
             updatedAt: inbound.request.now
         )
         var outbox = state.outbox
-        outbox.append(RuntimeOutboundRecord(
-            sequence: inbound.sequence,
-            requestID: inbound.request.requestID,
-            dedupeKey: "turn:\(inbound.request.requestID)",
-            createdAt: inbound.request.now,
-            status: .pending,
-            summary: summary
-        ))
+        outbox.append(
+            RuntimeOutboundRecord(
+                sequence: inbound.sequence,
+                requestID: inbound.request.requestID,
+                dedupeKey: "turn:\(inbound.request.requestID)",
+                createdAt: inbound.request.now,
+                status: .pending,
+                summary: summary
+            ))
         try commit(
             runtime: candidate,
             inbox: inbox,
             outbox: outbox,
             invalidateProposal: after != before,
-            taskOperations: state.taskOperations + taskOperations(
-                request: inbound.request,
-                sequence: inbound.sequence,
-                before: before,
-                after: after
-            )
+            taskOperations: state.taskOperations
+                + taskOperations(
+                    request: inbound.request,
+                    sequence: inbound.sequence,
+                    before: before,
+                    after: after
+                )
         )
         return response
     }
@@ -859,7 +886,7 @@ public actor DurableTaskRuntime {
             nextSequence: state.nextSequence,
             latestProposal: invalidateProposal ? nil : state.latestProposal,
             adoptedSchedule: state.adoptedSchedule,
-            taskOperations: taskOperations
+            taskOperations: try taskOperations.map(RuntimeTaskOperationMerge.compacted)
         )
         try store.save(candidateState)
         runtime = candidate

@@ -195,9 +195,10 @@ public struct RuntimeScheduleProposal: Codable, Equatable, Identifiable, Sendabl
         blocks = try values.decode([RuntimeScheduleBlock].self, forKey: .blocks)
         unscheduled = try values.decode([RuntimeUnscheduledTask].self, forKey: .unscheduled)
         assumptions = try values.decode([String].self, forKey: .assumptions)
-        plannedUntimedTaskIDs = try values.decodeIfPresent(
-            [String].self, forKey: .plannedUntimedTaskIDs
-        ) ?? []
+        plannedUntimedTaskIDs =
+            try values.decodeIfPresent(
+                [String].self, forKey: .plannedUntimedTaskIDs
+            ) ?? []
     }
 }
 
@@ -227,14 +228,16 @@ public struct RuntimeAdoptedSchedule: Codable, Equatable, Sendable {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         proposal = try values.decode(RuntimeScheduleProposal.self, forKey: .proposal)
         adoptedAt = try values.decode(String.self, forKey: .adoptedAt)
-        calendarEventIDs = try values.decodeIfPresent(
-            [String].self,
-            forKey: .calendarEventIDs
-        ) ?? []
-        notificationIDs = try values.decodeIfPresent(
-            [String].self,
-            forKey: .notificationIDs
-        ) ?? []
+        calendarEventIDs =
+            try values.decodeIfPresent(
+                [String].self,
+                forKey: .calendarEventIDs
+            ) ?? []
+        notificationIDs =
+            try values.decodeIfPresent(
+                [String].self,
+                forKey: .notificationIDs
+            ) ?? []
     }
 }
 
@@ -344,40 +347,44 @@ public enum RuntimeScheduleValidator {
     public static func valid(_ proposal: RuntimeScheduleProposal?) -> Bool {
         guard let proposal else { return true }
         guard identifier(proposal.id, maximum: 128),
-              timestamp(proposal.generatedAt),
-              date(proposal.startDate),
-              TimeZone(identifier: proposal.timezone) != nil,
-              time(proposal.workStart),
-              time(proposal.workEnd),
-              proposal.workStart < proposal.workEnd,
-              proposal.taskVersions.count <= 10_000,
-              proposal.blocks.count <= 10_000,
-              proposal.unscheduled.count <= 10_000,
-              proposal.assumptions.count <= 10_000,
-              proposal.plannedUntimedTaskIDs.count <= 10_000,
-              Set(proposal.plannedUntimedTaskIDs).count
+            timestamp(proposal.generatedAt),
+            date(proposal.startDate),
+            TimeZone(identifier: proposal.timezone) != nil,
+            time(proposal.workStart),
+            time(proposal.workEnd),
+            proposal.workStart < proposal.workEnd,
+            proposal.taskVersions.count <= 10_000,
+            proposal.blocks.count <= 10_000,
+            proposal.unscheduled.count <= 10_000,
+            proposal.assumptions.count <= 10_000,
+            proposal.plannedUntimedTaskIDs.count <= 10_000,
+            Set(proposal.plannedUntimedTaskIDs).count
                 == proposal.plannedUntimedTaskIDs.count,
-              proposal.plannedUntimedTaskIDs.allSatisfy({
+            proposal.plannedUntimedTaskIDs.allSatisfy({
                 identifier($0, maximum: 128) && proposal.taskVersions[$0] != nil
-              }) else { return false }
-        guard proposal.taskVersions.allSatisfy({
-            identifier($0.key, maximum: 128) && timestamp($0.value)
-        }) else { return false }
+            })
+        else { return false }
+        guard
+            proposal.taskVersions.allSatisfy({
+                identifier($0.key, maximum: 128) && RuntimeTask.isValidRevision($0.value)
+            })
+        else { return false }
         var blockIDs: Set<String> = []
         for block in proposal.blocks {
             guard identifier(block.id, maximum: 300),
-                  blockIDs.insert(block.id).inserted,
-                  identifier(block.taskID, maximum: 128),
-                  !block.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  block.task.utf8.count <= 10_000,
-                  timestamp(block.startAt),
-                  timestamp(block.endAt),
-                  let start = ISO8601DateFormatter().date(from: block.startAt),
-                  let end = ISO8601DateFormatter().date(from: block.endAt),
-                  end > start,
-                  (5...480).contains(block.durationMinutes),
-                  ["high", "normal", "low"].contains(block.priority),
-                  proposal.taskVersions[block.taskID] != nil else { return false }
+                blockIDs.insert(block.id).inserted,
+                identifier(block.taskID, maximum: 128),
+                !block.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                block.task.utf8.count <= 10_000,
+                timestamp(block.startAt),
+                timestamp(block.endAt),
+                let start = ISO8601DateFormatter().date(from: block.startAt),
+                let end = ISO8601DateFormatter().date(from: block.endAt),
+                end > start,
+                (5...480).contains(block.durationMinutes),
+                ["high", "normal", "low"].contains(block.priority),
+                proposal.taskVersions[block.taskID] != nil
+            else { return false }
         }
         return proposal.unscheduled.allSatisfy {
             identifier($0.taskID, maximum: 128)
@@ -386,9 +393,10 @@ public enum RuntimeScheduleValidator {
                 && !$0.reason.isEmpty
                 && $0.reason.utf8.count <= 512
                 && proposal.taskVersions[$0.taskID] != nil
-        } && proposal.assumptions.allSatisfy {
-            !$0.isEmpty && $0.utf8.count <= 512
         }
+            && proposal.assumptions.allSatisfy {
+                !$0.isEmpty && $0.utf8.count <= 512
+            }
     }
 
     public static func valid(_ adopted: RuntimeAdoptedSchedule?) -> Bool {
@@ -447,9 +455,9 @@ public enum RuntimeSchedulePlanner {
         request: RuntimeScheduleRequest
     ) throws -> RuntimeScheduleProposal {
         guard valid(request),
-              let zone = TimeZone(identifier: request.timezone),
-              let startDay = parseDay(request.startDate, zone: zone),
-              let generatedAt = ISO8601DateFormatter().date(from: request.generatedAt)
+            let zone = TimeZone(identifier: request.timezone),
+            let startDay = parseDay(request.startDate, zone: zone),
+            let generatedAt = ISO8601DateFormatter().date(from: request.generatedAt)
         else { throw RuntimeScheduleError.invalidRequest }
 
         let includedUntimed = Set(request.includedUntimedTaskIDs)
@@ -459,12 +467,13 @@ public enum RuntimeSchedulePlanner {
                 && !$0.isMissedTimedItem(on: request.startDate)
                 && ($0.dueTime != nil || includedUntimed.contains($0.id))
         }
-        let versions = Dictionary(uniqueKeysWithValues: open.map { ($0.id, $0.updatedAt) })
+        let versions = Dictionary(uniqueKeysWithValues: open.map { ($0.id, $0.revision) })
         let ordered = open.sorted(by: taskOrder)
         var occupied = request.busy.compactMap { interval -> DateInterval? in
             guard let start = ISO8601DateFormatter().date(from: interval.startAt),
-                  let end = ISO8601DateFormatter().date(from: interval.endAt),
-                  end > start else { return nil }
+                let end = ISO8601DateFormatter().date(from: interval.endAt),
+                end > start
+            else { return nil }
             return DateInterval(start: start, end: end)
         }
         var blocks: [RuntimeScheduleBlock] = []
@@ -481,17 +490,24 @@ public enum RuntimeSchedulePlanner {
             var placed: RuntimeScheduleBlock?
             for offset in 0..<request.horizonDays {
                 guard let day = calendar.date(byAdding: .day, value: offset, to: startDay),
-                      request.workDays.contains(calendar.component(.weekday, from: day) == 1
-                        ? 7 : calendar.component(.weekday, from: day) - 1),
-                      eligible(task, on: day, startDay: startDay, zone: zone) else { continue }
+                    request.workDays.contains(
+                        calendar.component(.weekday, from: day) == 1
+                            ? 7 : calendar.component(.weekday, from: day) - 1),
+                    eligible(task, on: day, startDay: startDay, zone: zone)
+                else { continue }
                 if let deadline = task.deadlineDate.flatMap({ parseDay($0, zone: zone) }),
-                   day > deadline { break }
-                guard let bounds = workBounds(
-                    day: day,
-                    start: request.workStart,
-                    end: request.workEnd,
-                    zone: zone
-                ) else { continue }
+                    day > deadline
+                {
+                    break
+                }
+                guard
+                    let bounds = workBounds(
+                        day: day,
+                        start: request.workStart,
+                        end: request.workEnd,
+                        zone: zone
+                    )
+                else { continue }
                 var lowerBound = bounds.start
                 if calendar.isDate(day, inSameDayAs: generatedAt) {
                     lowerBound = max(lowerBound, roundedUp(generatedAt, calendar: calendar))
@@ -499,11 +515,13 @@ public enum RuntimeSchedulePlanner {
                 guard lowerBound < bounds.end else { continue }
 
                 if let dueTime = task.dueTime,
-                   let fixedStart = instant(day: day, time: dueTime, zone: zone) {
+                    let fixedStart = instant(day: day, time: dueTime, zone: zone)
+                {
                     let fixedEnd = fixedStart.addingTimeInterval(Double(duration * 60))
                     let candidate = DateInterval(start: fixedStart, end: fixedEnd)
                     if fixedStart >= lowerBound, fixedEnd <= bounds.end,
-                       !overlaps(candidate, occupied: occupied, buffer: request.transitionBufferMinutes) {
+                        !overlaps(candidate, occupied: occupied, buffer: request.transitionBufferMinutes)
+                    {
                         placed = block(task, request: request, interval: candidate, duration: duration, zone: zone)
                     }
                 } else if let interval = firstOpening(
@@ -516,7 +534,8 @@ public enum RuntimeSchedulePlanner {
                 }
                 if let placed {
                     guard let start = ISO8601DateFormatter().date(from: placed.startAt),
-                          let end = ISO8601DateFormatter().date(from: placed.endAt) else {
+                        let end = ISO8601DateFormatter().date(from: placed.endAt)
+                    else {
                         throw RuntimeScheduleError.invalidRequest
                     }
                     occupied.append(DateInterval(start: start, end: end))
@@ -525,13 +544,14 @@ public enum RuntimeSchedulePlanner {
                 }
             }
             if placed == nil {
-                unscheduled.append(RuntimeUnscheduledTask(
-                    taskID: task.id,
-                    task: task.task,
-                    reason: task.deadlineDate == nil
-                        ? "No open block fits in the planning window."
-                        : "No open block fits before the deadline."
-                ))
+                unscheduled.append(
+                    RuntimeUnscheduledTask(
+                        taskID: task.id,
+                        task: task.task,
+                        reason: task.deadlineDate == nil
+                            ? "No open block fits in the planning window."
+                            : "No open block fits before the deadline."
+                    ))
             }
         }
 
@@ -560,7 +580,7 @@ public enum RuntimeSchedulePlanner {
         let identifier = request.proposalID.trimmingCharacters(in: .whitespacesAndNewlines)
         let busyIsValid = request.busy.allSatisfy { interval in
             guard let start = ISO8601DateFormatter().date(from: interval.startAt),
-                  let end = ISO8601DateFormatter().date(from: interval.endAt)
+                let end = ISO8601DateFormatter().date(from: interval.endAt)
             else { return false }
             return end > start
         }
@@ -633,8 +653,9 @@ public enum RuntimeSchedulePlanner {
         zone: TimeZone
     ) -> DateInterval? {
         guard let lower = instant(day: day, time: start, zone: zone),
-              let upper = instant(day: day, time: end, zone: zone),
-              upper > lower else { return nil }
+            let upper = instant(day: day, time: end, zone: zone),
+            upper > lower
+        else { return nil }
         return DateInterval(start: lower, end: upper)
     }
 
@@ -646,11 +667,14 @@ public enum RuntimeSchedulePlanner {
     ) -> DateInterval? {
         let seconds = Double(duration * 60)
         let bufferSeconds = Double(buffer * 60)
-        let relevant = occupied
-            .map { DateInterval(
-                start: $0.start.addingTimeInterval(-bufferSeconds),
-                end: $0.end.addingTimeInterval(bufferSeconds)
-            ) }
+        let relevant =
+            occupied
+            .map {
+                DateInterval(
+                    start: $0.start.addingTimeInterval(-bufferSeconds),
+                    end: $0.end.addingTimeInterval(bufferSeconds)
+                )
+            }
             .filter { $0.end > bounds.start && $0.start < bounds.end }
             .sorted { $0.start < $1.start }
         var cursor = bounds.start
@@ -672,10 +696,11 @@ public enum RuntimeSchedulePlanner {
     ) -> Bool {
         let seconds = Double(buffer * 60)
         return occupied.contains {
-            candidate.intersects(DateInterval(
-                start: $0.start.addingTimeInterval(-seconds),
-                end: $0.end.addingTimeInterval(seconds)
-            ))
+            candidate.intersects(
+                DateInterval(
+                    start: $0.start.addingTimeInterval(-seconds),
+                    end: $0.end.addingTimeInterval(seconds)
+                ))
         }
     }
 
@@ -722,8 +747,9 @@ public enum RuntimeSchedulePlanner {
     private static func instant(day: Date, time: String, zone: TimeZone) -> Date? {
         let pieces = time.split(separator: ":", omittingEmptySubsequences: false)
         guard pieces.count == 2,
-              let hour = Int(pieces[0]), (0...23).contains(hour),
-              let minute = Int(pieces[1]), (0...59).contains(minute) else { return nil }
+            let hour = Int(pieces[0]), (0...23).contains(hour),
+            let minute = Int(pieces[1]), (0...59).contains(minute)
+        else { return nil }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = zone
         return calendar.date(bySettingHour: hour, minute: minute, second: 0, of: day)

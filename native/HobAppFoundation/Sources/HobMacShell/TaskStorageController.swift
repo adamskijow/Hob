@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 import Foundation
+
 #if canImport(HobAppCore)
-import HobAppCore
+    import HobAppCore
 #endif
 #if canImport(HobAppStorage)
-import HobAppStorage
+    import HobAppStorage
 #endif
 
 @MainActor
@@ -37,7 +38,8 @@ final class TaskStorageController: ObservableObject {
         do {
             let directory = try storage.taskStateDirectory()
             _ = try TaskStateStore(directoryURL: directory).recoverFromBackup()
-            lastResult = "The verified previous copy was restored. Review your tasks before turning on background delivery."
+            lastResult =
+                "The verified previous copy was restored. Review your tasks before turning on background delivery."
         } catch let error as TaskStateStoreError {
             lastResult = error.userMessage
         } catch {

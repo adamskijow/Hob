@@ -1,8 +1,9 @@
+import ImageIO
 // SPDX-License-Identifier: MIT
 import SwiftUI
-import ImageIO
+
 #if canImport(HobAppCore)
-import HobAppCore
+    import HobAppCore
 #endif
 
 enum HobTheme {
@@ -53,19 +54,31 @@ struct HobAppBackground: View {
 public struct HobWorkspaceView: View {
     private enum WorkspaceTab: Hashable {
         case today
-        case schedule
+        case upcoming
+    }
+
+    private enum ConversationAnchor {
+        static let bottom = "conversation-bottom"
     }
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.colorScheme) private var colorScheme
     @StateObject private var controller: HobWorkspaceController
     @AppStorage("hob.onboarding.completed.v1") private var onboardingCompleted = false
+    @State private var showsSettings = false
     @State private var showsOnboarding = false
     @State private var showsCalendarSettings = false
     @State private var selectedTab: WorkspaceTab = .today
     @State private var selectedDigestItem: RuntimeMorningDigestItem?
+    @State private var originalReminder: RuntimeTask?
     @State private var editedDigestTitle = ""
-    @State private var taskNote = ""
+    @State private var editedNote = ""
+    @State private var editedHasDate = false
+    @State private var editedHasTime = false
+    @State private var editedDate = Date()
+    @State private var editedTime = Date()
+    @State private var editedKeepIndefinitely = false
+    @State private var dismissingForTaskAction = false
     @FocusState private var composerFocused: Bool
 
     public init() {
@@ -84,6 +97,7 @@ public struct HobWorkspaceView: View {
                     morningDigest
                     conversation
                     planningAnalysis
+                    scheduleContent
                 }
                 .navigationTitle("")
                 .toolbar { workspaceToolbar }
@@ -93,24 +107,28 @@ public struct HobWorkspaceView: View {
 
             NavigationStack {
                 workspaceScroll {
-                    scheduleContent
-                    planOnDeckAction
-                    taskList
+                    upcomingList
                 }
-                .navigationTitle("Schedule")
+                .navigationTitle("Upcoming")
                 .toolbar { workspaceToolbar }
             }
-            .tabItem { Label("Schedule", systemImage: "calendar") }
-            .tag(WorkspaceTab.schedule)
+            .tabItem { Label("Upcoming", systemImage: "calendar") }
+            .tag(WorkspaceTab.upcoming)
         }
         .tint(HobTheme.accent(for: colorScheme))
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { controller.syncNow() }
         }
+        .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { _ in
+            if scenePhase == .active { controller.refreshForDayChange() }
+        }
         .onChange(of: selectedTab) { _, _ in
             composerFocused = false
         }
         .onChange(of: showsOnboarding) { _, isPresented in
+            if isPresented { composerFocused = false }
+        }
+        .onChange(of: showsSettings) { _, isPresented in
             if isPresented { composerFocused = false }
         }
         .onChange(of: showsCalendarSettings) { _, isPresented in
@@ -144,8 +162,12 @@ public struct HobWorkspaceView: View {
                 showsOnboarding = false
             }
         }
-        .sheet(isPresented: $showsCalendarSettings) {
-            HobCalendarSettingsView(controller: controller)
+        .sheet(isPresented: $showsSettings) {
+            settingsSheet
+        }
+        .sheet(item: $selectedDigestItem) { item in
+            taskActionsSheet(item)
+                .environment(\.timeZone, controller.reminderTimezone)
         }
         .alert(
             controller.longRangeConfirmation ?? "Check that date",
@@ -187,58 +209,72 @@ public struct HobWorkspaceView: View {
                 }
                 .disabled(controller.isWorking)
             }
-            connectionsMenu
+            settingsButton
         }
     }
 
     @ViewBuilder private var scheduleContent: some View {
         if let schedule = controller.adoptedSchedule,
-           let proposal = controller.proposal,
-           let diff = controller.scheduleDiff {
+            let proposal = controller.proposal,
+            let diff = controller.scheduleDiff
+        {
             replanView(schedule, proposal: proposal, diff: diff)
         } else if let schedule = controller.adoptedSchedule {
             adopted(schedule)
         } else if let proposal = controller.proposal,
-                  !proposal.blocks.isEmpty || !proposal.unscheduled.isEmpty {
+            !proposal.plannedUntimedTaskIDs.isEmpty
+        {
             proposalView(proposal)
-        } else {
-            ContentUnavailableView(
-                "No schedule yet",
-                systemImage: "calendar",
-                description: Text("Untimed work stays on deck until you ask Hob to plan it.")
-            )
         }
     }
 
-    @ViewBuilder private var planOnDeckAction: some View {
-        if controller.hasUnplannedOnDeckTasks {
-            VStack(alignment: .leading, spacing: 8) {
-                Button("Plan on-deck work", systemImage: "calendar.badge.plus") {
-                    controller.planOnDeckWork()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(controller.isWorking)
-                Text("Hob will propose times first. Nothing is adopted automatically.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private var connectionsMenu: some View {
-        Menu {
-            Section("Check-ins") { checkInMenuItems }
-            Section("Calendar") { calendarMenuItems }
-            Section("Reminders") { reminderMenuItems }
-            Section("iCloud") { syncMenuItems }
-            Divider()
-            Button("Review setup", systemImage: "slider.horizontal.3") {
-                showsOnboarding = true
-            }
+    private var settingsButton: some View {
+        Button {
+            showsSettings = true
         } label: {
             Image(systemName: "gearshape")
         }
         .accessibilityLabel("Connections and setup")
+    }
+
+    private var settingsSheet: some View {
+        NavigationStack {
+            Form {
+                Section("Check-ins") { checkInMenuItems }
+                    .listRowBackground(HobTheme.surface(for: colorScheme))
+                Section("Calendar") { calendarMenuItems }
+                    .listRowBackground(HobTheme.surface(for: colorScheme))
+                Section("Reminders") { reminderMenuItems }
+                    .listRowBackground(HobTheme.surface(for: colorScheme))
+                Section("iCloud") { syncMenuItems }
+                    .listRowBackground(HobTheme.surface(for: colorScheme))
+                Section {
+                    Button("Review setup", systemImage: "slider.horizontal.3") {
+                        showsSettings = false
+                        Task { @MainActor in
+                            await Task.yield()
+                            showsOnboarding = true
+                        }
+                    }
+                }
+                .listRowBackground(HobTheme.surface(for: colorScheme))
+            }
+            .scrollContentBackground(.hidden)
+            .background { HobAppBackground().ignoresSafeArea() }
+            .navigationTitle("Settings")
+            .modifier(HobSettingsToolbarBackground(colorScheme: colorScheme))
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { showsSettings = false }
+                }
+            }
+        }
+        .tint(HobTheme.accent(for: colorScheme))
+        .presentationBackground(HobTheme.base(for: colorScheme))
+        .presentationDetents([.medium, .large])
+        .sheet(isPresented: $showsCalendarSettings) {
+            HobCalendarSettingsView(controller: controller)
+        }
     }
 
     @ViewBuilder private var checkInMenuItems: some View {
@@ -255,22 +291,22 @@ public struct HobWorkspaceView: View {
             enabled: controller.morningDigestEnabled,
             set: controller.setMorningDigestTime
         )
-        Divider()
         Toggle(
-            "Evening recap",
+            "Nightly “What got done?”",
             isOn: Binding(
                 get: { controller.eveningRecapEnabled },
                 set: { controller.setEveningRecapEnabled($0) }
             )
         )
         checkInTimeMenu(
-            title: "Recap time",
+            title: "Nightly time",
             selection: controller.eveningRecapTime,
             enabled: controller.eveningRecapEnabled,
             set: controller.setEveningRecapTime
         )
-        if (controller.morningDigestEnabled || controller.eveningRecapEnabled),
-           controller.notificationAuthorization != .authorized {
+        if controller.morningDigestEnabled || controller.eveningRecapEnabled,
+            controller.notificationAuthorization != .authorized
+        {
             Label("Enable notifications below", systemImage: "bell.slash")
         } else {
             if controller.morningDigestNeedsAttention {
@@ -341,6 +377,9 @@ public struct HobWorkspaceView: View {
     }
 
     @ViewBuilder private var reminderMenuItems: some View {
+        if controller.taskRemindersNeedAttention {
+            Button("Retry task reminders") { controller.retryNotificationCleanup() }
+        }
         switch controller.notificationAuthorization {
         case .authorized:
             Label("Enabled", systemImage: "checkmark.circle.fill")
@@ -368,7 +407,10 @@ public struct HobWorkspaceView: View {
     @ViewBuilder private var syncMenuItems: some View {
         switch controller.syncAvailability {
         case .available where controller.syncNeedsAttention:
-            Label("Needs attention", systemImage: "exclamationmark.triangle")
+            Label(
+                controller.syncAttentionMessage ?? "Couldn’t sync tasks",
+                systemImage: "exclamationmark.triangle"
+            )
         case .available:
             Label("Connected", systemImage: "checkmark.circle.fill")
         case .noAccount:
@@ -419,11 +461,9 @@ public struct HobWorkspaceView: View {
                     Text("Nothing on deck today.")
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(Array(digest.items.prefix(6).enumerated()), id: \.element.id) { index, item in
+                    ForEach(Array(digest.items.enumerated()), id: \.element.id) { index, item in
                         Button {
-                            editedDigestTitle = item.task
-                            taskNote = ""
-                            selectedDigestItem = item
+                            if let task = controller.task(taskID: item.taskID) { selectReminder(task) }
                         } label: {
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
                                 Text("\(index + 1)")
@@ -433,6 +473,13 @@ public struct HobWorkspaceView: View {
                                 Text(item.summary)
                                     .font(.subheadline)
                                 Spacer(minLength: 4)
+                                if !item.allowsReview {
+                                    Image(systemName: "infinity")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.tint)
+                                        .accessibilityLabel("Kept indefinitely")
+                                        .accessibilityIdentifier("hob.today.ongoing.\(item.taskID)")
+                                }
                                 Image(systemName: "ellipsis.circle")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -443,15 +490,10 @@ public struct HobWorkspaceView: View {
                         .disabled(controller.isWorking)
                         .accessibilityHint("Shows task actions")
                     }
-                    if digest.items.count > 6 {
-                        Text("+\(digest.items.count - 6) more")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
                 }
-                if let stale = digest.items.max(by: { $0.daysOnDeck < $1.daysOnDeck }),
-                   stale.isStale {
-                    Text("“\(stale.task)” has been on deck \(stale.daysOnDeck) days. Tell Hob naturally whether it stays, moves, or gets dropped.")
+                if let question = controller.reviewQuestion {
+                    Text(question.text)
+                        .accessibilityIdentifier("hob.question.taskReview")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .padding(.top, 4)
@@ -468,94 +510,108 @@ public struct HobWorkspaceView: View {
                     .stroke(HobTheme.border(for: colorScheme), lineWidth: 1)
             }
             .accessibilityElement(children: .contain)
-            .sheet(item: $selectedDigestItem) { item in
-                taskActionsSheet(item)
-            }
         }
     }
 
     private func taskActionsSheet(_ item: RuntimeMorningDigestItem) -> some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack {
-                Text("Task")
-                    .font(.title2.bold())
-                Spacer()
-                Button("Close", systemImage: "xmark") {
-                    selectedDigestItem = nil
-                }
-                .labelStyle(.iconOnly)
-            }
-            TextField("Task", text: $editedDigestTitle, axis: .vertical)
-                .lineLimit(1...3)
-                .textFieldStyle(.roundedBorder)
-            HStack {
-                Button("Mark Done", systemImage: "checkmark.circle.fill") {
-                    controller.markDone(taskID: item.taskID)
-                    selectedDigestItem = nil
-                }
-                .buttonStyle(.bordered)
-                Spacer()
-                Button("Save") {
-                    controller.renameTask(taskID: item.taskID, to: editedDigestTitle)
-                    selectedDigestItem = nil
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(
-                    editedDigestTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        || editedDigestTitle.trimmingCharacters(in: .whitespacesAndNewlines) == item.task
-                        || controller.isWorking
-                )
-            }
-            if let task = controller.task(taskID: item.taskID) {
-                Divider()
-                if let note = task.note, !note.isEmpty {
-                    Text(note)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
                 HStack {
-                    TextField("Add a note", text: $taskNote)
-                        .textFieldStyle(.roundedBorder)
-                    Button("Save note") {
-                        controller.addNote(taskID: item.taskID, text: taskNote)
-                        taskNote = ""
-                    }
-                    .disabled(taskNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-                Button(task.isWaiting ? "Return to deck" : "Move to Waiting") {
-                    controller.setWaiting(taskID: item.taskID, waiting: !task.isWaiting)
-                    selectedDigestItem = nil
-                }
-                .disabled(controller.isWorking)
-            }
-            if controller.task(taskID: item.taskID)?.recurrence != nil {
-                Divider()
-                HStack {
-                    Button("Skip this occurrence", systemImage: "forward.end") {
-                        controller.skipOccurrence(taskID: item.taskID)
-                        selectedDigestItem = nil
-                    }
-                    .disabled(controller.isWorking)
+                    Text("Task")
+                        .font(.title2.bold())
                     Spacer()
-                    Button("Stop repeating", role: .destructive) {
-                        controller.stopRepeating(taskID: item.taskID)
+                    Button("Close", systemImage: "xmark") {
                         selectedDigestItem = nil
                     }
-                    .disabled(controller.isWorking)
+                    .labelStyle(.iconOnly)
+                }
+                TextField("Task", text: $editedDigestTitle, axis: .vertical)
+                    .accessibilityIdentifier("hob.edit.title")
+                    .lineLimit(1...3)
+                    .textFieldStyle(.roundedBorder)
+                Toggle("Date", isOn: $editedHasDate)
+                    .accessibilityIdentifier("hob.edit.hasDate")
+                if editedHasDate {
+                    DatePicker("On", selection: $editedDate, displayedComponents: .date)
+                    Toggle("Time", isOn: $editedHasTime)
+                        .accessibilityIdentifier("hob.edit.hasTime")
+                    if editedHasTime {
+                        DatePicker("At", selection: $editedTime, displayedComponents: .hourAndMinute)
+                    }
+                }
+                Toggle("Keep indefinitely", isOn: $editedKeepIndefinitely)
+                    .accessibilityIdentifier("hob.edit.keepIndefinitely")
+                Text("It stays available, and Hob won’t ask whether it still belongs on Today.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField("Note", text: $editedNote, axis: .vertical)
+                    .accessibilityIdentifier("hob.edit.note")
+                    .lineLimit(2...6)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Button("Mark Done", systemImage: "checkmark.circle.fill") {
+                        dismissingForTaskAction = true
+                        controller.markDone(taskID: item.taskID)
+                        selectedDigestItem = nil
+                    }
+                    .buttonStyle(.bordered)
+                }
+                if let task = controller.task(taskID: item.taskID) {
+                    if task.isWaiting {
+                        Button("Return to Today") {
+                            dismissingForTaskAction = true
+                            controller.setWaiting(taskID: item.taskID, waiting: false)
+                            selectedDigestItem = nil
+                        }
+                        .disabled(controller.isWorking)
+                    }
+                }
+                if controller.task(taskID: item.taskID)?.recurrence != nil {
+                    Divider()
+                    HStack {
+                        Button("Skip this occurrence", systemImage: "forward.end") {
+                            dismissingForTaskAction = true
+                            controller.skipOccurrence(taskID: item.taskID)
+                            selectedDigestItem = nil
+                        }
+                        .disabled(controller.isWorking)
+                        Spacer()
+                        Button("Stop repeating", role: .destructive) {
+                            dismissingForTaskAction = true
+                            controller.stopRepeating(taskID: item.taskID)
+                            selectedDigestItem = nil
+                        }
+                        .disabled(controller.isWorking)
+                    }
                 }
             }
+            .padding(24)
+            .frame(maxWidth: 480)
         }
-        .padding(24)
-        .frame(maxWidth: 480)
         .presentationDetents([
-            .medium
+            .large
         ])
         .presentationDragIndicator(.visible)
+        .onDisappear {
+            if !dismissingForTaskAction, let original = originalReminder,
+                original.id == item.taskID
+            {
+                controller.autosaveReminder(
+                    original: original,
+                    title: editedDigestTitle,
+                    date: editedHasDate
+                        ? reminderFormatter("yyyy-MM-dd").string(from: editedDate) : nil,
+                    time: editedHasDate && editedHasTime
+                        ? reminderFormatter("HH:mm").string(from: editedTime) : nil,
+                    keepIndefinitely: editedKeepIndefinitely,
+                    note: editedNote)
+            }
+        }
     }
 
     private var conversation: some View {
         VStack(alignment: .leading, spacing: 14) {
-            conversationReply
+            conversationTranscript
 
             TextField(
                 "Add a task or ask about your plan…",
@@ -563,6 +619,7 @@ public struct HobWorkspaceView: View {
                 axis: .vertical
             )
             .lineLimit(3...7)
+            .accessibilityIdentifier("hob.composer")
             .textFieldStyle(.plain)
             .padding(12)
             .background(
@@ -589,6 +646,7 @@ public struct HobWorkspaceView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!controller.canSubmit)
+                .accessibilityIdentifier("hob.send")
                 .keyboardShortcut(.return, modifiers: [.command])
                 .accessibilityHint("Interprets the message and applies the requested task changes")
             }
@@ -609,36 +667,108 @@ public struct HobWorkspaceView: View {
         controller.submit()
     }
 
-    @ViewBuilder private var conversationReply: some View {
-        if let error = controller.errorMessage {
-            VStack(alignment: .leading, spacing: 5) {
-                Label("Hob", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption.bold())
-                    .foregroundStyle(.red)
-                Text(error)
-                    .foregroundStyle(.primary)
+    private var conversationTranscript: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    ForEach(controller.conversationMessages) { message in
+                        conversationBubble(message)
+                    }
+
+                    transientConversationMessage
+
+                    Color.clear
+                        .frame(height: 1)
+                        .id(ConversationAnchor.bottom)
+                }
+                .padding(.vertical, 2)
             }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                Color.red.opacity(0.10),
-                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-            )
-                .accessibilityLabel("Error: \(error)")
-        } else if let notice = controller.notice {
-            VStack(alignment: .leading, spacing: 5) {
-                Label("Hob", systemImage: "sparkles")
-                    .font(.caption.bold())
-                    .foregroundStyle(.tint)
-                Text(notice)
+            .frame(maxHeight: 320)
+            .scrollIndicators(.visible)
+            .scrollDismissesKeyboard(.interactively)
+            .defaultScrollAnchor(.bottom)
+            .onChange(of: controller.conversationMessages.last?.id) { _, _ in
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(ConversationAnchor.bottom, anchor: .bottom)
+                }
+            }
+            .onChange(of: controller.errorMessage) { _, _ in
+                proxy.scrollTo(ConversationAnchor.bottom, anchor: .bottom)
+            }
+            .onChange(of: controller.notice) { _, _ in
+                proxy.scrollTo(ConversationAnchor.bottom, anchor: .bottom)
+            }
+        }
+    }
+
+    @ViewBuilder private var transientConversationMessage: some View {
+        if let error = controller.errorMessage,
+            controller.conversationMessages.last?.text != error
+        {
+            conversationBubble(
+                HobConversationMessage(
+                    author: .hob,
+                    text: error,
+                    isError: true
+                ))
+        } else if let notice = controller.notice,
+            controller.conversationMessages.last?.text != notice
+        {
+            conversationBubble(
+                HobConversationMessage(
+                    author: .hob,
+                    text: notice
+                ))
+        }
+    }
+
+    @ViewBuilder private func conversationBubble(
+        _ message: HobConversationMessage
+    ) -> some View {
+        if message.author == .user {
+            HStack(alignment: .bottom) {
+                Spacer(minLength: 48)
+                Text(message.text)
                     .foregroundStyle(.primary)
                     .textSelection(.enabled)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(
+                        HobTheme.accent(for: colorScheme).opacity(0.18),
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    )
             }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                HobTheme.accent(for: colorScheme).opacity(0.10),
-                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("You: \(message.text)")
+        } else {
+            HStack(alignment: .bottom) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Label(
+                        "Hob",
+                        systemImage: message.isError
+                            ? "exclamationmark.triangle.fill"
+                            : "sparkles"
+                    )
+                    .font(.caption.bold())
+                    .foregroundStyle(message.isError ? Color.red : Color.accentColor)
+                    Text(message.text)
+                        .foregroundStyle(.primary)
+                        .textSelection(.enabled)
+                }
+                .padding(12)
+                .background(
+                    message.isError
+                        ? Color.red.opacity(0.10)
+                        : HobTheme.accent(for: colorScheme).opacity(0.10),
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                )
+                Spacer(minLength: 48)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(
+                message.isError
+                    ? "Hob error: \(message.text)"
+                    : "Hob: \(message.text)"
             )
         }
     }
@@ -699,7 +829,7 @@ public struct HobWorkspaceView: View {
 
     private func proposalView(_ proposal: RuntimeScheduleProposal) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            scheduleHeader("Schedule", proposal: proposal)
+            scheduleHeader("Schedule proposal", proposal: proposal)
             scheduleBlocks(proposal)
             Button {
                 controller.adoptProposal()
@@ -826,7 +956,8 @@ public struct HobWorkspaceView: View {
         case .stays:
             return change.proposedStartAt.map(displayTime) ?? "Same time"
         case .moves:
-            return "\(change.previousStartAt.map(displayTime) ?? "Unscheduled") → \(change.proposedStartAt.map(displayTime) ?? "Unscheduled")"
+            return
+                "\(change.previousStartAt.map(displayTime) ?? "Unscheduled") → \(change.proposedStartAt.map(displayTime) ?? "Unscheduled")"
         case .added:
             return change.proposedStartAt.map(displayTime) ?? "Added to the plan"
         case .removed:
@@ -865,7 +996,14 @@ public struct HobWorkspaceView: View {
 
     private func scheduleBlocks(_ proposal: RuntimeScheduleProposal) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(proposal.blocks) { block in
+            ForEach(
+                proposal.blocks.filter { block in
+                    controller.tasks.contains {
+                        $0.id == block.taskID && $0.status == "open"
+                            && proposal.taskVersions[$0.id] == $0.revision
+                    }
+                }
+            ) { block in
                 HStack(alignment: .top, spacing: 8) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(block.task)
@@ -907,51 +1045,124 @@ public struct HobWorkspaceView: View {
         }
     }
 
-    private var taskList: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Tasks").font(.title2.bold())
-            if controller.tasks.isEmpty {
-                Text("No tasks yet.")
-                    .foregroundStyle(.secondary)
+    private var upcomingList: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            Text("Reminders for another day.")
+                .foregroundStyle(.secondary)
+            if controller.reminderList.upcoming.isEmpty {
+                ContentUnavailableView(
+                    "Nothing coming up", systemImage: "calendar",
+                    description: Text("Add a reminder with a future date in chat. Untimed items stay in Today."))
             }
-            ForEach(controller.tasks, id: \.id) { task in
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(task.task)
-                        Text(details(task))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+            ForEach(controller.reminderList.upcoming) { group in
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(group.title).font(.title2.bold())
+                    ForEach(group.tasks, id: \.id) { task in
+                        Button {
+                            selectReminder(task)
+                        } label: {
+                            reminderRow(task, history: false)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(controller.isWorking)
+                        .accessibilityIdentifier("hob.upcoming.\(task.id)")
                     }
-                    Spacer()
-                    Text(controller.taskStatusLabel(task))
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(
-                            controller.taskStatusLabel(task) == "Missed" ? .orange : .primary
-                        )
                 }
-                .padding(12)
-                .background(
-                    HobTheme.surface(for: colorScheme),
-                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-                )
             }
+            NavigationLink {
+                workspaceScroll {
+                    if controller.reminderList.history.isEmpty {
+                        ContentUnavailableView("No history yet", systemImage: "clock.arrow.circlepath")
+                    } else {
+                        Text("Completed, removed, missed, and paused reminders.")
+                            .font(.callout).foregroundStyle(.secondary)
+                        ForEach(controller.reminderList.history, id: \.id) { task in
+                            if task.status == "open" {
+                                Button {
+                                    selectReminder(task)
+                                } label: {
+                                    reminderRow(task, history: true)
+                                }
+                                .buttonStyle(.plain)
+                            } else {
+                                reminderRow(task, history: true)
+                            }
+                        }
+                    }
+                }
+                .navigationTitle("History")
+            } label: {
+                Label("History", systemImage: "clock.arrow.circlepath")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 12)
+            }
+            .accessibilityIdentifier("hob.history")
         }
     }
 
-    private func details(_ task: RuntimeTask) -> String {
-        var values: [String] = []
-        if let due = task.dueDate, let time = task.dueTime {
-            values.append("scheduled \(due) at \(time)")
-        } else if let due = task.dueDate {
-            values.append("on deck from \(due)")
+    private func reminderRow(_ task: RuntimeTask, history: Bool) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(task.task)
+                    .foregroundStyle(.primary)
+                Text(reminderDetails(task))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if history {
+                Text(task.status == "open" && task.isWaiting ? "Paused" : controller.taskStatusLabel(task))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(
+                        controller.taskStatusLabel(task) == "Missed" ? .orange : .primary
+                    )
+            }
         }
-        if let deadline = task.deadlineDate { values.append("due \(deadline)") }
+        .padding(12)
+        .background(
+            HobTheme.surface(for: colorScheme),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+    }
+
+    private func reminderFormatter(_ format: String) -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = controller.reminderTimezone
+        formatter.dateFormat = format
+        return formatter
+    }
+
+    private func selectReminder(_ task: RuntimeTask) {
+        originalReminder = task
+        dismissingForTaskAction = false
+        editedDigestTitle = task.task
+        editedNote = task.note ?? ""
+        editedHasDate = task.dueDate != nil
+        editedHasTime = task.dueTime != nil
+        editedDate = task.dueDate.flatMap { reminderFormatter("yyyy-MM-dd").date(from: $0) } ?? controller.reminderNow
+        editedTime = task.dueTime.flatMap { reminderFormatter("HH:mm").date(from: $0) } ?? controller.reminderNow
+        editedKeepIndefinitely = task.reviewPolicy == "never"
+        selectedDigestItem = RuntimeMorningDigestItem(
+            taskID: task.id, task: task.task, time: task.dueTime, isOverdue: false)
+    }
+
+    private func reminderDetails(_ task: RuntimeTask) -> String {
+        var values: [String] = []
+        if let due = task.dueDate, let date = reminderFormatter("yyyy-MM-dd").date(from: due) {
+            values.append(reminderFormatter("EEE, MMM d, yyyy").string(from: date))
+        }
+        if let time = task.dueTime, let clock = reminderFormatter("HH:mm").date(from: time) {
+            values.append(reminderFormatter("h:mm a").string(from: clock))
+        }
+        if let deadline = task.deadlineDate, let date = reminderFormatter("yyyy-MM-dd").date(from: deadline) {
+            values.append("Due \(reminderFormatter("MMM d, yyyy").string(from: date))")
+        }
         if let duration = task.durationMinutes { values.append("\(duration)m") }
         if let priority = task.priority, priority != "normal" { values.append(priority) }
         if let recurrence = task.recurrence { values.append(recurrenceLabel(recurrence)) }
-        if task.isWaiting { values.append("waiting") }
         if task.note != nil { values.append("note") }
-        return values.isEmpty ? "No stated constraints" : values.joined(separator: " · ")
+        return values.isEmpty ? "No date or time" : values.joined(separator: " · ")
     }
 
     private func recurrenceLabel(_ recurrence: RuntimeRecurrenceRule) -> String {
@@ -970,7 +1181,8 @@ public struct HobWorkspaceView: View {
 
     private func timeRange(_ block: RuntimeScheduleBlock) -> String {
         guard let start = ISO8601DateFormatter().date(from: block.startAt),
-              let end = ISO8601DateFormatter().date(from: block.endAt) else {
+            let end = ISO8601DateFormatter().date(from: block.endAt)
+        else {
             return block.startAt
         }
         let day = start.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
@@ -992,14 +1204,30 @@ private struct HobBrandArtwork: View {
     }
 
     private var appIconArtwork: CGImage? {
-        guard let url = Bundle.main.url(
-            forResource: "AppIcon60x60@2x",
-            withExtension: "png"
-        ),
-        let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+        guard
+            let url = Bundle.main.url(
+                forResource: "AppIcon60x60@2x",
+                withExtension: "png"
+            ),
+            let source = CGImageSourceCreateWithURL(url as CFURL, nil)
+        else {
             return nil
         }
         return CGImageSourceCreateImageAtIndex(source, 0, nil)
+    }
+}
+
+private struct HobSettingsToolbarBackground: ViewModifier {
+    let colorScheme: ColorScheme
+
+    @ViewBuilder func body(content: Content) -> some View {
+        #if os(iOS)
+            content
+                .toolbarBackground(HobTheme.base(for: colorScheme), for: .navigationBar)
+                .toolbarBackground(.visible, for: .navigationBar)
+        #else
+            content
+        #endif
     }
 }
 

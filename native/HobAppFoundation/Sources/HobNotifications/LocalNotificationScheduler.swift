@@ -1,9 +1,35 @@
 // SPDX-License-Identifier: MIT
 import Foundation
 @preconcurrency import UserNotifications
+
 #if canImport(HobAppCore)
-import HobAppCore
+    import HobAppCore
 #endif
+
+/// The same scheduler runs on both platforms; tests supply a center without
+/// touching the user's notification permissions or delivered reminders.
+@MainActor
+protocol NotificationCenterClient: AnyObject {
+    var delegate: (any UNUserNotificationCenterDelegate)? { get set }
+    func setNotificationCategories(_ categories: Set<UNNotificationCategory>)
+    func authorizationStatus() async -> UNAuthorizationStatus
+    func requestAuthorization(options: UNAuthorizationOptions) async throws -> Bool
+    func pendingNotificationRequests() async -> [UNNotificationRequest]
+    func deliveredRequests() async -> [UNNotificationRequest]
+    func add(_ request: UNNotificationRequest) async throws
+    func removePendingNotificationRequests(withIdentifiers identifiers: [String])
+    func removeDeliveredNotifications(withIdentifiers identifiers: [String])
+}
+
+extension UNUserNotificationCenter: NotificationCenterClient {
+    func authorizationStatus() async -> UNAuthorizationStatus {
+        await notificationSettings().authorizationStatus
+    }
+
+    func deliveredRequests() async -> [UNNotificationRequest] {
+        await deliveredNotifications().map(\.request)
+    }
+}
 
 @MainActor
 public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
@@ -16,11 +42,16 @@ public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
         static let replan = "HOB_REPLAN"
     }
 
-    private let center: UNUserNotificationCenter
+    private let center: any NotificationCenterClient
     private let router: NotificationResponseRouter
+    private var reminderReconciliation: Task<Void, Error>?
     public private(set) var authorization: RuntimeNotificationAuthorization = .notDetermined
 
-    public init(center: UNUserNotificationCenter = .current()) {
+    public convenience init(center: UNUserNotificationCenter = .current()) {
+        self.init(client: center)
+    }
+
+    init(client center: any NotificationCenterClient) {
         self.center = center
         self.router = NotificationResponseRouter()
         center.delegate = router
@@ -28,7 +59,7 @@ public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
     }
 
     public func refreshAuthorization() async -> RuntimeNotificationAuthorization {
-        authorization = Self.map(await center.notificationSettings().authorizationStatus)
+        authorization = Self.map(await center.authorizationStatus())
         return authorization
     }
 
@@ -48,7 +79,7 @@ public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
             throw RuntimeNotificationError.permissionDenied
         }
         guard RuntimeScheduleValidator.valid(proposal),
-              let timezone = TimeZone(identifier: proposal.timezone)
+            let timezone = TimeZone(identifier: proposal.timezone)
         else { throw RuntimeNotificationError.invalidRequest }
 
         var scheduled: [String] = []
@@ -63,22 +94,25 @@ public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
                     duration: block.durationMinutes,
                     proposalID: proposal.id,
                     blockID: block.id,
-                    taskID: block.taskID
+                    taskID: block.taskID,
+                    revision: proposal.taskVersions[block.taskID]
                 )
+                content.userInfo["fireAt"] = ISO8601DateFormatter().string(from: start)
                 var calendar = Calendar(identifier: .gregorian)
                 calendar.timeZone = timezone
                 let components = calendar.dateComponents(
                     [.calendar, .timeZone, .year, .month, .day, .hour, .minute],
                     from: start
                 )
-                try await center.add(UNNotificationRequest(
-                    identifier: identifier,
-                    content: content,
-                    trigger: UNCalendarNotificationTrigger(
-                        dateMatching: components,
-                        repeats: false
-                    )
-                ))
+                try await center.add(
+                    UNNotificationRequest(
+                        identifier: identifier,
+                        content: content,
+                        trigger: UNCalendarNotificationTrigger(
+                            dateMatching: components,
+                            repeats: false
+                        )
+                    ))
                 scheduled.append(identifier)
             }
             return scheduled
@@ -106,17 +140,20 @@ public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
             duration: nil,
             proposalID: response.proposalID,
             blockID: response.blockID,
-            taskID: response.taskID
+            taskID: response.taskID,
+            revision: response.taskRevision
         )
+        content.userInfo["snoozed"] = true
         do {
-            try await center.add(UNNotificationRequest(
-                identifier: response.notificationID,
-                content: content,
-                trigger: UNTimeIntervalNotificationTrigger(
-                    timeInterval: TimeInterval(minutes * 60),
-                    repeats: false
-                )
-            ))
+            try await center.add(
+                UNNotificationRequest(
+                    identifier: response.notificationID,
+                    content: content,
+                    trigger: UNTimeIntervalNotificationTrigger(
+                        timeInterval: TimeInterval(minutes * 60),
+                        repeats: false
+                    )
+                ))
         } catch {
             throw RuntimeNotificationError.schedulingFailed
         }
@@ -127,18 +164,12 @@ public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
         time: String,
         now: Date
     ) async throws {
-        #if os(iOS)
         try await replaceDailyNotifications(
             digests,
             time: time,
-            now: now,
             identifierPrefix: Identifier.morningPrefix,
-            title: "Morning. Here is today.",
-            body: \.notificationBody
+            title: "Morning. Here is today."
         )
-        #else
-        await cancelMorningDigests()
-        #endif
     }
 
     public func cancelMorningDigests() async {
@@ -150,18 +181,12 @@ public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
         time: String,
         now: Date
     ) async throws {
-        #if os(iOS)
         try await replaceDailyNotifications(
             digests,
             time: time,
-            now: now,
             identifierPrefix: Identifier.eveningPrefix,
-            title: "What got done today?",
-            body: \.eveningRecapBody
+            title: "What got done today?"
         )
-        #else
-        await cancelEveningRecaps()
-        #endif
     }
 
     public func cancelEveningRecaps() async {
@@ -170,80 +195,104 @@ public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
 
     private func cancelDailyNotifications(prefix: String) async {
         let pending = await center.pendingNotificationRequests()
-        let identifiers = pending.map(\.identifier).filter {
+        let delivered = await center.deliveredRequests()
+        let identifiers = (pending.map(\.identifier) + delivered.map(\.identifier)).filter {
             $0.hasPrefix(prefix)
         }
         center.removePendingNotificationRequests(withIdentifiers: identifiers)
         center.removeDeliveredNotifications(withIdentifiers: identifiers)
     }
 
-    #if os(iOS)
     private func replaceDailyNotifications(
         _ digests: [RuntimeMorningDigest],
         time: String,
-        now: Date,
         identifierPrefix: String,
-        title: String,
-        body: KeyPath<RuntimeMorningDigest, String>
+        title: String
     ) async throws {
         guard authorization == .authorized else {
             throw RuntimeNotificationError.permissionDenied
         }
-        guard digests.count <= 14,
-              Set(digests.map(\.date)).count == digests.count,
-              let clock = Self.clock(time),
-              digests.allSatisfy({
-                  TimeZone(identifier: $0.timezone) != nil
-                      && $0.items.count <= 10_000
-                      && $0[keyPath: body].utf8.count <= 4_000
-              }) else {
-            throw RuntimeNotificationError.invalidRequest
-        }
-
+        let request = try Self.dailyRequest(
+            time: time,
+            timezone: digests.first?.timezone ?? TimeZone.current.identifier,
+            identifierPrefix: identifierPrefix, title: title)
         await cancelDailyNotifications(prefix: identifierPrefix)
-        var scheduled: [String] = []
         do {
-            for digest in digests {
-                guard let timezone = TimeZone(identifier: digest.timezone),
-                      let fire = Self.instant(
-                        date: digest.date,
-                        hour: clock.hour,
-                        minute: clock.minute,
-                        timezone: timezone
-                      ) else {
-                    throw RuntimeNotificationError.invalidRequest
-                }
-                guard fire > now else { continue }
-                let identifier = identifierPrefix + digest.date
-                let content = UNMutableNotificationContent()
-                content.title = title
-                content.body = digest[keyPath: body]
-                content.sound = .default
-                var calendar = Calendar(identifier: .gregorian)
-                calendar.timeZone = timezone
-                let components = calendar.dateComponents(
-                    [.calendar, .timeZone, .year, .month, .day, .hour, .minute],
-                    from: fire
-                )
-                try await center.add(UNNotificationRequest(
-                    identifier: identifier,
-                    content: content,
-                    trigger: UNCalendarNotificationTrigger(
-                        dateMatching: components,
-                        repeats: false
-                    )
-                ))
-                scheduled.append(identifier)
-            }
-        } catch let error as RuntimeNotificationError {
-            center.removePendingNotificationRequests(withIdentifiers: scheduled)
-            throw error
+            try await center.add(request)
         } catch {
-            center.removePendingNotificationRequests(withIdentifiers: scheduled)
             throw RuntimeNotificationError.schedulingFailed
         }
     }
-    #endif
+
+    static func dailyRequest(time: String, timezone: String, identifierPrefix: String, title: String) throws
+        -> UNNotificationRequest
+    {
+        guard let clock = clock(time), let zone = TimeZone(identifier: timezone) else {
+            throw RuntimeNotificationError.invalidRequest
+        }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body =
+            identifierPrefix == Identifier.eveningPrefix
+            ? "Open Hob to review today and tell me what got done."
+            : "Open Hob to see what’s on deck today."
+        content.sound = .default
+        var components = DateComponents()
+        components.timeZone = zone
+        components.hour = clock.hour
+        components.minute = clock.minute
+        return UNNotificationRequest(
+            identifier: identifierPrefix + "daily", content: content,
+            trigger: UNCalendarNotificationTrigger(dateMatching: components, repeats: true))
+    }
+
+    public func replaceTaskReminders(_ reminders: [RuntimeTaskReminder], now: Date) async throws {
+        let previous = reminderReconciliation
+        let next = Task { @MainActor in
+            _ = try? await previous?.value
+            try await self.reconcile(reminders, now: now)
+        }
+        reminderReconciliation = next
+        try await next.value
+    }
+
+    private func reconcile(_ reminders: [RuntimeTaskReminder], now: Date) async throws {
+        let pending = await center.pendingNotificationRequests()
+        let delivered = await center.deliveredRequests()
+        let desired = Dictionary(uniqueKeysWithValues: reminders.map { ($0.identifier, $0) })
+        let managed = (pending + delivered).filter { $0.content.categoryIdentifier == Identifier.category }
+        func matches(_ request: UNNotificationRequest, _ reminder: RuntimeTaskReminder) -> Bool {
+            request.content.userInfo["taskRevision"] as? String == reminder.revision
+                && (request.content.userInfo["snoozed"] as? Bool == true
+                    || request.content.userInfo["fireAt"] as? String
+                        == ISO8601DateFormatter().string(from: reminder.fireAt))
+        }
+        cancel(
+            notificationIDs: managed.filter {
+                guard let reminder = desired[$0.identifier] else { return true }
+                return !matches($0, reminder)
+            }.map(\.identifier))
+        guard authorization == .authorized else { return }
+        for reminder in reminders where reminder.fireAt > now {
+            if managed.contains(where: { $0.identifier == reminder.identifier && matches($0, reminder) }) { continue }
+            let content = Self.content(
+                task: reminder.task, duration: reminder.duration,
+                proposalID: reminder.proposalID, blockID: reminder.blockID,
+                taskID: reminder.taskID, revision: reminder.revision)
+            content.userInfo["fireAt"] = ISO8601DateFormatter().string(from: reminder.fireAt)
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(identifier: reminder.timezone) ?? .current
+            do {
+                try await center.add(
+                    UNNotificationRequest(
+                        identifier: reminder.identifier, content: content,
+                        trigger: UNCalendarNotificationTrigger(
+                            dateMatching: calendar.dateComponents(
+                                [.calendar, .timeZone, .year, .month, .day, .hour, .minute], from: reminder.fireAt),
+                            repeats: false)))
+            } catch { throw RuntimeNotificationError.schedulingFailed }
+        }
+    }
 
     public func cancel(notificationIDs: [String]) {
         center.removePendingNotificationRequests(withIdentifiers: notificationIDs)
@@ -251,9 +300,10 @@ public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
     }
 
     public func setActionHandler(
-        _ handler: @escaping @MainActor @Sendable (
-            RuntimeNotificationResponse
-        ) async -> Void
+        _ handler:
+            @escaping @MainActor @Sendable (
+                RuntimeNotificationResponse
+            ) async -> Void
     ) {
         router.setHandler(handler)
     }
@@ -286,11 +336,13 @@ public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
         duration: Int?,
         proposalID: String,
         blockID: String,
-        taskID: String
+        taskID: String,
+        revision: String? = nil
     ) -> UNMutableNotificationContent {
         let content = UNMutableNotificationContent()
         content.title = "Time for \(task)"
-        content.body = duration.map { "\($0) minutes scheduled." }
+        content.body =
+            duration.map { "\($0) minutes scheduled." }
             ?? "Ready when you are."
         content.sound = .default
         content.categoryIdentifier = Identifier.category
@@ -300,6 +352,7 @@ public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
             "taskID": taskID,
             "task": task,
         ]
+        if let revision { content.userInfo["taskRevision"] = revision }
         return content
     }
 
@@ -321,47 +374,33 @@ public final class LocalNotificationScheduler: RuntimeNotificationScheduling {
     private static func clock(_ value: String) -> (hour: Int, minute: Int)? {
         let pieces = value.split(separator: ":", omittingEmptySubsequences: false)
         guard pieces.count == 2,
-              pieces[0].count == 2,
-              pieces[1].count == 2,
-              let hour = Int(pieces[0]),
-              let minute = Int(pieces[1]),
-              (0...23).contains(hour),
-              (0...59).contains(minute) else { return nil }
+            pieces[0].count == 2,
+            pieces[1].count == 2,
+            let hour = Int(pieces[0]),
+            let minute = Int(pieces[1]),
+            (0...23).contains(hour),
+            (0...59).contains(minute)
+        else { return nil }
         return (hour, minute)
     }
 
-    private static func instant(
-        date: String,
-        hour: Int,
-        minute: Int,
-        timezone: TimeZone
-    ) -> Date? {
-        let pieces = date.split(separator: "-").compactMap { Int($0) }
-        guard pieces.count == 3 else { return nil }
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = timezone
-        return calendar.date(from: DateComponents(
-            timeZone: timezone,
-            year: pieces[0],
-            month: pieces[1],
-            day: pieces[2],
-            hour: hour,
-            minute: minute
-        ))
-    }
 }
 
 @MainActor
 private final class NotificationResponseRouter: NSObject, UNUserNotificationCenterDelegate {
-    private var handler: (@MainActor @Sendable (
-        RuntimeNotificationResponse
-    ) async -> Void)?
+    private var handler:
+        (
+            @MainActor @Sendable (
+                RuntimeNotificationResponse
+            ) async -> Void
+        )?
     private var buffered: [RuntimeNotificationResponse] = []
 
     func setHandler(
-        _ handler: @escaping @MainActor @Sendable (
-            RuntimeNotificationResponse
-        ) async -> Void
+        _ handler:
+            @escaping @MainActor @Sendable (
+                RuntimeNotificationResponse
+            ) async -> Void
     ) {
         self.handler = handler
         let pending = buffered
@@ -407,12 +446,13 @@ private final class NotificationResponseRouter: NSObject, UNUserNotificationCent
         default: return nil
         }
         let request = response.notification.request
-        guard request.content.categoryIdentifier
+        guard
+            request.content.categoryIdentifier
                 == LocalNotificationScheduler.Identifier.category,
-              let proposalID = request.content.userInfo["proposalID"] as? String,
-              let blockID = request.content.userInfo["blockID"] as? String,
-              let taskID = request.content.userInfo["taskID"] as? String,
-              let task = request.content.userInfo["task"] as? String
+            let proposalID = request.content.userInfo["proposalID"] as? String,
+            let blockID = request.content.userInfo["blockID"] as? String,
+            let taskID = request.content.userInfo["taskID"] as? String,
+            let task = request.content.userInfo["task"] as? String
         else { return nil }
         let decoded = RuntimeNotificationResponse(
             id: UUID().uuidString,
@@ -422,7 +462,8 @@ private final class NotificationResponseRouter: NSObject, UNUserNotificationCent
             blockID: blockID,
             taskID: taskID,
             task: task,
-            receivedAt: ISO8601DateFormatter().string(from: Date())
+            receivedAt: ISO8601DateFormatter().string(from: Date()),
+            taskRevision: request.content.userInfo["taskRevision"] as? String
         )
         return decoded.isValid ? decoded : nil
     }

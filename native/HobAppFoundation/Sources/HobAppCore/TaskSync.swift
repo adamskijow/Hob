@@ -33,8 +33,10 @@ public struct RuntimeTaskOperation: Codable, Equatable, Identifiable, Sendable {
             && taskID.utf8.count <= 128
             && sequence >= 0
             && ISO8601DateFormatter().date(from: occurredAt) != nil
-            && (task.map { validTask($0) && $0.id == taskID
-                && $0.updatedAt == occurredAt } ?? true)
+            && (task.map {
+                validTask($0) && $0.id == taskID
+                    && $0.updatedAt == occurredAt
+            } ?? true)
     }
 
     private func validTask(_ value: RuntimeTask) -> Bool {
@@ -44,6 +46,7 @@ public struct RuntimeTaskOperation: Codable, Equatable, Identifiable, Sendable {
             && value.task.utf8.count <= 10_000
             && ["open", "done", "dropped"].contains(value.status)
             && ISO8601DateFormatter().date(from: value.createdAt) != nil
+            && (value.revisionID.map { UUID(uuidString: $0) != nil } ?? true)
             && validDate(value.dueDate)
             && validTime(value.dueTime)
             && validDate(value.deadlineDate)
@@ -114,8 +117,21 @@ public enum RuntimeTaskOperationMerge {
                 throw RuntimeTaskSyncError.invalidRemoteData
             }
             if let existing = byID[operation.id], existing != operation {
-                guard operation.id.hasPrefix("migration-v9-recurrence-"),
-                      existing.taskID == operation.taskID else {
+                // Older clients preserve the operation but cannot round-trip
+                // the optional edit identity. Keep it when every other field
+                // is identical; never conceal a real payload conflict.
+                if let enriched = preservingRevision(existing, operation) {
+                    byID[operation.id] = enriched
+                    continue
+                }
+                let independentlyGenerated =
+                    operation.id.hasPrefix("baseline-")
+                    || operation.id.hasPrefix("migration-v9-recurrence-")
+                    || operation.id.hasPrefix("migration-v10-recurrence-")
+                    || operation.id.hasPrefix("migration-v11-context-")
+                guard independentlyGenerated,
+                    existing.taskID == operation.taskID
+                else {
                     throw RuntimeTaskSyncError.conflict
                 }
                 if order(existing, operation) {
@@ -128,27 +144,45 @@ public enum RuntimeTaskOperationMerge {
         return byID.values.sorted(by: order)
     }
 
+    private static func preservingRevision(
+        _ lhs: RuntimeTaskOperation, _ rhs: RuntimeTaskOperation
+    ) -> RuntimeTaskOperation? {
+        guard lhs.taskID == rhs.taskID, lhs.occurredAt == rhs.occurredAt,
+            lhs.sequence == rhs.sequence, var left = lhs.task, var right = rhs.task,
+            (left.revisionID == nil) != (right.revisionID == nil)
+        else { return nil }
+        let enriched = left.revisionID != nil ? lhs : rhs
+        left.revisionID = nil
+        right.revisionID = nil
+        return left == right ? enriched : nil
+    }
+
     public static func tasks(
         from operations: [RuntimeTaskOperation]
     ) throws -> [RuntimeTask] {
+        try compacted(operations).compactMap(\.task).sorted { $0.id < $1.id }
+    }
+
+    /// Retain the winning revision, including deletion tombstones. An offline
+    /// device can replay older operations without resurrecting deleted tasks.
+    public static func compacted(_ operations: [RuntimeTaskOperation]) throws -> [RuntimeTaskOperation] {
         let merged = try merge(local: operations, remote: [])
         var latest: [String: RuntimeTaskOperation] = [:]
         for operation in merged {
-            if let current = latest[operation.taskID],
-               !order(current, operation) {
-                continue
-            }
             latest[operation.taskID] = operation
         }
-        return latest.values.compactMap(\.task).sorted { $0.id < $1.id }
+        return merged.filter { latest[$0.taskID]?.id == $0.id }
     }
 
     private static func order(
         _ lhs: RuntimeTaskOperation,
         _ rhs: RuntimeTaskOperation
     ) -> Bool {
-        if lhs.occurredAt != rhs.occurredAt {
-            return lhs.occurredAt < rhs.occurredAt
+        let formatter = ISO8601DateFormatter()
+        if let left = formatter.date(from: lhs.occurredAt),
+            let right = formatter.date(from: rhs.occurredAt), left != right
+        {
+            return left < right
         }
         if lhs.sequence != rhs.sequence {
             return lhs.sequence < rhs.sequence

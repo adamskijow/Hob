@@ -382,10 +382,72 @@ import Testing
     let migrated = try old.validated()
     #expect(migrated.version == RuntimePersistentState.currentVersion)
     #expect(migrated.tasks.first?.recurrence == nil)
-    #expect(migrated.taskOperations.count == 2)
+    #expect(migrated.taskOperations.count == 1)
     #expect(try RuntimeTaskOperationMerge.tasks(
         from: migrated.taskOperations
     ) == migrated.tasks)
+}
+
+@Test func versionNineMigrationClosesCompletedOneOffTaskWithBadRecurrence() throws {
+    var task = state(task: "Climbing tonight").tasks[0]
+    task.recurrence = RuntimeRecurrenceRule(frequency: "week")
+    task.completionHistory = ["2026-09-03T07:00:00-04:00"]
+    let operation = RuntimeTaskOperation(
+        id: "device-a:climbing",
+        taskID: task.id,
+        occurredAt: task.updatedAt,
+        sequence: 4,
+        task: task
+    )
+    let old = RuntimePersistentState(
+        version: 9,
+        tasks: [task],
+        undoSnapshots: [],
+        taskOperations: [operation]
+    )
+
+    let migrated = try old.validated()
+    #expect(migrated.version == RuntimePersistentState.currentVersion)
+    #expect(migrated.tasks.first?.recurrence == nil)
+    #expect(migrated.tasks.first?.status == "done")
+    #expect(migrated.taskOperations.last?.id.hasPrefix(
+        "migration-v10-recurrence-"
+    ) == true)
+    #expect(try RuntimeTaskOperationMerge.tasks(
+        from: migrated.taskOperations
+    ) == migrated.tasks)
+}
+
+@Test func versionTenMigrationDropsTheAccidentalStalePromptReply() throws {
+    let old = RuntimeTask(
+        id: "old", rawText: "Plan to make an apple galeat",
+        task: "Plan to make an apple galeat", dueDate: nil, dueTime: nil,
+        status: "open", createdAt: "2026-08-30T07:00:00-04:00",
+        updatedAt: "2026-08-30T07:00:00-04:00"
+    )
+    let mistakenReply = RuntimeTask(
+        id: "reply", rawText: "It stays", task: "It stays",
+        dueDate: nil, dueTime: nil, status: "open",
+        createdAt: "2026-09-07T07:00:00-04:00",
+        updatedAt: "2026-09-07T07:00:00-04:00"
+    )
+    let state = RuntimePersistentState(
+        version: 10, tasks: [old, mistakenReply], undoSnapshots: []
+    )
+
+    let migrated = try state.validated()
+
+    #expect(migrated.tasks.first(where: { $0.id == "old" })?.status == "open")
+    #expect(migrated.tasks.first(where: { $0.id == "reply" })?.status == "dropped")
+    #expect(migrated.taskOperations.last?.id == "migration-v11-context-reply")
+    #expect(try RuntimeTaskOperationMerge.tasks(
+        from: migrated.taskOperations
+    ) == migrated.tasks)
+
+    let legitimate = try RuntimePersistentState(
+        version: 10, tasks: [mistakenReply], undoSnapshots: []
+    ).validated()
+    #expect(legitimate.tasks.first?.status == "open")
 }
 
 @Test func pureReplanRequestsDoNotInventTaskMutationsOrUndoHistory() {

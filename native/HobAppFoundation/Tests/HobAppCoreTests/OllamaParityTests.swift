@@ -115,7 +115,41 @@ private let parityZone = "America/New_York"
     )
     #expect(digest.items[0].daysOnDeck == 15)
     #expect(digest.notificationBody.contains("has been on deck 15 days"))
-    #expect(digest.notificationBody.contains("Keep, move, or drop"))
+    #expect(digest.notificationBody.contains("whether it stays, moves, or gets dropped"))
+}
+
+@Test func ongoingItemStaysVisibleWithoutStaleReview() {
+    var task = RuntimeTask(
+        id: "a1",
+        rawText: "Take my morning pill",
+        task: "Take my morning pill",
+        dueDate: nil,
+        dueTime: nil,
+        reviewPolicy: "never",
+        status: "open",
+        createdAt: "2026-07-01T09:00:00-04:00",
+        updatedAt: "2026-07-01T09:00:00-04:00"
+    )
+    let date = ISO8601DateFormatter().date(from: parityNow)!
+    let zone = TimeZone(identifier: parityZone)!
+    let digest = RuntimeMorningDigestBuilder.build(for: date, tasks: [task], proposal: nil, timezone: zone)
+
+    #expect(digest.items.map(\.task) == ["Take my morning pill"])
+    #expect(digest.items[0].daysOnDeck > 7)
+    #expect(digest.items[0].isStale == false)
+    #expect(digest.notificationBody.contains("Take my morning pill"))
+    #expect(!digest.notificationBody.contains("whether it stays"))
+
+    task.reviewPolicy = "standard"
+    let reviewed = RuntimeMorningDigestBuilder.build(for: date, tasks: [task], proposal: nil, timezone: zone)
+    #expect(reviewed.items[0].isStale)
+}
+
+@Test func olderSavedTasksDecodeWithNormalReviewPolicy() throws {
+    let json = #"{"id":"a1","rawText":"Old task","task":"Old task","status":"open","createdAt":"2026-08-01T09:00:00-04:00","updatedAt":"2026-08-01T09:00:00-04:00"}"#
+    let task = try JSONDecoder().decode(RuntimeTask.self, from: Data(json.utf8))
+    #expect(task.reviewPolicy == nil)
+    #expect(task.allowsStaleReview)
 }
 
 @Test func snoozeIntervalsGrowAndEndIndefinitely() {

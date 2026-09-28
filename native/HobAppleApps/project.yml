@@ -17,10 +17,11 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.josephadamski.hob
         PRODUCT_NAME: Hob
-        CURRENT_PROJECT_VERSION: 1
-        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: 2
+        MARKETING_VERSION: "0.10.0"
         SWIFT_VERSION: 6.0
         CODE_SIGN_ENTITLEMENTS: Hob.entitlements
+        PROVISIONING_PROFILE_SPECIFIER: "$(HOB_APP_PROFILE)"
         DEVELOPMENT_TEAM: JSW8SD9LSC
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: NO
@@ -30,3 +31,46 @@ targets:
         product: HobAppExperience
     scheme:
       gatherCoverageData: true
+  HobiOSMessageTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - ../HobAppFoundation/Tests/HobAppExperienceTests
+    settings:
+      base:
+        SWIFT_VERSION: 6.0
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.josephadamski.hob.message-tests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Hob.app/Hob"
+    dependencies:
+      - target: HobiOS
+      - package: HobAppFoundation
+        product: HobAppExperience
+  HobiOSUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: 6.0
+    dependencies:
+      - target: HobiOS
+schemes:
+  HobiOSUI:
+    build:
+      targets:
+        HobiOS: all
+    test:
+      targets: [HobiOSUITests]
+  HobiOSMessages:
+    build:
+      targets:
+        HobiOS: all
+    test:
+      targets:
+        - HobiOSMessageTests
+      environmentVariables:
+        HOB_MESSAGE_BENCHMARK: "1"
+        HOB_BENCHMARK_SPLIT: device
+        HOB_BENCHMARK_REPEATS: "1"

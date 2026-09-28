@@ -77,7 +77,7 @@ if [ "$REMOTE_OLLAMA" = false ] && ! have ollama; then
 fi
 
 # The model pull needs a running server. If nothing is serving, start one for
-# now; a durable setup lets Hearth/launchd own it (see docs/deployment.md).
+# now; a durable setup lets Hearth/launchd own it.
 if [ "$REMOTE_OLLAMA" = false ] && ! ollama_up; then
   say "Starting Ollama"
   nohup ollama serve >/tmp/hob-ollama-setup.log 2>&1 &

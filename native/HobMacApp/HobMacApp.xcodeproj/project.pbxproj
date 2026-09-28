@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AA1000000000000000000001 /* RuntimeInteractions.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000001; };
+		AA1000000000000000000002 /* RuntimeInteractions.swift in Agent Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000001; };
+		AA1000000000000000000003 /* ReminderList.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000002; };
 		A10000000000000000000001 /* AppReadiness.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* AppReadiness.swift */; };
 		A10000000000000000000002 /* HobMacShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* HobMacShell.swift */; };
 		B10000000000000000000001 /* BackgroundService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* BackgroundService.swift */; };
@@ -94,6 +97,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		AA2000000000000000000001 /* RuntimeInteractions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RuntimeInteractions.swift; path = ../HobAppFoundation/Sources/HobAppCore/RuntimeInteractions.swift; sourceTree = "<group>"; };
+		AA2000000000000000000002 /* ReminderList.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ReminderList.swift; path = ../HobAppFoundation/Sources/HobAppCore/ReminderList.swift; sourceTree = "<group>"; };
 		A20000000000000000000001 /* AppReadiness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppReadiness.swift; path = ../HobAppFoundation/Sources/HobAppCore/AppReadiness.swift; sourceTree = "<group>"; };
 		A20000000000000000000002 /* HobMacShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = HobMacShell.swift; path = ../HobAppFoundation/Sources/HobMacShell/HobMacShell.swift; sourceTree = "<group>"; };
 		A20000000000000000000003 /* Hob.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Hob.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -199,6 +204,8 @@
 				K20000000000000000000001 /* OpenLocalImport.swift */,
 				K20000000000000000000002 /* HobFirstRunView.swift */,
 				M20000000000000000000001 /* MorningDigest.swift */,
+				AA2000000000000000000001 /* RuntimeInteractions.swift */,
+				AA2000000000000000000002 /* ReminderList.swift */,
 				N20000000000000000000001 /* PlanningAnalysis.swift */,
 				O20000000000000000000001 /* TaskQueries.swift */,
 				P20000000000000000000001 /* SnoozeSequence.swift */,
@@ -374,6 +381,8 @@
 				K10000000000000000000001 /* OpenLocalImport.swift in Sources */,
 				K10000000000000000000003 /* HobFirstRunView.swift in Sources */,
 				M10000000000000000000001 /* MorningDigest.swift in Sources */,
+				AA1000000000000000000001 /* RuntimeInteractions.swift in Sources */,
+				AA1000000000000000000003 /* ReminderList.swift in Sources */,
 				N10000000000000000000001 /* PlanningAnalysis.swift in Sources */,
 				O10000000000000000000001 /* TaskQueries.swift in Sources */,
 				P10000000000000000000001 /* SnoozeSequence.swift in Sources */,
@@ -394,6 +403,7 @@
 				J10000000000000000000002 /* TaskSync.swift in Agent Sources */,
 				K10000000000000000000002 /* OpenLocalImport.swift in Agent Sources */,
 				M10000000000000000000002 /* MorningDigest.swift in Agent Sources */,
+				AA1000000000000000000002 /* RuntimeInteractions.swift in Agent Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -450,7 +460,7 @@
 				CODE_SIGN_ENTITLEMENTS = ../HobAppFoundation/AppStore/HobMacShell.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = JSW8SD9LSC;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -460,7 +470,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.1;
+				MARKETING_VERSION = 0.10.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.josephadamski.hob;
 				PRODUCT_NAME = Hob;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -474,7 +484,7 @@
 				CODE_SIGN_ENTITLEMENTS = ../HobAppFoundation/AppStore/HobMacShell.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = JSW8SD9LSC;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -484,7 +494,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.1;
+				MARKETING_VERSION = 0.10.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.josephadamski.hob;
 				PRODUCT_NAME = Hob;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -496,7 +506,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = ../HobAppFoundation/AppStore/HobAgent.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = JSW8SD9LSC;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -506,7 +516,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.1;
+				MARKETING_VERSION = 0.10.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.josephadamski.hob.agent;
 				PRODUCT_NAME = HobAgent;
 				SKIP_INSTALL = YES;
@@ -519,7 +529,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = ../HobAppFoundation/AppStore/HobAgent.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = JSW8SD9LSC;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -529,7 +539,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.1;
+				MARKETING_VERSION = 0.10.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.josephadamski.hob.agent;
 				PRODUCT_NAME = HobAgent;
 				SKIP_INSTALL = YES;

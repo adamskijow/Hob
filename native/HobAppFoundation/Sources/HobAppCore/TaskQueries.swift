@@ -28,6 +28,7 @@ public enum RuntimeTaskQueryEngine {
             title = "Today"
             matches = open.filter {
                 !$0.isWaiting && ($0.dueDate.map { $0 <= todayText } ?? true)
+                    && !$0.isMissedTimedItem(on: todayText)
             }
         case "date":
             guard let date = resolve(action.when, from: today, calendar: calendar) else {
@@ -41,7 +42,8 @@ public enum RuntimeTaskQueryEngine {
             title = "Next 7 days"
             matches = open.filter { task in
                 guard !task.isWaiting, let due = task.dueDate,
-                      let date = parse(due, calendar: calendar) else { return false }
+                    let date = parse(due, calendar: calendar)
+                else { return false }
                 return date >= today && date < end
             }
         case "overdue":
@@ -95,11 +97,13 @@ public enum RuntimeTaskQueryEngine {
         }
         let upperBound = calendar.date(byAdding: .day, value: 1, to: today) ?? today
         let matches = tasks.compactMap { task -> (RuntimeTask, Date)? in
-            let recorded = task.completionHistory
+            let recorded =
+                task.completionHistory
                 ?? (task.status == "done" ? [task.updatedAt] : [])
             let dates = recorded.compactMap(ISO8601DateFormatter().date)
             guard let latest = dates.max(), latest < upperBound,
-                  lowerBound.map({ latest >= $0 }) ?? true else { return nil }
+                lowerBound.map({ latest >= $0 }) ?? true
+            else { return nil }
             return (task, latest)
         }.sorted { $0.1 > $1.1 }.map(\.0)
         return list(title: title, tasks: matches)
@@ -128,34 +132,13 @@ public enum RuntimeTaskQueryEngine {
         from today: Date,
         calendar: Calendar
     ) -> Date? {
-        guard let intent else { return nil }
-        switch intent.kind {
-        case "today": return today
-        case "tomorrow": return calendar.date(byAdding: .day, value: 1, to: today)
-        case "weekday":
-            let values = ["sun": 1, "mon": 2, "tue": 3, "wed": 4, "thu": 5, "fri": 6, "sat": 7]
-            guard let target = intent.day.flatMap({ values[$0] }) else { return nil }
-            let current = calendar.component(.weekday, from: today)
-            var delta = (target - current + 7) % 7
-            if delta == 0 && intent.which != "this" { delta = 7 }
-            return calendar.date(byAdding: .day, value: delta, to: today)
-        case "offset":
-            guard let n = intent.n else { return nil }
-            let component: Calendar.Component
-            switch intent.unit {
-            case "day": component = .day
-            case "week": component = .weekOfYear
-            case "month": component = .month
-            case "year": component = .year
-            default: return nil
-            }
-            return calendar.date(byAdding: component, value: n, to: today)
-        case "absolute":
-            guard let year = intent.year, let month = intent.month,
-                  let day = intent.dayNumber else { return nil }
-            return calendar.date(from: DateComponents(year: year, month: month, day: day))
-        default: return nil
-        }
+        guard
+            case .date(let value?) = RuntimeDateResolver.resolve(
+                intent, now: ISO8601DateFormatter().string(from: today),
+                timezone: calendar.timeZone.identifier
+            )
+        else { return nil }
+        return parse(value, calendar: calendar)
     }
 
     private static func day(_ date: Date, calendar: Calendar) -> String {

@@ -11,7 +11,7 @@
   <img src="https://img.shields.io/badge/iPhone%20%2B%20Mac-black?logo=apple&logoColor=white" alt="iPhone and Mac">
 </p>
 
-Hob is a planner for iPhone and Mac. Describe work or ask about your plan in
+Hob is a reminder app for iPhone and Mac. Add reminders or make changes in
 ordinary language. Apple's Foundation Models framework interprets each message
 on the device, and private iCloud sync keeps tasks aligned across your devices.
 
@@ -19,10 +19,12 @@ on the device, and private iCloud sync keeps tasks aligned across your devices.
 
 - Captures tasks, appointments, deadlines, priority, effort, and recurrence.
 - Keeps untimed work on deck without assigning arbitrary times.
+- Supports ongoing items that stay on Today without stale-item check-ins.
 - Builds a proposed schedule only when asked.
 - Answers planning and task-history questions without changing state.
-- Shows a living daily plan with task editing and completion.
-- Sends optional morning, evening, and scheduled-task notifications.
+- Separates Today, Upcoming, and History, with tap-to-edit dates and times.
+- Sends optional, time-pickable morning digests, nightly “What got done?”
+  check-ins, and scheduled-task notifications.
 - Can read selected Apple calendars as busy time; this is off by default.
 - Keeps Calendar integration one-way and never creates or edits events.
 

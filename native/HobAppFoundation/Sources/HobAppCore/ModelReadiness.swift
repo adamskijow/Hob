@@ -39,7 +39,8 @@ public enum ModelReadinessState: String, Codable, Equatable, Sendable {
         case .timedOut:
             return "The model did not respond within 30 seconds. Check again before finishing setup."
         case .invalidResponse:
-            return "The model tool returned an invalid readiness response. Update or reinstall Hob before relying on it."
+            return
+                "The model tool returned an invalid readiness response. Update or reinstall Hob before relying on it."
         }
     }
 }

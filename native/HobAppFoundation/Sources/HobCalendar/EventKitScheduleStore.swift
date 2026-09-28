@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 import EventKit
 import Foundation
+
 #if canImport(HobAppCore)
-import HobAppCore
+    import HobAppCore
 #endif
 
 @MainActor
@@ -143,13 +144,13 @@ enum EventKitBusyEventPolicy {
         excludingProposalID: String?
     ) -> Bool {
         guard !isCanceled,
-              !isFree,
-              blockAllDayEvents || !isAllDay
+            !isFree,
+            blockAllDayEvents || !isAllDay
         else { return false }
         guard let excludingProposalID,
-              let url,
-              url.scheme == "hob",
-              url.host == "schedule"
+            let url,
+            url.scheme == "hob",
+            url.host == "schedule"
         else { return true }
         return url.pathComponents.dropFirst().first != excludingProposalID
     }

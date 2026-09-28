@@ -44,6 +44,7 @@ private func portableTasks(_ tasks: [RuntimeTask]) -> [RuntimeTask] {
         portable.note = nil
         portable.waitingSince = nil
         portable.completionHistory = nil
+        portable.revisionID = nil // Native edit identity is outside the portable task contract.
         return portable
     }
 }

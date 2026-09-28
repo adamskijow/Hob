@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 import SwiftUI
+
 #if canImport(HobAppCore)
-import HobAppCore
+    import HobAppCore
 #endif
 
 struct HobFirstRunView: View {
@@ -15,12 +16,15 @@ struct HobFirstRunView: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 18) {
-                Group {
-                    switch step {
-                    case 0: welcome
-                    case 1: connections
-                    default: ready
+                ScrollView {
+                    Group {
+                        switch step {
+                        case 0: welcome
+                        case 1: connections
+                        default: ready
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
@@ -56,7 +60,9 @@ struct HobFirstRunView: View {
                 .foregroundStyle(.tint)
                 .accessibilityHidden(true)
             Text("A plan you can actually follow").font(.largeTitle.bold())
-            Text("Describe the work. Hob uses Apple Intelligence on this device and keeps it on deck until you ask for a schedule.")
+            Text(
+                "Describe the work. Hob uses Apple Intelligence on this device and keeps it on deck until you ask for a schedule."
+            )
             Label("Messages and Calendar details stay on this device.", systemImage: "lock.shield")
             Label("Tasks sync privately through your iCloud account.", systemImage: "icloud")
         }
@@ -104,15 +110,36 @@ struct HobFirstRunView: View {
             setupRow(
                 title: "Notifications",
                 detail: controller.notificationAuthorization == .authorized
-                    ? "Daily check-ins and start reminders available"
-                    : "Morning and evening check-ins plus task reminders",
+                    ? "Choose the check-ins you want"
+                    : "Morning, nightly, and scheduled-task reminders",
                 symbol: "bell"
             ) {
-                if controller.notificationAuthorization == .notDetermined {
+                switch controller.notificationAuthorization {
+                case .authorized:
+                    Label("Enabled", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                case .notDetermined:
                     Button("Enable") { controller.requestNotificationAccess() }
+                case .denied:
+                    Label("Enable in Settings", systemImage: "bell.slash")
+                        .foregroundStyle(.orange)
                 }
+                checkInControl(
+                    title: "Morning digest",
+                    enabled: controller.morningDigestEnabled,
+                    selection: controller.morningDigestTime,
+                    setEnabled: controller.setMorningDigestEnabled,
+                    setTime: controller.setMorningDigestTime
+                )
+                checkInControl(
+                    title: "Nightly “What got done?”",
+                    enabled: controller.eveningRecapEnabled,
+                    selection: controller.eveningRecapTime,
+                    setEnabled: controller.setEveningRecapEnabled,
+                    setTime: controller.setEveningRecapTime
+                )
             }
-            Text("Calendar and reminders are optional.")
+            Text("Calendar and notifications are optional.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             if let notice = controller.notice {
@@ -136,8 +163,10 @@ struct HobFirstRunView: View {
                 .accessibilityHidden(true)
             Text(readyTitle).font(.largeTitle.bold())
             Text("Try: “Finish taxes by Friday, high priority, about 90 minutes.”")
-            Text("Untimed work stays on deck. Ask Hob to plan it when you want time blocks. Calendar changes still require approval.")
-                .foregroundStyle(.secondary)
+            Text(
+                "Untimed work stays on deck. Ask Hob to plan it when you want time blocks. Calendar changes still require approval."
+            )
+            .foregroundStyle(.secondary)
             if !controller.modelReadiness.isReady {
                 Label(modelAttentionMessage, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
@@ -185,7 +214,8 @@ struct HobFirstRunView: View {
 
     private var modelAttentionMessage: String {
         if reviewingExistingSetup {
-            return "Apple Intelligence did not answer the latest check. You can close this review and check again later."
+            return
+                "Apple Intelligence did not answer the latest check. You can close this review and check again later."
         }
         return "Apple Intelligence must be ready before Hob can interpret tasks."
     }
@@ -205,6 +235,39 @@ struct HobFirstRunView: View {
             actions()
         }
         .accessibilityElement(children: .contain)
+    }
+
+    private func checkInControl(
+        title: String,
+        enabled: Bool,
+        selection: String,
+        setEnabled: @escaping @MainActor @Sendable (Bool) -> Void,
+        setTime: @escaping @MainActor @Sendable (String) -> Void
+    ) -> some View {
+        HStack(spacing: 10) {
+            Toggle(
+                title,
+                isOn: Binding(get: { enabled }, set: setEnabled)
+            )
+            Menu(HobWorkspaceController.morningDigestTimeLabel(selection)) {
+                ForEach(HobWorkspaceController.validMorningDigestTimes, id: \.self) { time in
+                    Button {
+                        setTime(time)
+                    } label: {
+                        if time == selection {
+                            Label(
+                                HobWorkspaceController.morningDigestTimeLabel(time),
+                                systemImage: "checkmark"
+                            )
+                        } else {
+                            Text(HobWorkspaceController.morningDigestTimeLabel(time))
+                        }
+                    }
+                }
+            }
+            .disabled(!enabled)
+            .accessibilityLabel("\(title) time")
+        }
     }
 
     private var syncDetail: String {

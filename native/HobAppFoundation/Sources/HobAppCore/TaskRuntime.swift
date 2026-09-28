@@ -77,9 +77,13 @@ public struct RuntimeTask: Codable, Equatable, Sendable {
     public var note: String?
     public var waitingSince: String?
     public var completionHistory: [String]?
+    /// `never` keeps an ongoing item visible without stale-item check-ins.
+    public var reviewPolicy: String?
     public var status: String
     public let createdAt: String
     public var updatedAt: String
+    /// An edit identity independent of wall-clock precision. Older tasks use their timestamp.
+    public var revisionID: String?
     public var sourceArchive: String?
 
     public init(
@@ -95,10 +99,12 @@ public struct RuntimeTask: Codable, Equatable, Sendable {
         note: String? = nil,
         waitingSince: String? = nil,
         completionHistory: [String]? = nil,
+        reviewPolicy: String? = nil,
         status: String,
         createdAt: String,
         updatedAt: String,
-        sourceArchive: String? = nil
+        sourceArchive: String? = nil,
+        revisionID: String? = nil
     ) {
         self.id = id
         self.rawText = rawText
@@ -112,25 +118,39 @@ public struct RuntimeTask: Codable, Equatable, Sendable {
         self.note = note
         self.waitingSince = waitingSince
         self.completionHistory = completionHistory
+        self.reviewPolicy = reviewPolicy
         self.status = status
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.sourceArchive = sourceArchive
+        self.revisionID = revisionID
     }
 }
 
-public extension RuntimeTask {
+extension RuntimeTask {
     /// A clock time describes a one-time appointment. Once its date has passed,
     /// Hob keeps the item for recovery without silently moving it to another day.
-    func isMissedTimedItem(on day: String) -> Bool {
+    public func isMissedTimedItem(on day: String) -> Bool {
         status == "open"
             && dueTime != nil
             && (dueDate ?? String(createdAt.prefix(10))) < day
     }
 
-    var isWaiting: Bool { waitingSince != nil }
+    public var isWaiting: Bool { waitingSince != nil }
 
-    var completedAt: String? { completionHistory?.last }
+    public var completedAt: String? { completionHistory?.last }
+
+    public var allowsStaleReview: Bool { reviewPolicy != "never" }
+
+    public var revision: String { revisionID.map { "\(updatedAt)#\($0)" } ?? updatedAt }
+
+    public static func isValidRevision(_ value: String) -> Bool {
+        let parts = value.split(separator: "#", omittingEmptySubsequences: false)
+        guard (1...2).contains(parts.count),
+            ISO8601DateFormatter().date(from: String(parts[0])) != nil
+        else { return false }
+        return parts.count == 1 || UUID(uuidString: String(parts[1])) != nil
+    }
 }
 
 public enum RuntimeRecurrenceEvidence {
@@ -198,7 +218,19 @@ public struct RuntimeDateIntent: Codable, Equatable, Sendable {
     }
 }
 
+public enum RuntimeActionKind: String, Codable, CaseIterable, Sendable {
+    case capture, complete, drop, reschedule, amend, revise, note, wait, resume, keep, recurrence
+    case acknowledge, social, undo, replan, query, analysis
+
+    public static let edits: Set<Self> = [
+        .complete, .drop, .reschedule, .amend, .revise, .note, .wait, .resume, .keep, .recurrence,
+    ]
+    public static let mutations: Set<Self> = edits.union([.capture])
+}
+
 public struct RuntimeAction: Codable, Equatable, Sendable {
+    /// Decode unknown wire values without executing them; routing uses the typed kind.
+    public var kind: RuntimeActionKind? { RuntimeActionKind(rawValue: type) }
     public let type: String
     public let task: String?
     public let raw: String?
@@ -212,6 +244,7 @@ public struct RuntimeAction: Codable, Equatable, Sendable {
     public let recurrenceOperation: String?
     public let note: String?
     public let clearFields: [String]?
+    public var reviewPolicy: String?
     public let queryKind: String?
     public let queryTerm: String?
     public let queryPeriod: String?
@@ -236,6 +269,7 @@ public struct RuntimeAction: Codable, Equatable, Sendable {
         recurrenceOperation: String? = nil,
         note: String? = nil,
         clearFields: [String]? = nil,
+        reviewPolicy: String? = nil,
         queryKind: String? = nil,
         queryTerm: String? = nil,
         queryPeriod: String? = nil,
@@ -259,6 +293,7 @@ public struct RuntimeAction: Codable, Equatable, Sendable {
         self.recurrenceOperation = recurrenceOperation
         self.note = note
         self.clearFields = clearFields
+        self.reviewPolicy = reviewPolicy
         self.queryKind = queryKind
         self.queryTerm = queryTerm
         self.queryPeriod = queryPeriod
@@ -437,7 +472,7 @@ public struct RuntimePipelineStatus: Codable, Equatable, Sendable {
 }
 
 public struct RuntimePersistentState: Codable, Equatable, Sendable {
-    public static let currentVersion = 9
+    public static let currentVersion = 13
 
     public let version: Int
     public let tasks: [RuntimeTask]
@@ -477,14 +512,16 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         self.calendarCleanupEventIDs = calendarCleanupEventIDs
         self.notificationCleanupIDs = notificationCleanupIDs
         self.pendingNotificationResponses = pendingNotificationResponses
-        self.taskOperations = taskOperations ?? tasks.map {
-            RuntimeTaskOperation(
-                id: "baseline-\($0.id)",
-                taskID: $0.id,
-                occurredAt: $0.updatedAt,
-                task: $0
-            )
-        }
+        self.taskOperations =
+            taskOperations
+            ?? tasks.map {
+                RuntimeTaskOperation(
+                    id: "baseline-\($0.id)",
+                    taskID: $0.id,
+                    occurredAt: $0.updatedAt,
+                    task: $0
+                )
+            }
     }
 
     public static let empty = RuntimePersistentState(tasks: [], undoSnapshots: [])
@@ -509,42 +546,78 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         let migrated: RuntimePersistentState
         if version < Self.currentVersion {
             if version == 1,
-               (!inbox.isEmpty || !outbox.isEmpty || nextSequence != 1) {
+                !inbox.isEmpty || !outbox.isEmpty || nextSequence != 1
+            {
                 throw RuntimeStateError.invalidState
             }
-            let repairedTasks = version < 9 ? tasks.map(Self.repairRecurrence) : tasks
-            let repairedUndo = version < 9
+            let recurrenceRepairedTasks =
+                version < 10
+                ? tasks.map(Self.repairRecurrence) : tasks
+            let recurrenceRepairedUndo =
+                version < 10
                 ? undoSnapshots.map { $0.map(Self.repairRecurrence) }
                 : undoSnapshots
-            let existingOperations = version >= 7 ? taskOperations : tasks.map {
-                RuntimeTaskOperation(
-                    id: "baseline-\($0.id)",
-                    taskID: $0.id,
-                    occurredAt: $0.updatedAt,
-                    task: $0
-                )
-            }
-            let repairedOperations: [RuntimeTaskOperation]
-            if version < 9 {
+            let repairedTasks =
+                version < 11
+                ? Self.repairContextualCaptures(recurrenceRepairedTasks)
+                : recurrenceRepairedTasks
+            let repairedUndo =
+                version < 11
+                ? recurrenceRepairedUndo.map(Self.repairContextualCaptures)
+                : recurrenceRepairedUndo
+            let existingOperations =
+                version >= 7
+                ? taskOperations
+                : tasks.map {
+                    RuntimeTaskOperation(
+                        id: "baseline-\($0.id)",
+                        taskID: $0.id,
+                        occurredAt: $0.updatedAt,
+                        task: $0
+                    )
+                }
+            let recurrenceRepairedOperations: [RuntimeTaskOperation]
+            if version < 10 {
                 let lastSequence = existingOperations.map(\.sequence).max() ?? 0
-                let corrections = zip(tasks, repairedTasks).enumerated().compactMap {
+                let corrections = zip(tasks, recurrenceRepairedTasks).enumerated().compactMap {
                     offset, pair -> RuntimeTaskOperation? in
                     guard pair.0 != pair.1 else { return nil }
                     return RuntimeTaskOperation(
-                        id: "migration-v9-recurrence-\(pair.1.id)",
+                        id: "migration-v10-recurrence-\(pair.1.id)",
                         taskID: pair.1.id,
                         occurredAt: pair.1.updatedAt,
                         sequence: lastSequence + offset + 1,
                         task: pair.1
                     )
                 }
-                repairedOperations = existingOperations + corrections
+                recurrenceRepairedOperations = existingOperations + corrections
             } else {
-                repairedOperations = existingOperations
+                recurrenceRepairedOperations = existingOperations
             }
+            let repairedOperations: [RuntimeTaskOperation]
+            if version < 11 {
+                let lastSequence = recurrenceRepairedOperations.map(\.sequence).max() ?? 0
+                let corrections = zip(recurrenceRepairedTasks, repairedTasks)
+                    .enumerated().compactMap {
+                        offset, pair -> RuntimeTaskOperation? in
+                        guard pair.0 != pair.1 else { return nil }
+                        return RuntimeTaskOperation(
+                            id: "migration-v11-context-\(pair.1.id)",
+                            taskID: pair.1.id,
+                            occurredAt: pair.1.updatedAt,
+                            sequence: lastSequence + offset + 1,
+                            task: pair.1
+                        )
+                    }
+                repairedOperations = recurrenceRepairedOperations + corrections
+            } else {
+                repairedOperations = recurrenceRepairedOperations
+            }
+            let compacted = try RuntimeTaskOperationMerge.compacted(repairedOperations)
+            let chronologicalTasks = try RuntimeTaskOperationMerge.tasks(from: compacted)
             migrated = RuntimePersistentState(
-                tasks: repairedTasks,
-                undoSnapshots: repairedUndo,
+                tasks: chronologicalTasks,
+                undoSnapshots: chronologicalTasks == repairedTasks.sorted(by: { $0.id < $1.id }) ? repairedUndo : [],
                 inbox: version == 1 ? [] : inbox,
                 outbox: version == 1 ? [] : outbox,
                 nextSequence: version == 1 ? 1 : nextSequence,
@@ -556,42 +629,45 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
                     ? notificationCleanupIDs : [],
                 pendingNotificationResponses: version >= 6
                     ? pendingNotificationResponses : [],
-                taskOperations: repairedOperations
+                taskOperations: compacted
             )
         } else {
             migrated = self
         }
         guard migrated.tasks.count <= 10_000,
-              migrated.undoSnapshots.count <= 100,
-              migrated.inbox.count <= 10_000,
-              migrated.outbox.count <= 10_000,
-              migrated.calendarCleanupEventIDs.count <= 10_000,
-              Set(migrated.calendarCleanupEventIDs).count
+            migrated.undoSnapshots.count <= 100,
+            migrated.inbox.count <= 10_000,
+            migrated.outbox.count <= 10_000,
+            migrated.calendarCleanupEventIDs.count <= 10_000,
+            Set(migrated.calendarCleanupEventIDs).count
                 == migrated.calendarCleanupEventIDs.count,
-              migrated.calendarCleanupEventIDs.allSatisfy({
-                  Self.validIdentifier($0, maxBytes: 1_024)
-              }),
-              migrated.notificationCleanupIDs.count <= 10_000,
-              Set(migrated.notificationCleanupIDs).count
+            migrated.calendarCleanupEventIDs.allSatisfy({
+                Self.validIdentifier($0, maxBytes: 1_024)
+            }),
+            migrated.notificationCleanupIDs.count <= 10_000,
+            Set(migrated.notificationCleanupIDs).count
                 == migrated.notificationCleanupIDs.count,
-              migrated.notificationCleanupIDs.allSatisfy({
-                  Self.validIdentifier($0, maxBytes: 512)
-              }),
-              migrated.pendingNotificationResponses.count <= 100,
-              Set(migrated.pendingNotificationResponses.map(\.id)).count
+            migrated.notificationCleanupIDs.allSatisfy({
+                Self.validIdentifier($0, maxBytes: 512)
+            }),
+            migrated.pendingNotificationResponses.count <= 100,
+            Set(migrated.pendingNotificationResponses.map(\.id)).count
                 == migrated.pendingNotificationResponses.count,
-              migrated.pendingNotificationResponses.allSatisfy(\.isValid),
-              migrated.taskOperations.count <= 50_000,
-              Set(migrated.taskOperations.map(\.id)).count
+            migrated.pendingNotificationResponses.allSatisfy(\.isValid),
+            migrated.taskOperations.count <= 50_000,
+            Set(migrated.taskOperations.map(\.id)).count
                 == migrated.taskOperations.count,
-              migrated.taskOperations.allSatisfy(\.isValid),
-              migrated.nextSequence > 0 else {
+            migrated.taskOperations.allSatisfy(\.isValid),
+            migrated.nextSequence > 0
+        else {
             throw RuntimeStateError.invalidState
         }
         try Self.validate(migrated.tasks)
-        guard (try? RuntimeTaskOperationMerge.tasks(
-            from: migrated.taskOperations
-        )) == migrated.tasks.sorted(by: { $0.id < $1.id }) else {
+        guard
+            (try? RuntimeTaskOperationMerge.tasks(
+                from: migrated.taskOperations
+            )) == migrated.tasks.sorted(by: { $0.id < $1.id })
+        else {
             throw RuntimeStateError.invalidState
         }
         for snapshot in migrated.undoSnapshots {
@@ -600,7 +676,8 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         }
         try Self.validatePipeline(migrated)
         guard RuntimeScheduleValidator.valid(migrated.latestProposal),
-              RuntimeScheduleValidator.valid(migrated.adoptedSchedule) else {
+            RuntimeScheduleValidator.valid(migrated.adoptedSchedule)
+        else {
             throw RuntimeStateError.invalidState
         }
         return migrated
@@ -608,12 +685,66 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
 
     private static func repairRecurrence(_ task: RuntimeTask) -> RuntimeTask {
         guard task.recurrence != nil,
-              !RuntimeRecurrenceEvidence.isExplicit(in: task.rawText) else {
+            !RuntimeRecurrenceEvidence.isExplicit(in: task.rawText)
+        else {
             return task
         }
         var repaired = task
         repaired.recurrence = nil
+        if repaired.completionHistory?.isEmpty == false {
+            repaired.status = "done"
+            repaired.waitingSince = nil
+        }
         return repaired
+    }
+
+    private static func repairContextualCaptures(
+        _ tasks: [RuntimeTask]
+    ) -> [RuntimeTask] {
+        tasks.map { candidate in
+            let normalized = candidate.task.lowercased().split {
+                !$0.isLetter && !$0.isNumber
+            }.joined(separator: " ")
+            guard candidate.status == "open",
+                normalized == "it stays",
+                candidate.rawText.lowercased().split(whereSeparator: {
+                    !$0.isLetter && !$0.isNumber
+                }).joined(separator: " ") == normalized,
+                candidate.dueDate == nil,
+                candidate.dueTime == nil,
+                candidate.deadlineDate == nil,
+                candidate.durationMinutes == nil,
+                candidate.recurrence == nil,
+                candidate.note == nil,
+                candidate.completionHistory?.isEmpty != false,
+                tasks.contains(where: { other in
+                    other.id != candidate.id
+                        && other.status == "open"
+                        && !other.isWaiting
+                        && daysBetween(other.createdAt, candidate.createdAt) >= 7
+                })
+            else { return candidate }
+            var repaired = candidate
+            repaired.status = "dropped"
+            return repaired
+        }
+    }
+
+    private static func daysBetween(_ earlier: String, _ later: String) -> Int {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.isLenient = false
+        guard let start = formatter.date(from: String(earlier.prefix(10))),
+            let end = formatter.date(from: String(later.prefix(10)))
+        else {
+            return 0
+        }
+        return Calendar(identifier: .gregorian).dateComponents(
+            [.day], from: start, to: end
+        ).day ?? 0
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -636,14 +767,16 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         version = try container.decode(Int.self, forKey: .version)
         tasks = try container.decode([RuntimeTask].self, forKey: .tasks)
         undoSnapshots = try container.decode([[RuntimeTask]].self, forKey: .undoSnapshots)
-        inbox = try container.decodeIfPresent(
-            [RuntimeInboundRecord].self,
-            forKey: .inbox
-        ) ?? []
-        outbox = try container.decodeIfPresent(
-            [RuntimeOutboundRecord].self,
-            forKey: .outbox
-        ) ?? []
+        inbox =
+            try container.decodeIfPresent(
+                [RuntimeInboundRecord].self,
+                forKey: .inbox
+            ) ?? []
+        outbox =
+            try container.decodeIfPresent(
+                [RuntimeOutboundRecord].self,
+                forKey: .outbox
+            ) ?? []
         nextSequence = try container.decodeIfPresent(Int.self, forKey: .nextSequence) ?? 1
         latestProposal = try container.decodeIfPresent(
             RuntimeScheduleProposal.self,
@@ -653,29 +786,34 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
             RuntimeAdoptedSchedule.self,
             forKey: .adoptedSchedule
         )
-        calendarCleanupEventIDs = try container.decodeIfPresent(
-            [String].self,
-            forKey: .calendarCleanupEventIDs
-        ) ?? []
-        notificationCleanupIDs = try container.decodeIfPresent(
-            [String].self,
-            forKey: .notificationCleanupIDs
-        ) ?? []
-        pendingNotificationResponses = try container.decodeIfPresent(
-            [RuntimeNotificationResponse].self,
-            forKey: .pendingNotificationResponses
-        ) ?? []
-        taskOperations = try container.decodeIfPresent(
-            [RuntimeTaskOperation].self,
-            forKey: .taskOperations
-        ) ?? tasks.map {
-            RuntimeTaskOperation(
-                id: "baseline-\($0.id)",
-                taskID: $0.id,
-                occurredAt: $0.updatedAt,
-                task: $0
+        calendarCleanupEventIDs =
+            try container.decodeIfPresent(
+                [String].self,
+                forKey: .calendarCleanupEventIDs
+            ) ?? []
+        notificationCleanupIDs =
+            try container.decodeIfPresent(
+                [String].self,
+                forKey: .notificationCleanupIDs
+            ) ?? []
+        pendingNotificationResponses =
+            try container.decodeIfPresent(
+                [RuntimeNotificationResponse].self,
+                forKey: .pendingNotificationResponses
+            ) ?? []
+        taskOperations =
+            try container.decodeIfPresent(
+                [RuntimeTaskOperation].self,
+                forKey: .taskOperations
             )
-        }
+            ?? tasks.map {
+                RuntimeTaskOperation(
+                    id: "baseline-\($0.id)",
+                    taskID: $0.id,
+                    occurredAt: $0.updatedAt,
+                    task: $0
+                )
+            }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -702,13 +840,13 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         var inboundSequences: Set<Int> = []
         for record in state.inbox {
             guard record.sequence > 0,
-                  inboundSequences.insert(record.sequence).inserted,
-                  validRequest(record.request),
-                  inboundIDs.insert(record.request.requestID).inserted,
-                  validTimestamp(record.receivedAt),
-                  validTimestamp(record.updatedAt),
-                  validFailureCode(record.failureCode),
-                  (record.status == .quarantined) == (record.failureCode != nil)
+                inboundSequences.insert(record.sequence).inserted,
+                validRequest(record.request),
+                inboundIDs.insert(record.request.requestID).inserted,
+                validTimestamp(record.receivedAt),
+                validTimestamp(record.updatedAt),
+                validFailureCode(record.failureCode),
+                (record.status == .quarantined) == (record.failureCode != nil)
             else { throw RuntimeStateError.invalidState }
         }
         let inboundByID = Dictionary(
@@ -721,21 +859,21 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         var outboundCountByRequestID: [String: Int] = [:]
         for record in state.outbox {
             guard record.sequence > 0,
-                  outboundSequences.insert(record.sequence).inserted,
-                  validIdentifier(record.requestID),
-                  outboundIDs.insert(record.requestID).inserted,
-                  validIdentifier(record.dedupeKey, maxBytes: 256),
-                  record.dedupeKey == "turn:\(record.requestID)",
-                  outboundKeys.insert(record.dedupeKey).inserted,
-                  validTimestamp(record.createdAt),
-                  record.attempts >= 0,
-                  record.attempts <= 1_000,
-                  validFailureCode(record.lastFailureCode),
-                  record.summary.appliedKinds.count <= 32,
-                  record.summary.appliedKinds.allSatisfy({ validIdentifier($0) }),
-                  record.summary.affectedTaskIDs.count <= 64,
-                  Set(record.summary.affectedTaskIDs).count == record.summary.affectedTaskIDs.count,
-                  record.summary.affectedTaskIDs.allSatisfy({ validIdentifier($0) })
+                outboundSequences.insert(record.sequence).inserted,
+                validIdentifier(record.requestID),
+                outboundIDs.insert(record.requestID).inserted,
+                validIdentifier(record.dedupeKey, maxBytes: 256),
+                record.dedupeKey == "turn:\(record.requestID)",
+                outboundKeys.insert(record.dedupeKey).inserted,
+                validTimestamp(record.createdAt),
+                record.attempts >= 0,
+                record.attempts <= 1_000,
+                validFailureCode(record.lastFailureCode),
+                record.summary.appliedKinds.count <= 32,
+                record.summary.appliedKinds.allSatisfy({ validIdentifier($0) }),
+                record.summary.affectedTaskIDs.count <= 64,
+                Set(record.summary.affectedTaskIDs).count == record.summary.affectedTaskIDs.count,
+                record.summary.affectedTaskIDs.allSatisfy({ validIdentifier($0) })
             else { throw RuntimeStateError.invalidState }
             if record.status == .pending && record.deliveredAt != nil {
                 throw RuntimeStateError.invalidState
@@ -744,15 +882,17 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
                 throw RuntimeStateError.invalidState
             }
             guard let inbound = inboundByID[record.requestID],
-                  inbound.status == .completed,
-                  inbound.sequence == record.sequence else {
+                inbound.status == .completed,
+                inbound.sequence == record.sequence
+            else {
                 throw RuntimeStateError.invalidState
             }
             outboundCountByRequestID[record.requestID, default: 0] += 1
         }
         for inbound in state.inbox {
             let outboundCount = outboundCountByRequestID[inbound.request.requestID] ?? 0
-            guard (inbound.status == .completed && outboundCount == 1)
+            guard
+                (inbound.status == .completed && outboundCount == 1)
                     || (inbound.status != .completed && outboundCount == 0)
             else { throw RuntimeStateError.invalidState }
         }
@@ -786,6 +926,7 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
             && bounded(action.time, maxBytes: 16)
             && (action.durationMinutes.map { (5...480).contains($0) } ?? true)
             && (action.priority.map { ["high", "normal", "low"].contains($0) } ?? true)
+            && (action.reviewPolicy.map { ["standard", "never"].contains($0) } ?? true)
             && (action.recurrence?.isValid ?? true)
             && (action.recurrenceOperation.map {
                 ["skip", "stop"].contains($0)
@@ -849,33 +990,39 @@ public struct RuntimePersistentState: Codable, Equatable, Sendable {
         return ISO8601DateFormatter().date(from: value) != nil
     }
 
+    private static func validCompletionHistory(_ history: [String]?) -> Bool {
+        guard let history else { return true }
+        return history.count <= 10_000 && history.allSatisfy(validTimestamp)
+    }
+
     private static func validate(_ tasks: [RuntimeTask]) throws {
         var identifiers: Set<String> = []
         for task in tasks {
             guard !task.id.isEmpty,
-                  task.id.utf8.count <= 128,
-                  identifiers.insert(task.id).inserted,
-                  !task.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  task.task.utf8.count <= 10_000,
-                  !task.rawText.isEmpty,
-                  task.rawText.utf8.count <= 20_000,
-                  ["open", "done", "dropped"].contains(task.status),
-                  ISO8601DateFormatter().date(from: task.createdAt) != nil,
-                  ISO8601DateFormatter().date(from: task.updatedAt) != nil,
-                  validDate(task.dueDate),
-                  validTime(task.dueTime),
-                  validDate(task.deadlineDate),
-                  (task.durationMinutes.map { (5...480).contains($0) } ?? true),
-                  (task.priority.map { ["high", "normal", "low"].contains($0) } ?? true),
-                  (task.recurrence?.isValid ?? true),
-                  (task.note.map { $0.utf8.count <= 10_000 } ?? true),
-                  (task.waitingSince.map { validTimestamp($0) } ?? true),
-                  (task.completionHistory.map {
-                      $0.count <= 10_000 && $0.allSatisfy(validTimestamp)
-                  } ?? true),
-                  (task.sourceArchive.map { $0.utf8.count <= 20_000 } ?? true),
-                  task.dueDate == nil || task.deadlineDate == nil
-                    || task.dueDate! <= task.deadlineDate! else {
+                task.id.utf8.count <= 128,
+                identifiers.insert(task.id).inserted,
+                !task.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                task.task.utf8.count <= 10_000,
+                !task.rawText.isEmpty,
+                task.rawText.utf8.count <= 20_000,
+                ["open", "done", "dropped"].contains(task.status),
+                ISO8601DateFormatter().date(from: task.createdAt) != nil,
+                ISO8601DateFormatter().date(from: task.updatedAt) != nil,
+                task.revisionID.map({ UUID(uuidString: $0) != nil }) ?? true,
+                validDate(task.dueDate),
+                validTime(task.dueTime),
+                validDate(task.deadlineDate),
+                task.durationMinutes.map({ (5...480).contains($0) }) ?? true,
+                task.priority.map({ ["high", "normal", "low"].contains($0) }) ?? true,
+                task.reviewPolicy.map({ ["standard", "never"].contains($0) }) ?? true,
+                task.recurrence?.isValid ?? true,
+                task.note.map({ $0.utf8.count <= 10_000 }) ?? true,
+                task.waitingSince.map({ validTimestamp($0) }) ?? true,
+                validCompletionHistory(task.completionHistory),
+                task.sourceArchive.map({ $0.utf8.count <= 20_000 }) ?? true,
+                task.dueDate == nil || task.deadlineDate == nil
+                    || task.dueDate! <= task.deadlineDate!
+            else {
                 throw RuntimeStateError.invalidState
             }
         }
@@ -928,12 +1075,13 @@ public struct TaskRuntime: Sendable {
         )
         let safeRequestID = trimmedRequestID.utf8.count <= 128 ? trimmedRequestID : ""
         guard request.version == 1,
-              !safeRequestID.isEmpty,
-              request.message.utf8.count <= 20_000,
-              request.now.utf8.count <= 64,
-              request.timezone.utf8.count <= 64,
-              TimeZone(identifier: request.timezone) != nil,
-              ISO8601DateFormatter().date(from: request.now) != nil else {
+            !safeRequestID.isEmpty,
+            request.message.utf8.count <= 20_000,
+            request.now.utf8.count <= 64,
+            request.timezone.utf8.count <= 64,
+            TimeZone(identifier: request.timezone) != nil,
+            ISO8601DateFormatter().date(from: request.now) != nil
+        else {
             return response(safeRequestID, outcome: outcome(.rejected))
         }
         return response(
@@ -954,23 +1102,23 @@ public struct TaskRuntime: Sendable {
         guard !actions.isEmpty, actions.count <= 32 else {
             return outcome(.rejected)
         }
-        if actions.contains(where: { $0.type == "acknowledge" }) {
+        if actions.contains(where: { $0.kind == .acknowledge }) {
             guard actions == [RuntimeAction(type: "acknowledge")] else {
                 return outcome(.rejected)
             }
             return outcome(.applied, kinds: ["acknowledge"])
         }
-        if actions.contains(where: { $0.type == "social" }) {
+        if actions.contains(where: { $0.kind == .social }) {
             guard actions.count == 1,
-                  let reply = actions[0].reply?.trimmingCharacters(
+                let reply = actions[0].reply?.trimmingCharacters(
                     in: .whitespacesAndNewlines
-                  ),
-                  !reply.isEmpty,
-                  actions[0] == RuntimeAction(type: "social", reply: reply)
+                ),
+                !reply.isEmpty,
+                actions[0] == RuntimeAction(type: "social", reply: reply)
             else { return outcome(.rejected) }
             return outcome(.applied, kinds: ["social"])
         }
-        if actions.contains(where: { $0.type == "undo" }) {
+        if actions.contains(where: { $0.kind == .undo }) {
             guard actions.count == 1 else { return outcome(.rejected) }
             guard let snapshot = undoSnapshots.popLast() else {
                 return outcome(.noChange)
@@ -980,11 +1128,12 @@ public struct TaskRuntime: Sendable {
                 guard current[restored.id] != restored else { return restored }
                 var updated = restored
                 updated.updatedAt = now
+                updated.revisionID = UUID().uuidString
                 return updated
             }
             return outcome(.applied, kinds: ["undo"])
         }
-        if actions.contains(where: { $0.type == "replan" }) {
+        if actions.contains(where: { $0.kind == .replan }) {
             guard actions == [RuntimeAction(type: "replan")] else {
                 return outcome(.rejected)
             }
@@ -1013,6 +1162,10 @@ public struct TaskRuntime: Sendable {
         let before = tasks
         for mutation in prepared {
             apply(mutation, now: now)
+        }
+        let previous = Dictionary(uniqueKeysWithValues: before.map { ($0.id, $0) })
+        for index in tasks.indices where previous[tasks[index].id] != tasks[index] {
+            tasks[index].revisionID = UUID().uuidString
         }
         if undoSnapshots.count == 100 { undoSnapshots.removeFirst() }
         undoSnapshots.append(before)
@@ -1063,19 +1216,20 @@ public struct TaskRuntime: Sendable {
         timezone: String,
         nextID: inout Int
     ) -> Preparation {
-        if action.type == "capture" {
+        if action.kind == .capture {
             guard let task = bounded(action.task, maxBytes: 10_000),
-                  let raw = bounded(action.raw, maxBytes: 20_000) else {
+                let raw = bounded(action.raw, maxBytes: 20_000)
+            else {
                 return .rejected
             }
             var dueDate: String?
-            switch resolve(action.when, now: now, timezone: timezone) {
+            switch RuntimeDateResolver.resolve(action.when, now: now, timezone: timezone) {
             case .date(let resolved): dueDate = resolved
             case .ambiguous: return .clarification
             case .invalid: return .rejected
             }
             let deadlineDate: String?
-            switch resolve(action.deadline, now: now, timezone: timezone) {
+            switch RuntimeDateResolver.resolve(action.deadline, now: now, timezone: timezone) {
             case .date(let resolved): deadlineDate = resolved
             case .ambiguous: return .clarification
             case .invalid: return .rejected
@@ -1086,7 +1240,8 @@ public struct TaskRuntime: Sendable {
                 dueDate = String(now.prefix(10))
             }
             guard action.durationMinutes.map({ (5...480).contains($0) }) ?? true,
-                  action.priority.map({ ["high", "normal", "low"].contains($0) }) ?? true
+                action.priority.map({ ["high", "normal", "low"].contains($0) }) ?? true,
+                action.reviewPolicy.map({ ["standard", "never"].contains($0) }) ?? true
             else { return .clarification }
             if let dueDate, let deadlineDate, dueDate > deadlineDate {
                 return .clarification
@@ -1095,18 +1250,20 @@ public struct TaskRuntime: Sendable {
                 dueDate = String(now.prefix(10))
             }
             if let recurrence = action.recurrence,
-               let endDate = recurrence.endDate,
-               let dueDate,
-               endDate < dueDate {
+                let endDate = recurrence.endDate,
+                let dueDate,
+                endDate < dueDate
+            {
                 return .clarification
             }
             let assignedID: String
             if let requested = action.target {
                 let clean = requested.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard requested == clean,
-                      !requested.isEmpty,
-                      requested.utf8.count <= 128,
-                      !tasks.contains(where: { $0.id == requested }) else {
+                    !requested.isEmpty,
+                    requested.utf8.count <= 128,
+                    !tasks.contains(where: { $0.id == requested })
+                else {
                     return .rejected
                 }
                 assignedID = requested
@@ -1114,26 +1271,26 @@ public struct TaskRuntime: Sendable {
                 assignedID = "a\(nextID)"
                 nextID += 1
             }
-            return .success(.capture(RuntimeTask(
-                id: assignedID,
-                rawText: raw,
-                task: task,
-                dueDate: dueDate,
-                dueTime: dueTime,
-                deadlineDate: deadlineDate,
-                durationMinutes: action.durationMinutes,
-                priority: action.priority,
-                recurrence: action.recurrence,
-                status: "open",
-                createdAt: now,
-                updatedAt: now
-            )))
+            return .success(
+                .capture(
+                    RuntimeTask(
+                        id: assignedID,
+                        rawText: raw,
+                        task: task,
+                        dueDate: dueDate,
+                        dueTime: dueTime,
+                        deadlineDate: deadlineDate,
+                        durationMinutes: action.durationMinutes,
+                        priority: action.priority,
+                        recurrence: action.recurrence,
+                        reviewPolicy: action.reviewPolicy,
+                        status: "open",
+                        createdAt: now,
+                        updatedAt: now
+                    )))
         }
 
-        guard [
-            "complete", "drop", "reschedule", "amend", "revise", "note",
-            "wait", "resume", "keep", "recurrence",
-        ].contains(action.type)
+        guard action.kind.map(RuntimeActionKind.edits.contains) == true
         else { return .rejected }
         guard let target = resolvedTarget(action.target) else {
             return .clarification
@@ -1141,34 +1298,37 @@ public struct TaskRuntime: Sendable {
         if (action.confidence ?? 1.0) < 0.5 {
             return .confirmation
         }
-        if action.type == "complete" { return .success(.complete(target)) }
-        if action.type == "drop" { return .success(.drop(target)) }
-        if action.type == "keep" { return .success(.keep(target)) }
-        if action.type == "wait" { return .success(.wait(target)) }
-        if action.type == "resume" { return .success(.resume(target)) }
-        if action.type == "note" {
+        if action.kind == .complete { return .success(.complete(target)) }
+        if action.kind == .drop { return .success(.drop(target)) }
+        if action.kind == .keep { return .success(.keep(target)) }
+        if action.kind == .wait { return .success(.wait(target)) }
+        if action.kind == .resume { return .success(.resume(target)) }
+        if action.kind == .note {
             guard let note = bounded(action.note, maxBytes: 10_000) else {
                 return .clarification
             }
             let existing = tasks.first(where: { $0.id == target })?.note ?? ""
-            guard existing.utf8.count + note.utf8.count + (existing.isEmpty ? 0 : 1)
-                    <= 10_000 else { return .clarification }
+            guard
+                existing.utf8.count + note.utf8.count + (existing.isEmpty ? 0 : 1)
+                    <= 10_000
+            else { return .clarification }
             return .success(.note(target, note))
         }
-        if action.type == "recurrence" {
+        if action.kind == .recurrence {
             guard let operation = action.recurrenceOperation,
-                  ["skip", "stop"].contains(operation) else {
+                ["skip", "stop"].contains(operation)
+            else {
                 return .clarification
             }
             return .success(.recurrence(target, operation))
         }
-        if action.type == "amend" {
+        if action.kind == .amend {
             guard let task = bounded(action.task, maxBytes: 10_000) else {
                 return .clarification
             }
             return .success(.amend(target, task))
         }
-        if action.type == "revise" {
+        if action.kind == .revise {
             let clear = Set(action.clearFields ?? [])
             let revisedTask = action.task.flatMap { bounded($0, maxBytes: 10_000) }
             if action.task != nil && revisedTask == nil { return .clarification }
@@ -1176,7 +1336,7 @@ public struct TaskRuntime: Sendable {
             if action.note != nil && revisedNote == nil { return .clarification }
             let revisedDate: String?
             if let when = action.when {
-                switch resolve(when, now: now, timezone: timezone) {
+                switch RuntimeDateResolver.resolve(when, now: now, timezone: timezone) {
                 case .date(let value): revisedDate = value
                 case .ambiguous: return .clarification
                 case .invalid: return .rejected
@@ -1186,7 +1346,7 @@ public struct TaskRuntime: Sendable {
             }
             let revisedDeadline: String?
             if let deadline = action.deadline {
-                switch resolve(deadline, now: now, timezone: timezone) {
+                switch RuntimeDateResolver.resolve(deadline, now: now, timezone: timezone) {
                 case .date(let value): revisedDeadline = value
                 case .ambiguous: return .clarification
                 case .invalid: return .rejected
@@ -1197,38 +1357,50 @@ public struct TaskRuntime: Sendable {
             let revisedTime = validTime(action.time)
             if action.time != nil && revisedTime == nil { return .clarification }
             guard action.durationMinutes.map({ (5...480).contains($0) }) ?? true,
-                  action.priority.map({ ["high", "normal", "low"].contains($0) }) ?? true
+                action.priority.map({ ["high", "normal", "low"].contains($0) }) ?? true,
+                action.reviewPolicy.map({ ["standard", "never"].contains($0) }) ?? true
             else { return .clarification }
-            guard revisedTask != nil || revisedNote != nil || action.when != nil
+            guard
+                revisedTask != nil || revisedNote != nil || action.when != nil
                     || action.deadline != nil || revisedTime != nil
                     || action.durationMinutes != nil || action.priority != nil
-                    || !clear.isEmpty else {
+                    || action.reviewPolicy != nil
+                    || !clear.isEmpty
+            else {
                 return .clarification
             }
             guard let current = tasks.first(where: { $0.id == target }) else {
                 return .clarification
             }
-            let finalDate = clear.contains("date") ? nil
+            let finalDate =
+                clear.contains("date")
+                ? nil
                 : (action.when != nil ? revisedDate : current.dueDate)
-            let finalDeadline = clear.contains("deadline") ? nil
+            let finalDeadline =
+                clear.contains("deadline")
+                ? nil
                 : (action.deadline != nil ? revisedDeadline : current.deadlineDate)
             if let finalDate, let finalDeadline, finalDate > finalDeadline {
                 return .clarification
             }
-            return .success(.revise(target, TaskRevision(
-                task: revisedTask,
-                dueDate: revisedDate,
-                hasDueDate: action.when != nil,
-                dueTime: revisedTime,
-                deadlineDate: revisedDeadline,
-                hasDeadlineDate: action.deadline != nil,
-                durationMinutes: action.durationMinutes,
-                priority: action.priority,
-                note: revisedNote,
-                clearFields: clear
-            )))
+            return .success(
+                .revise(
+                    target,
+                    TaskRevision(
+                        task: revisedTask,
+                        dueDate: revisedDate,
+                        hasDueDate: action.when != nil,
+                        dueTime: revisedTime,
+                        deadlineDate: revisedDeadline,
+                        hasDeadlineDate: action.deadline != nil,
+                        durationMinutes: action.durationMinutes,
+                        priority: action.priority,
+                        note: revisedNote,
+                        reviewPolicy: action.reviewPolicy,
+                        clearFields: clear
+                    )))
         }
-        switch resolve(action.when, now: now, timezone: timezone) {
+        switch RuntimeDateResolver.resolve(action.when, now: now, timezone: timezone) {
         case .date(let dueDate):
             let dueTime = validTime(action.time)
             guard dueDate != nil || dueTime != nil else { return .clarification }
@@ -1252,143 +1424,11 @@ public struct TaskRuntime: Sendable {
         guard let value else { return nil }
         let parts = value.split(separator: ":", omittingEmptySubsequences: false)
         guard parts.count == 2,
-              let hour = Int(parts[0]), (0...23).contains(hour),
-              let minute = Int(parts[1]), (0...59).contains(minute),
-              parts[0].count == 2, parts[1].count == 2 else { return nil }
+            let hour = Int(parts[0]), (0...23).contains(hour),
+            let minute = Int(parts[1]), (0...59).contains(minute),
+            parts[0].count == 2, parts[1].count == 2
+        else { return nil }
         return value
-    }
-
-    private func resolve(
-        _ intent: RuntimeDateIntent?,
-        now: String,
-        timezone: String
-    ) -> DateResolution {
-        guard let intent else { return .date(nil) }
-        if intent.kind == "none" { return .date(nil) }
-        if intent.kind == "ambiguous" { return .ambiguous }
-        guard let zone = TimeZone(identifier: timezone),
-              let instant = ISO8601DateFormatter().date(from: now) else {
-            return .invalid
-        }
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = zone
-        let base = calendar.startOfDay(for: instant)
-        let resolved: Date?
-        switch intent.kind {
-        case "today":
-            resolved = base
-        case "tomorrow":
-            resolved = calendar.date(byAdding: .day, value: 1, to: base)
-        case "yesterday":
-            resolved = calendar.date(byAdding: .day, value: -1, to: base)
-        case "weekday":
-            let weekdays = [
-                "sun": 1, "mon": 2, "tue": 3, "wed": 4,
-                "thu": 5, "fri": 6, "sat": 7,
-            ]
-            guard let target = intent.day.flatMap({ weekdays[$0] }) else {
-                return .invalid
-            }
-            let current = calendar.component(.weekday, from: base)
-            var delta = (target - current + 7) % 7
-            if delta == 0 && intent.which != "this" { delta = 7 }
-            resolved = calendar.date(byAdding: .day, value: delta, to: base)
-        case "offset":
-            guard let amount = intent.n, amount > 0 else { return .invalid }
-            let component: Calendar.Component
-            switch intent.unit {
-            case "day": component = .day
-            case "week": component = .weekOfYear
-            case "month": component = .month
-            case "year": component = .year
-            default: return .invalid
-            }
-            resolved = calendar.date(byAdding: component, value: amount, to: base)
-        case "weekend":
-            let current = calendar.component(.weekday, from: base)
-            if intent.which == "this", current == 1 || current == 7 {
-                resolved = base
-            } else {
-                var daysToSaturday = (7 - current + 7) % 7
-                if intent.which == "next" {
-                    if current != 1 { daysToSaturday += 7 }
-                }
-                resolved = calendar.date(
-                    byAdding: .day, value: daysToSaturday, to: base
-                )
-            }
-        case "week":
-            let current = calendar.component(.weekday, from: base)
-            let daysSinceMonday = (current + 5) % 7
-            guard let thisMonday = calendar.date(
-                byAdding: .day, value: -daysSinceMonday, to: base
-            ) else { return .invalid }
-            let weekOffset = intent.which == "next" ? 7 : 0
-            let partOffset: Int
-            switch intent.part {
-            case nil, "start", "early": partOffset = 0
-            case "mid": partOffset = 2
-            case "end", "late": partOffset = 4
-            default: return .invalid
-            }
-            resolved = calendar.date(
-                byAdding: .day, value: weekOffset + partOffset, to: thisMonday
-            )
-        case "month":
-            var parts = calendar.dateComponents([.year, .month], from: base)
-            parts.day = 1
-            guard var month = calendar.date(from: parts) else { return .invalid }
-            if intent.which == "next" {
-                guard let advanced = calendar.date(byAdding: .month, value: 1, to: month)
-                else { return .invalid }
-                month = advanced
-            }
-            if intent.anchor == "end" || intent.part == "late" {
-                resolved = calendar.date(byAdding: DateComponents(month: 1, day: -1), to: month)
-            } else if intent.part == "mid" {
-                resolved = calendar.date(byAdding: .day, value: 14, to: month)
-            } else {
-                resolved = month
-            }
-        case "month_day", "ordinal_day":
-            guard let dayNumber = intent.dayNumber else { return .invalid }
-            var parts = calendar.dateComponents([.year, .month], from: base)
-            if let month = intent.month { parts.month = month }
-            parts.day = dayNumber
-            guard var candidate = calendar.date(from: parts),
-                  calendar.component(.day, from: candidate) == dayNumber else {
-                return .invalid
-            }
-            if candidate < base {
-                let component: Calendar.Component = intent.month == nil ? .month : .year
-                guard let advanced = calendar.date(
-                    byAdding: component, value: 1, to: candidate
-                ) else { return .invalid }
-                candidate = advanced
-            }
-            resolved = candidate
-        case "absolute":
-            guard let year = intent.year,
-                  let month = intent.month,
-                  let day = intent.dayNumber else { return .invalid }
-            resolved = calendar.date(from: DateComponents(
-                calendar: calendar, timeZone: zone,
-                year: year, month: month, day: day
-            )).flatMap { candidate in
-                let values = calendar.dateComponents([.year, .month, .day], from: candidate)
-                return values.year == year && values.month == month && values.day == day
-                    ? candidate : nil
-            }
-        default:
-            return .invalid
-        }
-        guard let resolved else { return .invalid }
-        let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = zone
-        formatter.dateFormat = "yyyy-MM-dd"
-        return .date(formatter.string(from: resolved))
     }
 
     private mutating func apply(_ mutation: PreparedMutation, now: String) {
@@ -1427,6 +1467,7 @@ public struct TaskRuntime: Sendable {
                 if let value = revision.durationMinutes { task.durationMinutes = value }
                 if let value = revision.priority { task.priority = value }
                 if let value = revision.note { task.note = value }
+                if let value = revision.reviewPolicy { task.reviewPolicy = value }
             }
         case .note(let target, let note):
             update(target, now: now) { task in
@@ -1480,11 +1521,13 @@ public struct TaskRuntime: Sendable {
             tasks[index].updatedAt = now
             return
         }
-        let base = recurrence.anchor == "completion"
+        let base =
+            recurrence.anchor == "completion"
             ? String(now.prefix(10))
             : (tasks[index].dueDate ?? String(now.prefix(10)))
         guard let next = nextRecurrenceDate(after: base, rule: recurrence),
-              recurrence.endDate.map({ next <= $0 }) ?? true else {
+            recurrence.endDate.map({ next <= $0 }) ?? true
+        else {
             tasks[index].status = "done"
             tasks[index].waitingSince = nil
             tasks[index].recurrence = recurrence
@@ -1499,10 +1542,12 @@ public struct TaskRuntime: Sendable {
 
     private mutating func skip(_ target: String, now: String) {
         guard let index = tasks.firstIndex(where: { $0.id == target }),
-              let recurrence = tasks[index].recurrence,
-              let base = tasks[index].dueDate else { return }
+            let recurrence = tasks[index].recurrence,
+            let base = tasks[index].dueDate
+        else { return }
         guard let next = nextRecurrenceDate(after: base, rule: recurrence),
-              recurrence.endDate.map({ next <= $0 }) ?? true else {
+            recurrence.endDate.map({ next <= $0 }) ?? true
+        else {
             tasks[index].status = "done"
             tasks[index].updatedAt = now
             return
@@ -1546,19 +1591,27 @@ public struct TaskRuntime: Sendable {
                         value: 7 * rule.interval - (current - first),
                         to: date
                     )
-                } else { next = nil }
+                } else {
+                    next = nil
+                }
             }
         case "month":
-            guard let advanced = calendar.date(
-                byAdding: .month, value: rule.interval, to: date
-            ) else { return nil }
+            guard
+                let advanced = calendar.date(
+                    byAdding: .month, value: rule.interval, to: date
+                )
+            else { return nil }
             if let day = rule.monthDay {
                 next = dateClampingDay(day, around: advanced, calendar: calendar)
-            } else { next = advanced }
+            } else {
+                next = advanced
+            }
         case "year":
-            guard let advanced = calendar.date(
-                byAdding: .year, value: rule.interval, to: date
-            ) else { return nil }
+            guard
+                let advanced = calendar.date(
+                    byAdding: .year, value: rule.interval, to: date
+                )
+            else { return nil }
             if let month = rule.month, let day = rule.monthDay {
                 var parts = calendar.dateComponents([.year], from: advanced)
                 parts.month = month
@@ -1566,7 +1619,9 @@ public struct TaskRuntime: Sendable {
                 next = calendar.date(from: parts).flatMap {
                     dateClampingDay(day, around: $0, calendar: calendar)
                 }
-            } else { next = advanced }
+            } else {
+                next = advanced
+            }
         default:
             next = nil
         }
@@ -1627,6 +1682,7 @@ private struct TaskRevision {
     let durationMinutes: Int?
     let priority: String?
     let note: String?
+    let reviewPolicy: String?
     let clearFields: Set<String>
 }
 
@@ -1637,8 +1693,155 @@ private enum Preparation {
     case rejected
 }
 
-private enum DateResolution {
+public enum RuntimeDateResolution: Equatable, Sendable {
     case date(String?)
     case ambiguous
     case invalid
+}
+
+/// One calendar interpretation shared by task mutations and read-only questions.
+public enum RuntimeDateResolver {
+    public static func resolve(
+        _ intent: RuntimeDateIntent?,
+        now: String,
+        timezone: String
+    ) -> RuntimeDateResolution {
+        guard let intent else { return .date(nil) }
+        if intent.kind == "none" { return .date(nil) }
+        if intent.kind == "ambiguous" { return .ambiguous }
+        guard let zone = TimeZone(identifier: timezone),
+            let instant = ISO8601DateFormatter().date(from: now)
+        else {
+            return .invalid
+        }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let base = calendar.startOfDay(for: instant)
+        let resolved: Date?
+        switch intent.kind {
+        case "today":
+            resolved = base
+        case "tomorrow":
+            resolved = calendar.date(byAdding: .day, value: 1, to: base)
+        case "yesterday":
+            resolved = calendar.date(byAdding: .day, value: -1, to: base)
+        case "weekday":
+            let weekdays = [
+                "sun": 1, "mon": 2, "tue": 3, "wed": 4,
+                "thu": 5, "fri": 6, "sat": 7,
+            ]
+            guard let target = intent.day.flatMap({ weekdays[$0] }) else {
+                return .invalid
+            }
+            let current = calendar.component(.weekday, from: base)
+            var delta = (target - current + 7) % 7
+            if delta > 0 && intent.which == "next" { delta += 7 }
+            if delta == 0 && intent.which != "this" { delta = 7 }
+            resolved = calendar.date(byAdding: .day, value: delta, to: base)
+        case "offset":
+            guard let amount = intent.n, amount > 0 else { return .invalid }
+            let component: Calendar.Component
+            switch intent.unit {
+            case "day": component = .day
+            case "week": component = .weekOfYear
+            case "month": component = .month
+            case "year": component = .year
+            default: return .invalid
+            }
+            resolved = calendar.date(byAdding: component, value: amount, to: base)
+        case "weekend":
+            let current = calendar.component(.weekday, from: base)
+            if intent.which == "this", current == 1 || current == 7 {
+                resolved = base
+            } else {
+                var daysToSaturday = (7 - current + 7) % 7
+                if intent.which == "next" {
+                    if current != 1 { daysToSaturday += 7 }
+                }
+                resolved = calendar.date(
+                    byAdding: .day, value: daysToSaturday, to: base
+                )
+            }
+        case "week":
+            let current = calendar.component(.weekday, from: base)
+            let daysSinceMonday = (current + 5) % 7
+            guard
+                let thisMonday = calendar.date(
+                    byAdding: .day, value: -daysSinceMonday, to: base
+                )
+            else { return .invalid }
+            let weekOffset = intent.which == "next" ? 7 : 0
+            let partOffset: Int
+            switch intent.part {
+            case nil, "start", "early": partOffset = 0
+            case "mid": partOffset = 2
+            case "end", "late": partOffset = 4
+            default: return .invalid
+            }
+            resolved = calendar.date(
+                byAdding: .day, value: weekOffset + partOffset, to: thisMonday
+            )
+        case "month":
+            var parts = calendar.dateComponents([.year, .month], from: base)
+            parts.day = 1
+            guard var month = calendar.date(from: parts) else { return .invalid }
+            if intent.which == "next" {
+                guard let advanced = calendar.date(byAdding: .month, value: 1, to: month)
+                else { return .invalid }
+                month = advanced
+            }
+            if intent.anchor == "end" || intent.part == "late" {
+                resolved = calendar.date(byAdding: DateComponents(month: 1, day: -1), to: month)
+            } else if intent.part == "mid" {
+                resolved = calendar.date(byAdding: .day, value: 14, to: month)
+            } else {
+                resolved = month
+            }
+        case "month_day", "ordinal_day":
+            guard let dayNumber = intent.dayNumber else { return .invalid }
+            var parts = calendar.dateComponents([.year, .month], from: base)
+            if let month = intent.month { parts.month = month }
+            parts.day = dayNumber
+            guard var candidate = calendar.date(from: parts),
+                calendar.component(.day, from: candidate) == dayNumber
+            else {
+                return .invalid
+            }
+            if candidate < base {
+                let component: Calendar.Component = intent.month == nil ? .month : .year
+                guard
+                    let advanced = calendar.date(
+                        byAdding: component, value: 1, to: candidate
+                    )
+                else { return .invalid }
+                candidate = advanced
+            }
+            resolved = candidate
+        case "absolute":
+            guard let year = intent.year,
+                let month = intent.month,
+                let day = intent.dayNumber
+            else { return .invalid }
+            resolved = calendar.date(
+                from: DateComponents(
+                    calendar: calendar, timeZone: zone,
+                    year: year, month: month, day: day
+                )
+            ).flatMap { candidate in
+                let values = calendar.dateComponents([.year, .month, .day], from: candidate)
+                return values.year == year && values.month == month && values.day == day
+                    ? candidate : nil
+            }
+        default:
+            return .invalid
+        }
+        guard let resolved else { return .invalid }
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = zone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return .date(formatter.string(from: resolved))
+    }
+
 }

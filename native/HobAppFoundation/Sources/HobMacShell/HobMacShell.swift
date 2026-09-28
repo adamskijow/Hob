@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MIT
 import AppKit
+import SwiftUI
+
 #if canImport(HobAppCore)
-import HobAppCore
+    import HobAppCore
 #endif
 #if canImport(HobAppStorage)
-import HobAppStorage
+    import HobAppStorage
 #endif
 #if canImport(HobAppExperience)
-import HobAppExperience
+    import HobAppExperience
 #endif
-import SwiftUI
 
 @main
 struct HobMacShell: App {
@@ -231,7 +232,9 @@ private struct TaskStorageContent: View {
                 controller.recoverPreviousCopy()
             }
         } message: {
-            Text("This replaces the unreadable task state with Hob's last verified local copy. It cannot recover changes made after that copy.")
+            Text(
+                "This replaces the unreadable task state with Hob's last verified local copy. It cannot recover changes made after that copy."
+            )
         }
     }
 }
@@ -257,8 +260,10 @@ private struct ModelReadinessContent: View {
             LabeledContent("Status", value: controller.state.title)
             Text(controller.state.guidance)
                 .foregroundStyle(.secondary)
-            Text("The readiness check sends only a built-in test phrase to Apple's on-device model. It does not include your tasks, messages, or Calendar data.")
-                .font(.callout)
+            Text(
+                "The readiness check sends only a built-in test phrase to Apple's on-device model. It does not include your tasks, messages, or Calendar data."
+            )
+            .font(.callout)
             if controller.state == .checking {
                 ProgressView("Checking Apple Intelligence")
             } else {

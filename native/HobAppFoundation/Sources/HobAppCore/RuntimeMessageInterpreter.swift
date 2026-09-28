@@ -18,8 +18,8 @@ public protocol RuntimeMessageInterpreting: Sendable {
     ) async throws -> [RuntimeAction]
 }
 
-public extension RuntimeMessageInterpreting {
-    func interpret(
+extension RuntimeMessageInterpreting {
+    public func interpret(
         message: String,
         now: String,
         timezone: String,
@@ -33,8 +33,15 @@ public extension RuntimeMessageInterpreting {
 public struct RuntimeConversationContext: Equatable, Sendable {
     public let focusedTaskIDs: [String]
     public let unresolvedMessage: String?
+    public let clarificationPending: Bool
+    public let pendingQuestion: RuntimePendingQuestion?
 
-    public init(focusedTaskIDs: [String] = [], unresolvedMessage: String? = nil) {
+    public init(
+        focusedTaskIDs: [String] = [], unresolvedMessage: String? = nil,
+        clarificationPending: Bool = false, pendingQuestion: RuntimePendingQuestion? = nil
+    ) {
+        self.pendingQuestion = pendingQuestion
+        self.clarificationPending = clarificationPending
         self.focusedTaskIDs = Array(focusedTaskIDs.prefix(8))
         self.unresolvedMessage = unresolvedMessage.flatMap {
             let clean = $0.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -49,6 +56,34 @@ public enum RuntimeInterpretationError: Error, Equatable, Sendable {
     case modelUnavailable
     case unsupportedMessage
     case invalidOutput
+    case clarification(String)
+    case question(RuntimeQuestionRequest)
+}
+
+/// Short answers to Hob's keep/move/drop review, shared by focus selection and
+/// interpretation. Extra task-title words make this a normal message instead.
+public enum RuntimeTaskReviewReply: String, Sendable {
+    case keep, move, drop
+
+    public static func parse(_ message: String) -> Self? {
+        let tokens = message.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        let fillers: Set<String> = ["it", "that", "this", "one", "please", "yes"]
+        let substantive = tokens.filter { !fillers.contains($0) }
+        guard let first = substantive.first else { return nil }
+        if substantive.count == 1 {
+            if ["stay", "stays", "keep", "keeping"].contains(first) { return .keep }
+            if ["drop", "drops", "remove", "delete"].contains(first) { return .drop }
+        }
+        if ["move", "moves", "reschedule", "postpone"].contains(first) {
+            let dateWords: Set<String> = [
+                "to", "until", "on", "at", "next", "this", "in", "a", "day", "days", "week", "weeks", "today",
+                "tomorrow", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "morning",
+                "afternoon", "evening", "am", "pm",
+            ]
+            if substantive.dropFirst().allSatisfy({ dateWords.contains($0) || Int($0) != nil }) { return .move }
+        }
+        return nil
+    }
 }
 
 public enum RuntimeGeneratedClock {
@@ -56,7 +91,8 @@ public enum RuntimeGeneratedClock {
     /// validation. The model still owns the semantic AM/PM decision; this only
     /// accepts equivalent representations of that decision.
     public static func normalize(_ value: String) -> String? {
-        var text = value
+        var text =
+            value
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
             .replacingOccurrences(of: ".", with: "")
@@ -79,9 +115,10 @@ public enum RuntimeGeneratedClock {
         if text.contains(":") {
             let pieces = text.split(separator: ":", omittingEmptySubsequences: false)
             guard pieces.count == 2,
-                  let parsedHour = Int(pieces[0]),
-                  let parsedMinute = Int(pieces[1]),
-                  pieces[1].count == 2 else { return nil }
+                let parsedHour = Int(pieces[0]),
+                let parsedMinute = Int(pieces[1]),
+                pieces[1].count == 2
+            else { return nil }
             hour = parsedHour
             minute = parsedMinute
         } else {
@@ -95,7 +132,8 @@ public enum RuntimeGeneratedClock {
             } else {
                 let minuteStart = text.index(text.endIndex, offsetBy: -2)
                 guard let parsedHour = Int(text[..<minuteStart]),
-                      let parsedMinute = Int(text[minuteStart...]) else { return nil }
+                    let parsedMinute = Int(text[minuteStart...])
+                else { return nil }
                 hour = parsedHour
                 minute = parsedMinute
             }
@@ -144,8 +182,9 @@ public enum RuntimeGeneratedClock {
             return normalize(text)
         }
         if let normalized = normalize(text),
-           let hour = Int(normalized.prefix(2)),
-           hour > 12 {
+            let hour = Int(normalized.prefix(2)),
+            hour > 12
+        {
             guard interpretation == "am" || interpretation == "pm" else {
                 return nil
             }
@@ -173,7 +212,8 @@ public enum RuntimeConstraintEvidence {
         in message: String
     ) -> Bool {
         guard contains(evidence, in: message) else { return false }
-        let words = evidence
+        let words =
+            evidence
             .lowercased()
             .split { !$0.isLetter }
         return words.contains { word in
@@ -198,6 +238,7 @@ public enum RuntimeGeneratedActions {
                 action.priority ?? "",
                 action.durationMinutes.map(String.init) ?? "",
                 action.clearFields?.joined(separator: ",") ?? "",
+                action.reviewPolicy ?? "",
                 action.note ?? "",
             ].joined(separator: "|")
         }

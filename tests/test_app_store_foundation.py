@@ -220,7 +220,7 @@ def test_workspace_keeps_connection_status_in_the_gear_menu():
         / "HobWorkspaceController.swift"
     ).read_text(encoding="utf-8")
     assert "Tasks synced with iCloud." not in controller
-    assert 'self.notice = "Tasks updated from iCloud."' in controller
+    assert 'self.notice = "Tasks updated from iCloud."' not in controller
 
 
 def test_iphone_app_uses_the_same_native_workspace_and_local_model():

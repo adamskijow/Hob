@@ -7,6 +7,7 @@ public struct RuntimeMorningDigestItem: Equatable, Identifiable, Sendable {
     public let time: String?
     public let isOverdue: Bool
     public let daysOnDeck: Int
+    public let allowsReview: Bool
 
     public var id: String { taskID }
 
@@ -15,13 +16,15 @@ public struct RuntimeMorningDigestItem: Equatable, Identifiable, Sendable {
         task: String,
         time: String?,
         isOverdue: Bool,
-        daysOnDeck: Int = 0
+        daysOnDeck: Int = 0,
+        allowsReview: Bool = true
     ) {
         self.taskID = taskID
         self.task = task
         self.time = time
         self.isOverdue = isOverdue
         self.daysOnDeck = daysOnDeck
+        self.allowsReview = allowsReview
     }
 }
 
@@ -48,12 +51,14 @@ public struct RuntimeMorningDigest: Equatable, Identifiable, Sendable {
             "\(index + 1): \(item.summary)"
         }
         let remainder = items.count - visible.count
-        let list = remainder > 0
+        let list =
+            remainder > 0
             ? (visible + ["+\(remainder) more in Hob"]).joined(separator: "\n")
             : visible.joined(separator: "\n")
-        guard let stale = items.max(by: { $0.daysOnDeck < $1.daysOnDeck }),
-              stale.daysOnDeck >= 7 else { return list }
-        return list + "\n\n\"\(stale.task)\" has been on deck \(stale.daysOnDeck) days. Keep, move, or drop it naturally."
+        guard let stale = items.filter(\.isStale).max(by: { $0.daysOnDeck < $1.daysOnDeck }),
+            stale.daysOnDeck >= 7
+        else { return list }
+        return list + "\n\n" + RuntimeInteraction.reviewText(task: stale.task, days: stale.daysOnDeck)
     }
 
     public var eveningRecapBody: String {
@@ -64,7 +69,8 @@ public struct RuntimeMorningDigest: Equatable, Identifiable, Sendable {
             "\(index + 1): \(item.summary)"
         }
         let remainder = items.count - visible.count
-        let openItems = remainder > 0
+        let openItems =
+            remainder > 0
             ? visible + ["+\(remainder) more in Hob"]
             : visible
         return (["Tell Hob naturally and it’ll check things off."] + openItems)
@@ -72,14 +78,14 @@ public struct RuntimeMorningDigest: Equatable, Identifiable, Sendable {
     }
 }
 
-public extension RuntimeMorningDigestItem {
-    var summary: String {
+extension RuntimeMorningDigestItem {
+    public var summary: String {
         if let time { return "\(time) · \(task)" }
         if isOverdue { return "\(task) · overdue" }
         return task
     }
 
-    var isStale: Bool { daysOnDeck >= 7 }
+    public var isStale: Bool { allowsReview && daysOnDeck >= 7 }
 }
 
 public enum RuntimeMorningDigestBuilder {
@@ -92,29 +98,35 @@ public enum RuntimeMorningDigestBuilder {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timezone
         let day = dayString(date, calendar: calendar)
-        let open = Dictionary(uniqueKeysWithValues: tasks
-            .filter {
-                $0.status == "open" && !$0.isWaiting
-                    && !$0.isMissedTimedItem(on: day)
-            }
-            .map { ($0.id, $0) })
+        let open = Dictionary(
+            uniqueKeysWithValues:
+                tasks
+                .filter {
+                    $0.status == "open" && !$0.isWaiting
+                        && !$0.isMissedTimedItem(on: day)
+                }
+                .map { ($0.id, $0) })
         var items: [RuntimeMorningDigestItem] = []
         var included: Set<String> = []
 
         if let proposal, RuntimeScheduleValidator.valid(proposal) {
             for block in proposal.blocks {
                 guard let task = open[block.taskID],
-                      task.dueTime != nil
-                        || proposal.plannedUntimedTaskIDs.contains(task.id),
-                      let start = ISO8601DateFormatter().date(from: block.startAt),
-                      dayString(start, calendar: calendar) == day else { continue }
-                items.append(RuntimeMorningDigestItem(
-                    taskID: task.id,
-                    task: task.task,
-                    time: displayTime(start, calendar: calendar),
-                    isOverdue: false,
-                    daysOnDeck: age(of: task, on: date, calendar: calendar)
-                ))
+                    proposal.taskVersions[task.id] == task.revision,
+                    task.dueTime == nil,
+                    proposal.plannedUntimedTaskIDs.contains(task.id),
+                    let start = ISO8601DateFormatter().date(from: block.startAt),
+                    dayString(start, calendar: calendar) == day
+                else { continue }
+                items.append(
+                    RuntimeMorningDigestItem(
+                        taskID: task.id,
+                        task: task.task,
+                        time: displayTime(start, calendar: calendar),
+                        isOverdue: false,
+                        daysOnDeck: age(of: task, on: date, calendar: calendar),
+                        allowsReview: task.allowsStaleReview
+                    ))
                 included.insert(task.id)
             }
         }
@@ -134,7 +146,8 @@ public enum RuntimeMorningDigestBuilder {
                 task: task.task,
                 time: task.dueDate == day ? task.dueTime.flatMap(displayClock) : nil,
                 isOverdue: task.dueDate.map { $0 < day } == true,
-                daysOnDeck: age(of: task, on: date, calendar: calendar)
+                daysOnDeck: age(of: task, on: date, calendar: calendar),
+                allowsReview: task.allowsStaleReview
             )
         }
 
@@ -173,12 +186,16 @@ public enum RuntimeMorningDigestBuilder {
         on date: Date,
         calendar: Calendar
     ) -> Int {
-        guard let created = ISO8601DateFormatter().date(from: task.createdAt) else { return 0 }
-        return max(0, calendar.dateComponents(
-            [.day],
-            from: calendar.startOfDay(for: created),
-            to: calendar.startOfDay(for: date)
-        ).day ?? 0)
+        guard let lastHandled = ISO8601DateFormatter().date(from: task.updatedAt) else {
+            return 0
+        }
+        return max(
+            0,
+            calendar.dateComponents(
+                [.day],
+                from: calendar.startOfDay(for: lastHandled),
+                to: calendar.startOfDay(for: date)
+            ).day ?? 0)
     }
 
     private static func displayTime(_ date: Date, calendar: Calendar) -> String {
@@ -194,8 +211,9 @@ public enum RuntimeMorningDigestBuilder {
     private static func displayClock(_ value: String) -> String? {
         let pieces = value.split(separator: ":").compactMap { Int($0) }
         guard pieces.count == 2,
-              (0...23).contains(pieces[0]),
-              (0...59).contains(pieces[1]) else { return nil }
+            (0...23).contains(pieces[0]),
+            (0...59).contains(pieces[1])
+        else { return nil }
         let suffix = pieces[0] < 12 ? "AM" : "PM"
         let hour = pieces[0] % 12 == 0 ? 12 : pieces[0] % 12
         return String(format: "%d:%02d %@", hour, pieces[1], suffix)

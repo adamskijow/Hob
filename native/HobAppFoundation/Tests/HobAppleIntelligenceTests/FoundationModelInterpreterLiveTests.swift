@@ -1,15 +1,83 @@
 // SPDX-License-Identifier: MIT
 import Testing
+import Foundation
 import HobAppCore
 @testable import HobAppleIntelligence
 
-@Suite(.serialized)
+@Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["HOB_LIVE_TESTS"] == "1"))
 struct FoundationModelInterpreterLiveTests {
+
+@Test func compoundCapturesKeepIndependentConstraintsAndOngoingPolicy() async throws {
+    let interpreter = AppleFoundationInterpreter()
+    try #require(interpreter.isAvailable, "LIVE MODEL UNAVAILABLE")
+    let cases: [(String, Int)] = [
+        ("Buy milk tomorrow and call Sam on Friday", 2),
+        ("I need to buy milk tomorrow and call Sam on Friday", 2),
+        ("Could you buy milk tomorrow and call Sam on Friday", 2),
+        ("Buy milk tomorrow and book a dentist appointment next Monday", 2),
+        ("Buy milk tomorrow at 6pm and call Sam Friday at 3pm", 2),
+        ("Take my morning pill and keep it indefinitely", 1),
+        ("Buy milk and don't remove the time from Call Alex", 1),
+    ]
+    let existing = RuntimeTask(id: "a1", rawText: "Call Alex", task: "Call Alex", dueDate: "2026-09-18", dueTime: "15:00",
+        status: "open", createdAt: "2026-09-18T08:00:00-04:00", updatedAt: "2026-09-18T08:00:00-04:00")
+    for (message, count) in cases {
+        let actions: [RuntimeAction]
+        do {
+            actions = try await interpreter.interpret(message: message, now: "2026-09-18T08:01:00-04:00",
+                timezone: "America/New_York", tasks: message.contains("Alex") ? [existing] : [])
+        } catch {
+            Issue.record("Interpretation failed for \(message): \(error)")
+            continue
+        }
+        #expect(actions.count == count, "\(message): \(actions)")
+        #expect(actions.allSatisfy { $0.kind == .capture }, "\(message)")
+        if count == 2 {
+            #expect(actions.first?.when == RuntimeDateIntent(kind: "tomorrow"), "\(message)")
+            #expect(actions.last?.when?.kind == "weekday", "\(message)")
+            #expect(actions.last?.when?.day == (message.contains("Monday") ? "mon" : "fri"))
+            #expect(actions.first?.task?.localizedCaseInsensitiveContains("milk") == true)
+            #expect(actions.first?.task?.localizedCaseInsensitiveContains("Sam") == false)
+        }
+        if message.contains("6pm") { #expect(actions.map(\.time) == ["18:00", "15:00"]) }
+        if message.contains("indefinitely") {
+            #expect(actions.first?.reviewPolicy == "never")
+            #expect(actions.first?.recurrence == nil)
+            #expect(actions.first?.task?.localizedCaseInsensitiveContains("pill") == true)
+        }
+    }
+}
+
+@Test func compoundEditsAndCapturesAreBothReturned() async throws {
+    let interpreter = AppleFoundationInterpreter()
+    try #require(interpreter.isAvailable, "LIVE MODEL UNAVAILABLE")
+    let task = RuntimeTask(id: "a1", rawText: "Call Alex", task: "Call Alex", dueDate: nil, dueTime: nil,
+        status: "open", createdAt: "2026-09-18T08:00:00-04:00", updatedAt: "2026-09-18T08:00:00-04:00")
+    for message in ["Move Call Alex to Friday and buy milk", "Call Alex takes 30 minutes and add buy milk", "Move Call Alex to Friday and buy milk tomorrow at 6pm"] {
+        let actions = try await interpreter.interpret(message: message, now: "2026-09-18T08:01:00-04:00",
+            timezone: "America/New_York", tasks: [task])
+        #expect(actions.count == 2)
+        #expect(actions.last?.type == "capture")
+        #expect(actions.last?.task?.localizedCaseInsensitiveContains("milk") == true)
+        #expect(actions.first?.target == "1")
+        if message.contains("6pm") {
+            #expect(actions.last?.when == RuntimeDateIntent(kind: "tomorrow"))
+            #expect(actions.last?.time == "18:00")
+        }
+    }
+    let other = RuntimeTask(id: "a2", rawText: "Call Sam", task: "Call Sam", dueDate: nil, dueTime: nil,
+        status: "open", createdAt: task.createdAt, updatedAt: task.updatedAt)
+    let related = try await interpreter.interpret(message: "Move Call Alex to Friday and make it high priority",
+        now: "2026-09-18T08:01:00-04:00", timezone: "America/New_York", tasks: [task, other],
+        context: RuntimeConversationContext(focusedTaskIDs: [other.id]))
+    #expect(related.count == 2)
+    #expect(related.allSatisfy { $0.target == "1" })
+}
 
 @Test
 func coordinatedAppointmentsKeepTheirRespectiveTimes() async throws {
     let interpreter = AppleFoundationInterpreter()
-    guard interpreter.isAvailable else { return }
+    try #require(interpreter.isAvailable, "LIVE MODEL UNAVAILABLE: this regression did not run")
 
     let actions = try await interpreter.interpret(
         message: "Meeting with Claude code and dev team at 230 and 330 respectively",
@@ -32,7 +100,7 @@ func coordinatedAppointmentsKeepTheirRespectiveTimes() async throws {
 @Test
 func conversationalContinuationAddsAnotherAppointment() async throws {
     let interpreter = AppleFoundationInterpreter()
-    guard interpreter.isAvailable else { return }
+    try #require(interpreter.isAvailable, "LIVE MODEL UNAVAILABLE: this regression did not run")
     let existing = RuntimeTask(
         id: "office", rawText: "Go to the office at 1030",
         task: "Go to the office", dueDate: "2026-08-25",
@@ -61,7 +129,7 @@ func conversationalContinuationAddsAnotherAppointment() async throws {
 @Test
 func tomorrowStatusQuestionReturnsTomorrowTasks() async throws {
     let interpreter = AppleFoundationInterpreter()
-    guard interpreter.isAvailable else { return }
+    try #require(interpreter.isAvailable, "LIVE MODEL UNAVAILABLE: this regression did not run")
     let actions = try await interpreter.interpret(
         message: "How's it looking tomorrow",
         now: "2026-08-25T12:29:00-04:00",
@@ -78,7 +146,7 @@ func tomorrowStatusQuestionReturnsTomorrowTasks() async throws {
 @Test
 func modelUnderstandsLongDates() async throws {
     let interpreter = AppleFoundationInterpreter()
-    guard interpreter.isAvailable else { return }
+    try #require(interpreter.isAvailable, "LIVE MODEL UNAVAILABLE: this regression did not run")
 
     let longDate = try await interpreter.interpret(
         message: "Buy bananas in 10 years",
@@ -97,7 +165,7 @@ func modelUnderstandsLongDates() async throws {
 @Test
 func modelKeepsSocialMessagesOutOfPlanning() async throws {
     let interpreter = AppleFoundationInterpreter()
-    guard interpreter.isAvailable else { return }
+    try #require(interpreter.isAvailable, "LIVE MODEL UNAVAILABLE: this regression did not run")
 
     for message in [
         "thanks bro", "cool", "got it",
@@ -119,7 +187,7 @@ func modelKeepsSocialMessagesOutOfPlanning() async throws {
 @Test
 func taskLabelsPreserveUserWording() async throws {
     let interpreter = AppleFoundationInterpreter()
-    guard interpreter.isAvailable else { return }
+    try #require(interpreter.isAvailable, "LIVE MODEL UNAVAILABLE: this regression did not run")
 
     let actions = try await interpreter.interpret(
         message: "Return Amazon shit",
@@ -135,9 +203,121 @@ func taskLabelsPreserveUserWording() async throws {
 }
 
 @Test
+func planningWorkRemainsACapturableTask() async throws {
+    let interpreter = AppleFoundationInterpreter()
+    try #require(interpreter.isAvailable, "LIVE MODEL UNAVAILABLE: this regression did not run")
+
+    let actions = try await interpreter.interpret(
+        message: "Plan a schedule",
+        now: "2026-08-31T08:00:00-04:00",
+        timezone: "America/New_York",
+        tasks: [RuntimeTask(
+            id: "anniversary", rawText: "buy anniversary gift",
+            task: "buy anniversary gift", dueDate: nil, dueTime: nil,
+            status: "open", createdAt: "2026-08-31T07:00:00-04:00",
+            updatedAt: "2026-08-31T07:00:00-04:00"
+        )]
+    )
+
+    #expect(actions == [RuntimeAction(
+        type: "capture", task: "Plan a schedule",
+        raw: "Plan a schedule", priority: "normal", confidence: 1
+    )])
+}
+
+@Test
+func unfamiliarImperativeRemainsACapturableTask() async throws {
+    let interpreter = AppleFoundationInterpreter()
+    try #require(interpreter.isAvailable, "LIVE MODEL UNAVAILABLE: this regression did not run")
+
+    let actions = try await interpreter.interpret(
+        message: "Make an apple gelea",
+        now: "2026-08-31T19:35:00-04:00",
+        timezone: "America/New_York",
+        tasks: [RuntimeTask(
+            id: "anniversary", rawText: "buy anniversary gift",
+            task: "buy anniversary gift", dueDate: "2026-08-31", dueTime: "09:00",
+            status: "open", createdAt: "2026-08-31T07:00:00-04:00",
+            updatedAt: "2026-08-31T07:00:00-04:00"
+        )]
+    )
+
+    #expect(actions == [RuntimeAction(
+        type: "capture", task: "Make an apple gelea",
+        raw: "Make an apple gelea", priority: "normal", confidence: 1
+    )])
+}
+
+@Test
+func shortGerundActivityCapturesDirectly() async throws {
+    let interpreter = AppleFoundationInterpreter()
+    try #require(interpreter.isAvailable, "LIVE MODEL UNAVAILABLE: this regression did not run")
+
+    let actions = try await interpreter.interpret(
+        message: "Climbing tonight",
+        now: "2026-09-01T07:05:00-04:00",
+        timezone: "America/New_York",
+        tasks: [RuntimeTask(
+            id: "galeat", rawText: "Plan to make an apple galeat",
+            task: "Plan to make an apple galeat", dueDate: "2026-09-01",
+            dueTime: nil, status: "open",
+            createdAt: "2026-08-31T19:35:00-04:00",
+            updatedAt: "2026-08-31T19:35:00-04:00"
+        )]
+    )
+
+    #expect(actions.count == 1)
+    #expect(actions.first?.type == "capture")
+    #expect(actions.first?.task?.localizedCaseInsensitiveContains("climbing") == true)
+    #expect(actions.first?.recurrence == nil)
+}
+
+@Test
+func naturalConstraintRemovalEditsTheNamedTask() async throws {
+    let interpreter = AppleFoundationInterpreter()
+    try #require(interpreter.isAvailable, "LIVE MODEL UNAVAILABLE: this regression did not run")
+
+    let actions = try await interpreter.interpret(
+        message: "Buy an anniversary gift does not need a time",
+        now: "2026-08-31T19:41:00-04:00",
+        timezone: "America/New_York",
+        tasks: [RuntimeTask(
+            id: "anniversary", rawText: "buy anniversary gift",
+            task: "buy anniversary gift", dueDate: "2026-08-31", dueTime: "09:00",
+            status: "open", createdAt: "2026-08-31T07:00:00-04:00",
+            updatedAt: "2026-08-31T07:00:00-04:00"
+        )]
+    )
+
+    #expect(actions == [RuntimeAction(
+        type: "revise", target: "1", clearFields: ["time"]
+    )])
+}
+
+@Test
+func explicitReplanRequestStillBuildsAPlan() async throws {
+    let interpreter = AppleFoundationInterpreter()
+    try #require(interpreter.isAvailable, "LIVE MODEL UNAVAILABLE: this regression did not run")
+
+    let actions = try await interpreter.interpret(
+        message: "Replan my day",
+        now: "2026-08-31T08:00:00-04:00",
+        timezone: "America/New_York",
+        tasks: [RuntimeTask(
+            id: "anniversary", rawText: "buy anniversary gift",
+            task: "buy anniversary gift", dueDate: nil, dueTime: nil,
+            status: "open", createdAt: "2026-08-31T07:00:00-04:00",
+            updatedAt: "2026-08-31T07:00:00-04:00"
+        )]
+    )
+
+    #expect(actions == [RuntimeAction(type: "replan")])
+}
+
+@Test
 func modelUnderstandsRecurrence() async throws {
     let interpreter = AppleFoundationInterpreter()
-    guard interpreter.isAvailable else { return }
+    try #require(interpreter.isAvailable, "LIVE MODEL UNAVAILABLE: this regression did not run")
 
     let repeating = try await interpreter.interpret(
         message: "Water the plants every Monday",
@@ -165,7 +345,7 @@ func modelUnderstandsRecurrence() async throws {
 @Test
 func modelUnderstandsCapacityQuestions() async throws {
     let interpreter = AppleFoundationInterpreter()
-    guard interpreter.isAvailable else { return }
+    try #require(interpreter.isAvailable, "LIVE MODEL UNAVAILABLE: this regression did not run")
     let task = RuntimeTask(
         id: "a1", rawText: "finish report", task: "finish report",
         dueDate: nil, dueTime: nil, durationMinutes: 60,
@@ -188,7 +368,7 @@ func modelUnderstandsCapacityQuestions() async throws {
 @Test
 func modelUnderstandsWhatIfQuestions() async throws {
     let interpreter = AppleFoundationInterpreter()
-    guard interpreter.isAvailable else { return }
+    try #require(interpreter.isAvailable, "LIVE MODEL UNAVAILABLE: this regression did not run")
     let task = RuntimeTask(
         id: "a1", rawText: "finish report", task: "finish report",
         dueDate: nil, dueTime: nil, durationMinutes: 60,
@@ -211,7 +391,7 @@ func modelUnderstandsWhatIfQuestions() async throws {
 @Test
 func modelUnderstandsRecoveredParityFeatures() async throws {
     let interpreter = AppleFoundationInterpreter()
-    guard interpreter.isAvailable else { return }
+    try #require(interpreter.isAvailable, "LIVE MODEL UNAVAILABLE: this regression did not run")
     let first = RuntimeTask(
         id: "a1", rawText: "call the bank", task: "call the bank",
         dueDate: nil, dueTime: nil, status: "open",
@@ -293,7 +473,7 @@ func modelUnderstandsRecoveredParityFeatures() async throws {
 @Test
 func reminderRegressionCorpusIsStableAcrossTwoRuns() async throws {
     let interpreter = AppleFoundationInterpreter()
-    guard interpreter.isAvailable else { return }
+    try #require(interpreter.isAvailable, "LIVE MODEL UNAVAILABLE: this regression did not run")
     let now = "2026-08-25T08:00:00-04:00"
     let zone = "America/New_York"
     let insurance = RuntimeTask(
@@ -390,12 +570,33 @@ func reminderRegressionCorpusIsStableAcrossTwoRuns() async throws {
         #expect(Set(completed.map(\.type)) == Set(["complete"]))
         #expect(Set(completed.compactMap(\.target)) == Set(["1", "2"]))
 
+        let climbing = RuntimeTask(
+            id: "climbing", rawText: "Climbing tonight", task: "Climbing tonight",
+            dueDate: "2026-08-21", dueTime: nil, status: "open",
+            createdAt: "2026-08-21T09:00:00-04:00",
+            updatedAt: "2026-08-21T09:00:00-04:00"
+        )
+        let naturalCompletion = try await interpreter.interpret(
+            message: "I did climb a few days ago", now: now,
+            timezone: zone, tasks: [report, climbing]
+        )
+        #expect(naturalCompletion == [RuntimeAction(
+            type: "complete", target: "2"
+        )])
+
         let kept = try await interpreter.interpret(
             message: "It needs to stay on", now: now, timezone: zone,
             tasks: [report],
             context: RuntimeConversationContext(focusedTaskIDs: [report.id])
         )
         #expect(kept == [RuntimeAction(type: "keep", target: "1")])
+
+        let terseKeep = try await interpreter.interpret(
+            message: "It stays", now: now, timezone: zone,
+            tasks: [report],
+            context: RuntimeConversationContext(focusedTaskIDs: [report.id])
+        )
+        #expect(terseKeep == [RuntimeAction(type: "keep", target: "1")])
 
         let moved = try await interpreter.interpret(
             message: "Haircut got scheduled for next Friday",

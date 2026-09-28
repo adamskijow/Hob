@@ -48,10 +48,11 @@ public enum RuntimePlanningAnalyzer {
         request: RuntimeScheduleRequest
     ) throws -> RuntimePlanningAnalysis {
         guard action.type == "analysis",
-              let kind = action.analysisKind,
-              ["capacity", "explain", "what_if"].contains(kind),
-              let horizon = action.horizonDays,
-              (1...31).contains(horizon) else {
+            let kind = action.analysisKind,
+            ["capacity", "explain", "what_if"].contains(kind),
+            let horizon = action.horizonDays,
+            (1...31).contains(horizon)
+        else {
             throw RuntimeScheduleError.invalidRequest
         }
         let horizonEnd = endDate(
@@ -74,8 +75,9 @@ public enum RuntimePlanningAnalyzer {
         }
         if kind == "what_if" {
             guard let target,
-                  let duration = action.hypotheticalDurationMinutes,
-                  (5...480).contains(duration) else {
+                let duration = action.hypotheticalDurationMinutes,
+                (5...480).contains(duration)
+            else {
                 throw RuntimeScheduleError.invalidRequest
             }
             simulated[target].durationMinutes = duration
@@ -101,10 +103,11 @@ public enum RuntimePlanningAnalyzer {
         let taskMinutes = simulated.reduce(0) {
             $0 + ($1.durationMinutes ?? request.defaultDurationMinutes)
         }
-        let required = taskMinutes + max(
-            0,
-            simulated.count - 1
-        ) * request.transitionBufferMinutes
+        let required =
+            taskMinutes + max(
+                0,
+                simulated.count - 1
+            ) * request.transitionBufferMinutes
         let calendarCapacity = availableMinutes(analysisRequest)
         let capacity = min(calendarCapacity, action.budgetMinutes ?? calendarCapacity)
         let fits = proposal.unscheduled.isEmpty && required <= capacity
@@ -114,14 +117,17 @@ public enum RuntimePlanningAnalyzer {
         let details: [String]
         let headline: String
         if kind == "explain", let target,
-           let task = simulated[safe: target] {
+            let task = simulated[safe: target]
+        {
             headline = task.task
             if let block = proposal.blocks.first(where: { $0.taskID == task.id }) {
                 if task.dueTime != nil {
                     details = ["It keeps the time you stated: \(display(block.startAt, timezone: request.timezone))."]
                 } else {
                     var reason = "It uses the first open block after higher-priority and earlier-deadline work."
-                    if task.priority == "high" { reason = "High priority moves it ahead of normal and low-priority work." }
+                    if task.priority == "high" {
+                        reason = "High priority moves it ahead of normal and low-priority work."
+                    }
                     if let deadline = task.deadlineDate { reason += " Its deadline is \(deadline)." }
                     details = ["Proposed for \(display(block.startAt, timezone: request.timezone)).", reason]
                 }
@@ -131,8 +137,9 @@ public enum RuntimePlanningAnalyzer {
                 details = ["It falls outside this \(horizon)-day analysis."]
             }
         } else if kind == "what_if", let target,
-                  let task = simulated[safe: target],
-                  let duration = action.hypotheticalDurationMinutes {
+            let task = simulated[safe: target],
+            let duration = action.hypotheticalDurationMinutes
+        {
             headline = fits ? "It still fits." : "It no longer all fits."
             details = [
                 "\(task.task) is temporarily treated as \(duration)m.",
@@ -140,9 +147,11 @@ public enum RuntimePlanningAnalyzer {
             ]
         } else {
             headline = fits ? "Everything fits." : "Something needs room."
-            details = [fitDetail(
-                proposal: proposal, required: required, capacity: capacity
-            )]
+            details = [
+                fitDetail(
+                    proposal: proposal, required: required, capacity: capacity
+                )
+            ]
         }
         return RuntimePlanningAnalysis(
             id: request.proposalID,
@@ -168,31 +177,36 @@ public enum RuntimePlanningAnalyzer {
             return "\(required)m of work fits within \(capacity)m of available time."
         }
         let labels = proposal.unscheduled.prefix(3).map(\.task).joined(separator: ", ")
-        let more = proposal.unscheduled.count > 3
+        let more =
+            proposal.unscheduled.count > 3
             ? " and \(proposal.unscheduled.count - 3) more" : ""
         return "\(required)m of work exceeds \(capacity)m of available time. Needs room: \(labels)\(more)."
     }
 
     private static func availableMinutes(_ request: RuntimeScheduleRequest) -> Int {
         guard let zone = TimeZone(identifier: request.timezone),
-              let start = day(request.startDate, zone: zone) else { return 0 }
+            let start = day(request.startDate, zone: zone)
+        else { return 0 }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = zone
         let busy = request.busy.compactMap { item -> DateInterval? in
             guard let start = ISO8601DateFormatter().date(from: item.startAt),
-                  let end = ISO8601DateFormatter().date(from: item.endAt),
-                  end > start else { return nil }
+                let end = ISO8601DateFormatter().date(from: item.endAt),
+                end > start
+            else { return nil }
             return DateInterval(start: start, end: end)
         }
         var total = 0
         for offset in 0..<request.horizonDays {
             guard let date = calendar.date(byAdding: .day, value: offset, to: start),
-                  request.workDays.contains(normalizedWeekday(
-                    calendar.component(.weekday, from: date)
-                  )),
-                  let lower = instant(date, clock: request.workStart, calendar: calendar),
-                  let upper = instant(date, clock: request.workEnd, calendar: calendar),
-                  upper > lower else { continue }
+                request.workDays.contains(
+                    normalizedWeekday(
+                        calendar.component(.weekday, from: date)
+                    )),
+                let lower = instant(date, clock: request.workStart, calendar: calendar),
+                let upper = instant(date, clock: request.workEnd, calendar: calendar),
+                upper > lower
+            else { continue }
             let window = DateInterval(start: lower, end: upper)
             let blocked = merged(busy.compactMap { intersection($0, window) })
                 .reduce(0) { $0 + Int($1.duration / 60) }
@@ -240,13 +254,16 @@ public enum RuntimePlanningAnalyzer {
                 result[result.count - 1] = DateInterval(
                     start: last.start, end: max(last.end, value.end)
                 )
-            } else { result.append(value) }
+            } else {
+                result.append(value)
+            }
         }
     }
 
     private static func display(_ value: String, timezone: String) -> String {
         guard let date = ISO8601DateFormatter().date(from: value),
-              let zone = TimeZone(identifier: timezone) else { return value }
+            let zone = TimeZone(identifier: timezone)
+        else { return value }
         let formatter = DateFormatter()
         formatter.locale = .current
         formatter.timeZone = zone
@@ -265,7 +282,8 @@ public enum RuntimePlanningAnalyzer {
         timezone: String
     ) -> String {
         guard let zone = TimeZone(identifier: timezone),
-              let date = day(start, zone: zone) else { return start }
+            let date = day(start, zone: zone)
+        else { return start }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = zone
         let end = calendar.date(byAdding: .day, value: max(0, days - 1), to: date) ?? date
@@ -278,8 +296,8 @@ public enum RuntimePlanningAnalyzer {
     }
 }
 
-private extension Collection {
-    subscript(safe index: Index) -> Element? {
+extension Collection {
+    fileprivate subscript(safe index: Index) -> Element? {
         indices.contains(index) ? self[index] : nil
     }
 }

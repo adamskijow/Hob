@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 import Foundation
+
 #if canImport(HobAppCore)
-import HobAppCore
+    import HobAppCore
 #endif
 #if canImport(HobAppleIntelligence)
-import HobAppleIntelligence
+    import HobAppleIntelligence
 #endif
 
 @MainActor

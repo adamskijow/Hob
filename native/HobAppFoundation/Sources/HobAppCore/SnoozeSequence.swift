@@ -26,7 +26,8 @@ public enum RuntimeSnoozeSequence {
             )
         }
         let minutes = intervals[index]
-        let next = index + 1 < intervals.count
+        let next =
+            index + 1 < intervals.count
             ? label(for: intervals[index + 1]) : "indefinitely"
         return RuntimeSnoozeStep(
             minutes: minutes,

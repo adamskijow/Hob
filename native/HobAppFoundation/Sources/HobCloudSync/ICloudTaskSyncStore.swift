@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 import Foundation
+
 #if canImport(HobAppCore)
-import HobAppCore
+    import HobAppCore
 #endif
 
 @MainActor
@@ -32,7 +33,8 @@ public final class ICloudTaskSyncStore: RuntimeTaskSyncing {
         let defaults = UserDefaults.standard
         let deviceID: String
         if let saved = defaults.string(forKey: Schema.deviceIDKey),
-           UUID(uuidString: saved) != nil {
+            UUID(uuidString: saved) != nil
+        {
             deviceID = saved.lowercased()
         } else {
             deviceID = UUID().uuidString.lowercased()
@@ -71,15 +73,25 @@ public final class ICloudTaskSyncStore: RuntimeTaskSyncing {
         }
 
         let remote = try decodeRemoteShards()
-        let merged = try RuntimeTaskOperationMerge.merge(
-            local: localOperations,
-            remote: remote
-        )
+        let merged = try RuntimeTaskOperationMerge.compacted(
+            RuntimeTaskOperationMerge.merge(
+                local: localOperations,
+                remote: remote
+            ))
         let payload = try JSONEncoder().encode(merged)
         guard payload.count <= Schema.maximumShardBytes else {
             throw RuntimeTaskSyncError.transportFailed
         }
-        store.set(payload, forKey: Schema.keyPrefix + deviceID)
+        let ownKey = Schema.keyPrefix + deviceID
+        // Check the projected store after replacing our old journal, so a
+        // compacted write can recover a nearly full store.
+        let otherBytes = store.dictionaryRepresentation.reduce(0) { total, entry in
+            total + (entry.key != ownKey ? (entry.value as? Data)?.count ?? 0 : 0)
+        }
+        guard otherBytes + payload.count <= Schema.maximumTotalBytes else {
+            throw RuntimeTaskSyncError.transportFailed
+        }
+        store.set(payload, forKey: ownKey)
         // KVS queues local writes and propagates them asynchronously. A false
         // synchronize result is not proof that the queued value was rejected.
         _ = store.synchronize()
@@ -93,22 +105,22 @@ public final class ICloudTaskSyncStore: RuntimeTaskSyncing {
         guard shards.count <= Schema.maximumShards else {
             throw RuntimeTaskSyncError.invalidRemoteData
         }
-        var totalBytes = 0
         var operations: [RuntimeTaskOperation] = []
         for (key, value) in shards.sorted(by: { $0.key < $1.key }) {
             let suffix = String(key.dropFirst(Schema.keyPrefix.count))
             guard UUID(uuidString: suffix) != nil,
-                  let payload = value as? Data,
-                  payload.count <= Schema.maximumShardBytes else {
+                let payload = value as? Data,
+                payload.count <= Schema.maximumShardBytes
+            else {
                 throw RuntimeTaskSyncError.invalidRemoteData
             }
-            totalBytes += payload.count
-            guard totalBytes <= Schema.maximumTotalBytes,
-                  let decoded = try? JSONDecoder().decode(
+            guard
+                let decoded = try? JSONDecoder().decode(
                     [RuntimeTaskOperation].self,
                     from: payload
-                  ),
-                  decoded.allSatisfy(\.isValid) else {
+                ),
+                decoded.allSatisfy(\.isValid)
+            else {
                 throw RuntimeTaskSyncError.invalidRemoteData
             }
             operations += decoded
