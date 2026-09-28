@@ -247,7 +247,7 @@ struct HobFirstRunView: View {
         HStack(spacing: 10) {
             Toggle(
                 title,
-                isOn: Binding(get: { enabled }, set: setEnabled)
+                isOn: Binding(get: { enabled }, set: { value in setEnabled(value) })
             )
             Menu(HobWorkspaceController.morningDigestTimeLabel(selection)) {
                 ForEach(HobWorkspaceController.validMorningDigestTimes, id: \.self) { time in
